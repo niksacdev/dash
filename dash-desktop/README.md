@@ -20,6 +20,6 @@ For a structured scenario, import JSONL with the scenario’s input and gold fie
 
 ## Developer view
 
-Open **Workspace → Developer** to inspect LM Studio's loaded instances, model adapter, trace, runtime errors and case-level measurements. Time to first visible output, provider-reported time to first token, token usage and hardware readings appear when available. Mac power is measured across the whole device. Fixture runs have no model telemetry. The **Graders** workspace supports reusable checks and optional Opik judging when configured.
+Open **Workspace → Developer** to inspect LM Studio's loaded instances, model adapter, trace, runtime errors and case-level measurements. Time to first visible output, provider-reported time to first token, token usage and hardware readings appear when available. Device power is measured across the whole host when the sensor is supported. Fixture runs have no model telemetry. The **Graders** workspace includes a grader-design agent and native Opik SDK metrics. See the [project setup guide](../README.md) for grader confirmation, local judge configuration and Opik experiment sync.
 
 Run `npm test` for the offline suite. Run `./node_modules/.bin/electron test/workflow-smoke.cjs` to exercise the guided desktop flow using deterministic model responses. Run `./node_modules/.bin/electron test/desktop-smoke.cjs` for the recorded replay, case rerun and history flow. Both desktop tests use a fresh temporary profile.
