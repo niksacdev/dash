@@ -173,8 +173,8 @@ function createTokenBudget(listLoaded) {
 
 // Opik supplies its own chat turns for both G-Eval stages. Measure and dispatch those exact
 // turns through the chosen model's template, including a one-turn scoring request.
-async function invokeJudge(candidate, messages, { maxTokens, signal, structured }) {
-  const model = await lmClient().llm.model(candidate.model, { signal });
+async function invokeJudge(candidate, messages, { maxTokens, signal, structured }, llm = lmClient().llm) {
+  const model = await llm.model(candidate.model, { signal });
   const active = { ...candidate, model:model.identifier };
   const scoped = createTokenBudget(async () => [model]);
   const checklist = !structured;

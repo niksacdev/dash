@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createTokenBudget } = require("../lib/token-budget.cjs");
+const { createTokenBudget, invokeJudge } = require("../lib/token-budget.cjs");
 
 const candidate = { provider: "lmstudio", model: "station-qa", reasoningOff: true };
 const messages = [
@@ -112,4 +112,28 @@ test("short visible replies use the same thinking-disabled template at preflight
   assert.equal(run.telemetry.reasoning_content_present, false);
   assert.deepEqual(base.internalKVConfigStack.layers, []);
   await assert.rejects(b.checkInputBudget({candidate,messages,cap:12,measureContext:true}), /needs 15 input tokens/);
+});
+
+test("Opik checklist and verdict use the measured one-turn chat template and fit the active judge context",async()=>{
+  const calls=[];
+  const model={identifier:"qa",applyPromptTemplate:async chat=>JSON.stringify(chat),countTokens:async()=>31,getContextLength:async()=>128,
+    async respond(chat,opts){
+      calls.push({chat,opts});
+      return {nonReasoningContent:opts.structured.jsonSchema.properties.steps?'{"steps":["Compare the measurement."]}':'{"score":10,"reason":"Within limits."}',
+        stats:{promptTokensCount:31,predictedTokensCount:12,stopReason:"eosFound"}};
+    }};
+  const llm={model:async key=>{assert.equal(key,"qa");return model;}};
+  const j={provider:"lmstudio",model:"qa",maxOutputTokens:100};
+  const prompt=[{role:"user",content:"Assess the lot."}],opts={maxTokens:1024,signal:AbortSignal.timeout(2000)};
+  const checklist=await invokeJudge(j,prompt,opts,llm);
+  assert.equal(checklist.output,"Compare the measurement.");
+  assert.equal(calls[0].opts.maxTokens,97);
+  assert.equal(calls[0].chat.length,1);
+  assert.match(calls[0].chat[0].content,/steps array/);
+  assert.equal(prompt[0].content,"Assess the lot.");
+  const schema={type:"object",properties:{score:{type:"integer"}}};
+  const verdict=await invokeJudge(j,prompt,{...opts,structured:schema},llm);
+  assert.deepEqual(calls[1].chat,prompt);
+  assert.deepEqual(calls[1].opts.structured.jsonSchema,schema);
+  assert.equal(JSON.parse(verdict.output).score,10);
 });
