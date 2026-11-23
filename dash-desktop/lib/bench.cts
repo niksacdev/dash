@@ -8,6 +8,7 @@ import {OutcomeWorkflow,contractHash} from "./outcome-workflow.cjs";
 import {decodeRequest,type DesignContext,type PlanningPurpose,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
 import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
 import {RunReports} from "./run-report.cjs";
+import {isInformationalRule} from "./grader-catalog.cjs";
 import {getOpikTemplate,opikLibraryTemplates} from "./opik-library.cjs";
 import type {GraderSpec} from "./graders.cjs";
 import {Graders,sdkEnabled} from "./graders.cjs";
@@ -350,9 +351,14 @@ export class Bench {
         selected.push(caseJudgeSpec(judge));
       }
       const needsIndependentCriteria = rows.some(row=>row.reference == null && !row.rubric);
-      const eligibleBusinessGrader = [...selected,...defaults].some(g=>
-        !g.library?.automatic && !(needsIndependentCriteria && g.type==="opik-metric" && getOpikTemplate(g.metricKey).requiresReference));
-      if (datasetScorer === "selected-graders" && !eligibleBusinessGrader)
+      const eligibleBusinessGrader = [...selected,...defaults].some(g=>{
+        if (g.type==="catalog" && isInformationalRule(g.ruleKey)) return false;
+        if (!needsIndependentCriteria) return true;
+        if (g.type==="field" || g.type==="trajectory") return false;
+        if (g.type==="decision") return !g.requiredEvidence?.length;
+        return g.type!=="opik-metric" || !getOpikTemplate(g.metricKey).requiresReference;
+      });
+      if (!original && datasetScorer === "selected-graders" && !eligibleBusinessGrader)
         throw Error("Choose a grader that can evaluate the saved case responses with the available evidence.");
       if (rows.some(r=>r.rubric) && !selected.some(g=>["judge","opik","decision"].includes(g.type)))
         throw Error("Choose a local LLM or Opik judge, or a decision grader, to evaluate the case-level rubrics.");

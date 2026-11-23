@@ -122,7 +122,9 @@ test("action graders leave missing traces unscored and score only supplied agent
   await bench.refresh();
   const datasetId=bench.import("reference","Tool evidence",JSON.stringify({case_id:"1",dataset_version:"1",split:"development",prompt:"Inspect lot K7."}),{industry:"Manufacturing",family:"Tool evidence",category:"Inspection",source:"Test"});
   const graderId=bench.graders.save({name:"Observed lookup and hold",category:"Operations",industry:"Manufacturing",type:"trajectory",criteria:"lookup\nhold",threshold:1},[]);
-  const runId=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId]});
+  assert.throws(()=>bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId]}),/available evidence/);
+  const disposition=bench.graders.save({name:"Disposition",category:"Routing",industry:"Manufacturing",type:"exact",criteria:"hold",threshold:1},[]);
+  const runId=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId,disposition]});
   await present(bench.active).done;
   const result=bench.detail(runId);
   assert.ok(result.results[0].trace.steps.some(step=>step.action==="Invoke ollama"));
