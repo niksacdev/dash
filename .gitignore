@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+.opik-venv/
+__pycache__/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.log
