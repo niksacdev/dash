@@ -1,12 +1,24 @@
-const { DatabaseSync } = require("node:sqlite");
-const { randomUUID } = require("node:crypto");
-const { readFileSync } = require("node:fs");
-const os = require("node:os");
-const { loadPacks, parseDataset, grade, hash } = require("./packs.cjs");
-const { Catalog } = require("./catalog.cjs");
-const providers = require("./providers.cjs");
-const { OutcomeWorkflow, contractHash } = require("./outcome-workflow.cjs");
-const replayCandidate = {
+import {DatabaseSync} from "node:sqlite";
+import {randomUUID} from "node:crypto";
+import * as os from "node:os";
+import {loadPacks,parseDataset,grade,hash} from "./packs.cjs";
+import {Catalog} from "./catalog.cjs";
+import * as providers from "./providers.cjs";
+import {OutcomeWorkflow,contractHash} from "./outcome-workflow.cjs";
+import {decodeRequest,type DesignContext,type PlanningPurpose,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
+import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
+import {RunReports} from "./run-report.cjs";
+import {Graders,sdkEnabled} from "./graders.cjs";
+import {Endpoints} from "./endpoints.cjs";
+import {PlannerSettings} from "./planner-settings.cjs";
+import {startPower} from "./power.cjs";
+import {assessCase,lengthFailure,reasoningPolicy,autoOutputTarget,GuardrailError,type GuardrailDecision} from "./guardrail.cjs";
+import {decodeManifest,decodeResult,decodeRunSummary,decodeDatasetSummary} from "./run-decode.cjs";
+import {errorMessage,isCaseRow,jsonText,stringValue,statusValue} from "./run-types.cjs";
+import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
+import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate} from "./runtime-types.cjs";
+interface Job {id:string;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
+export const replayCandidate:FixtureCandidate = {
   id: "fixture/replay-v1",
   kind: "fixture",
   provider: "fixture",
@@ -14,56 +26,64 @@ const replayCandidate = {
   revision: "v1",
 };
 const now = () => new Date().toISOString();
-const scorerDigest = hash(readFileSync(require.resolve("./packs.cjs"), "utf8"));
-const systemPrompt = (pack) =>
+// Digest of the original scorer source used in v2 manifests. Change this identity when scoring semantics change.
+const scorerDigest = "8bfcc9968f5dfaf870ae94055d6a54da47b028bfa9cec947ce354efa8fc1197e";
+const systemPrompt = (pack:ScoredPack) =>
   pack.system +
   "\nOutput schema: " +
   JSON.stringify(pack.outputSchema) +
   "\nReturn only the raw JSON object. Start with { and end with }. Omit Markdown code fences, labels, comments and surrounding prose.";
 
-const { referencePack, caseMessages: candidateMessages, graderEvidence, exactReference } = require("./evaluation-cases.cjs");
-
-class Bench {
-  constructor(file, adapters = providers, powerSampler = require("./power.cjs").startPower) {
-    this.powerSampler = powerSampler;
-    this.adapters = adapters;
+export class Bench {
+  readonly db:DatabaseSync;
+  readonly reports:RunReports;
+  readonly packs:PackBundle[];
+  readonly graders:Graders;
+  readonly endpoints:Endpoints;
+  readonly catalog:Catalog;
+  readonly plannerSettings:PlannerSettings;
+  readonly workflow:OutcomeWorkflow;
+  designing=false;
+  servers:RuntimeInventory[]=[];
+  active:Job|null=null;
+  constructor(file:string, readonly adapters:RuntimeAdapters=providers, readonly powerSampler:typeof startPower=startPower) {
     this.db = new DatabaseSync(file);
     this.db.exec(
       "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, created TEXT, status TEXT, manifest TEXT); CREATE TABLE IF NOT EXISTS results(run TEXT,candidate TEXT,case_id TEXT,record TEXT,PRIMARY KEY(run,candidate,case_id)); CREATE TABLE IF NOT EXISTS datasets(id TEXT PRIMARY KEY,pack TEXT,name TEXT,rows TEXT); UPDATE runs SET status='interrupted' WHERE status IN ('running','queued');",
     );
-    this.reports = new (require("./run-report.cjs").RunReports)(this.db);
+    this.reports = new RunReports(this.db);
     this.packs = loadPacks();
-    for (const { pack, rows } of this.packs)
+    for (const { pack, rows } of this.packs) if(pack.kind !== "reference")
       this.saveDataset(pack.id, pack.dataset, rows);
     this.packs.push({pack:referencePack, rows:[], replay:{}});
-    this.graders = new (require("./graders.cjs").Graders)(this.db);
-    this.endpoints = new (require("./endpoints.cjs").Endpoints)(this.db);
+    this.graders = new Graders(this.db);
+    this.endpoints = new Endpoints(this.db);
     this.catalog = new Catalog(this.db, this.packs);
-    this.plannerSettings = new (require("./planner-settings.cjs").PlannerSettings)(this.db,this.endpoints);
+    this.plannerSettings = new PlannerSettings(this.db,this.endpoints);
     this.workflow = new OutcomeWorkflow(this.db, adapters, {openaiFallback:()=>this.plannerSettings.fallback()});
     this.designing = false;
     this.servers = [];
     this.active = null;
   }
-  saveDataset(pack, name, rows) {
+  saveDataset(pack:string, name:string, rows:DatasetCase[]) {
     const id = pack + "-" + hash(rows);
     this.db
       .prepare("INSERT OR IGNORE INTO datasets VALUES(?,?,?,?)")
       .run(id, pack, name, JSON.stringify(rows));
     return id;
   }
-  pack(id) {
+  pack(id:string) {
     const p = this.packs.find((x) => x.pack.id === id);
     if (!p) throw Error("Unknown scenario");
     return p;
   }
-  previewImport(packId, text) {
+  previewImport(packId:string, text:string) {
     return parseDataset(text, this.pack(packId).pack);
   }
-  import(packId, name, text, meta) {
+  import(packId:string, name:string, text:string, meta?:unknown) {
     return this.importRows(packId, name, this.previewImport(packId, text), meta);
   }
-  importRows(packId, name, rows, meta) {
+  importRows(packId:string, name:string, rows:DatasetCase[], meta?:unknown) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const id = this.saveDataset(packId, name, rows);
@@ -74,18 +94,24 @@ class Bench {
       return id;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
-  dataset(id) {
+  dataset(id:string):DatasetSnapshot {
     const d = this.db.prepare("SELECT * FROM datasets WHERE id=?").get(id);
     if (!d) throw Error("Unknown dataset snapshot");
-    return { ...d, metadata: this.catalog.get(id), rows: JSON.parse(d.rows) };
+    const rows=jsonText(d.rows), meta=this.catalog.get(id);
+    if(!Array.isArray(rows)||!rows.length||!rows.every(isCaseRow)||!meta)throw Error("Invalid saved dataset snapshot.");
+    return {id:stringValue(d.id),pack:stringValue(d.pack),name:stringValue(d.name),metadata:meta,rows};
   }
-  async designPrompt(request, onStage, purpose = "draft") {
+  designPrompt(raw:unknown,onStage?:DesignContext["onStage"],purpose?:"draft"):Promise<PromptDraft>;
+  designPrompt(raw:unknown,onStage:DesignContext["onStage"],purpose:"suggest"):Promise<MetricSuggestion>;
+  designPrompt(raw:unknown,onStage:DesignContext["onStage"],purpose:PlanningPurpose):Promise<PromptDraft|MetricSuggestion>;
+  async designPrompt(raw:unknown, onStage?:DesignContext["onStage"], purpose:PlanningPurpose = "draft") {
+    const request=decodeRequest(raw);
     if (this.active || this.designing) throw Error("Wait for the current run or prompt preparation to finish.");
     this.designing = true;
     try {
-      let context = {};
+      let context:DesignContext = {};
       if (request?.mode === "dataset") {
-        const snapshot = this.dataset(request.datasetId);
+        const snapshot = this.dataset(stringValue(request.datasetId,"dataset ID"));
         const { id, title, description, system, outputSchema, metrics } = this.pack(snapshot.pack).pack;
         context = {
           datasetId: snapshot.id, industry: snapshot.metadata.industry,
@@ -100,11 +126,11 @@ class Bench {
       this.designing = false;
     }
   }
-  refinementEvidence(id, approvedPromptId) {
+  refinementEvidence(id:string, approvedPromptId:string|null|undefined) {
     const saved = this.db.prepare("SELECT status,manifest FROM runs WHERE id=?").get(id);
-    if (!saved || !approvedPromptId || JSON.parse(saved.manifest).approvedPromptId !== approvedPromptId)
+    if (!saved || !approvedPromptId || decodeManifest(saved.manifest).approvedPromptId !== approvedPromptId)
       throw Error("Choose a saved run of the prompt revision you want to refine.");
-    if (["running", "queued"].includes(saved.status)) throw Error("Wait for this run to finish before refining it.");
+    if (["running", "queued"].includes(statusValue(saved.status))) throw Error("Wait for this run to finish before refining it.");
     // Only aggregated observations go back into the planner. Case inputs, reference
     // answers, candidate text and judge rationales stay in the run record.
     const candidates = this.db.prepare(`SELECT candidate, COUNT(*) AS responses,
@@ -118,7 +144,7 @@ class Bench {
       json_extract(record,'$.version') AS version, COUNT(json_extract(record,'$.pass')) AS scored,
       SUM(json_extract(record,'$.pass')) AS passed
       FROM assessments WHERE run=? GROUP BY candidate,json_extract(record,'$.graderId')`).all(id);
-    const failure = JSON.parse(saved.manifest).guardrailFailure;
+    const failure = decodeManifest(saved.manifest).guardrailFailure;
     const stopped = this.db.prepare("SELECT candidate, max(json_extract(record,'$.telemetry.output_tokens')) AS tokens FROM results WHERE run=? AND json_extract(record,'$.finishReason')='length' GROUP BY candidate").all(id);
     const constraint = failure ? {
       candidate:failure.candidateId,inputTokens:failure.inputTokens,contextTokens:failure.contextTokens,
@@ -126,10 +152,10 @@ class Bench {
     } : null;
     return { id, status: saved.status, candidates, graders, ...(constraint && {tokenConstraint:constraint}), ...(stopped.length && {truncatedOutputs:stopped}) };
   }
-  quickGraderOptions(approvedPromptId) {
+  quickGraderOptions(approvedPromptId:string) {
     return this.graders.quickOptions(this.workflow.get(approvedPromptId), this.servers.flatMap(s => s.models));
   }
-  async previewQuickBudget(approvedPromptId, candidateIds) {
+  async previewQuickBudget(approvedPromptId:string,candidateIds:string[]) {
     if (!Array.isArray(candidateIds) || candidateIds.length > 2 || new Set(candidateIds).size !== candidateIds.length)
       throw Error("Choose up to two distinct models.");
     const approved = this.workflow.get(approvedPromptId);
@@ -138,15 +164,15 @@ class Bench {
     const signal = AbortSignal.timeout(20000);
     return Promise.all(candidateIds.map(async candidateId=>{
       const candidate=available.find(c=>c.id===candidateId);
-      if (!candidate) return {candidateId,status:"blocked",message:"This model is unavailable. Refresh the starting line."};
+      if (!candidate) return {candidateId,status:"blocked" as const,message:"This model is unavailable. Refresh the starting line."};
       try {
-        const {guardrail}=await require("./guardrail.cjs").assessCase({
+        const {guardrail}=await assessCase({
           candidate,mode:"quick",messages:candidateMessages({prompt:approved.prompt},{}),budget:approved,
           defaultOutput:providers.settings.maxTokens,checkInputBudget:this.adapters.checkInputBudget,signal,
         });
         return {candidateId,...guardrail};
       } catch (err) {
-        return {candidateId,...(err.guardrail || {status:"unverified",message:"The token preview could not finish. DASH will check again at dispatch."})};
+        return {candidateId,...(err instanceof GuardrailError ? err.guardrail : {status:"unverified" as const,message:"The token preview could not finish. DASH will check again at dispatch."})};
       }
     }));
   }
@@ -167,15 +193,15 @@ class Bench {
       .all();
     return {
       packs: this.packs.map((p) => p.pack),
-      datasets: datasets.map(d => ({ ...d, metadata: JSON.parse(d.metadata) })),
-      runs,
+      datasets: datasets.map(decodeDatasetSummary),
+      runs:runs.map(decodeRunSummary),
       prompts: this.workflow.list(),
       domainRoles: this.workflow.roles(),
       plannerFallback: this.plannerSettings.status(),
       servers: this.servers,
       endpoints: this.endpoints.list(),
       graders: this.graders.list(),
-      opikReady: require('./graders.cjs').sdkEnabled(),
+      opikReady: sdkEnabled(),
       active: this.active?.id ?? null,
       device: os.platform() + " / " + os.arch(),
       fixtureId: replayCandidate.id,
@@ -195,7 +221,7 @@ class Bench {
     graderIds = [],
     outcomeRubric,
     animation = true,
-  }) {
+  }:StartRun) {
     if (this.designing) throw Error("Wait for the prompt preparation to finish.");
     if (this.active)
       throw Error("A job is active. Stop it or wait for completion.");
@@ -213,18 +239,18 @@ class Bench {
       const c = all.find((x) => x.id === id);
       if (!c)
         throw Error("Refresh local runtimes and select an available model.");
-      if (c.needsKey) throw Error("Enter the session key for " + c.model + " before starting.");
+      if (c.provider==="compatible" && c.needsKey) throw Error("Enter the session key for " + c.model + " before starting.");
       return c;
     });
     const fixture = candidateIds.includes(replayCandidate.id);
     if (fixture && (mode !== "dataset" || candidates.length !== 1))
       throw Error("Fixture replay requires a separate dataset run.");
-    let original = null;
+    let original:RunManifest|null = null;
     if (parentId) {
       original = this.detail(parentId).manifest;
       if (mode !== "dataset" || original.mode !== mode || original.datasetId !== datasetId ||
           !caseId || !original.caseIds.includes(caseId) || original.fixture !== fixture ||
-          !candidateIds.every(id => original.candidates.some(candidate => candidate.id === id)))
+          !candidateIds.every(id => original?.candidates.some(candidate => candidate.id === id)))
         throw Error("Rerun a saved case using its original dataset and candidate.");
       if (approvedPromptId && approvedPromptId !== original.approvedPromptId)
         throw Error("A case rerun uses its original approved prompt.");
@@ -237,12 +263,9 @@ class Bench {
     if (approved && (approved.mode !== mode || approved.datasetId !== (datasetId || null)))
       throw Error("This prompt revision belongs to a different run type or dataset snapshot.");
     const prompt = approved?.prompt;
-    let rows,
-      pack = null,
-      replay = {},
-      dataset = null;
+    let rows:CaseRow[], pack:ScenarioPack|null=null, replay:Record<string,unknown>={}, dataset:DatasetSnapshot|null=null;
     if (mode === "dataset") {
-      dataset = this.dataset(datasetId);
+      dataset = this.dataset(stringValue(datasetId,"dataset ID"));
       const bundle = this.pack(dataset.pack);
       pack = original?.pack ?? bundle.pack;
       if (approved && (approved.packId !== pack.id || approved.contractHash !== contractHash(pack)))
@@ -273,7 +296,7 @@ class Bench {
         if (rows.some(row=>row.reference == null && !row.rubric)) throw Error("Some cases supply only an input. Choose a saved grader with its own success criteria.");
         if (datasetScorer !== "selected-graders") throw Error("Choose reference and rubric scoring to use a case judge.");
         const judge=this.servers.flatMap(s=>s.models).find(m=>m.id===caseJudgeId);
-        selected.push(require("./evaluation-cases.cjs").caseJudgeSpec(judge));
+        selected.push(caseJudgeSpec(judge));
       }
       if (datasetScorer === "selected-graders" && !selected.length) throw Error("Choose a grader to evaluate the saved case responses.");
       if (rows.some(r=>r.rubric) && !selected.some(g=>["judge","opik"].includes(g.type)))
@@ -286,14 +309,14 @@ class Bench {
     const effectiveSystem = pack && pack.kind !== "reference" ? (approved ? approved.prompt +
       "\n\nRequired scenario instructions and output format (apply to every case):\n" : "") + systemPrompt(pack) : null;
     const id = randomUUID();
-    const manifest = {
+    const manifest:CurrentManifest = {
       format: 2,
       id,
       created: now(),
       mode,
       fixture,
       graders: pinnedGraders,
-      title: pack?.kind==="reference" ? dataset.metadata.family : pack?.title || approved?.title || "Quick compare",
+      title: pack?.kind==="reference" ? dataset?.metadata.family ?? pack.title : pack?.title || approved?.title || "Quick compare",
       approvedPromptId: approved?.id ?? null,
       approvedPrompt: approved,
       objective: approved?.objective ?? pack?.description ?? null,
@@ -312,7 +335,7 @@ class Bench {
       policyHash: pack ? hash([pack, scorerDigest, datasetScorer, pinnedGraders.map(g=>g.id)]) : null,
       promptHash: hash(pack ? [effectiveSystem, rows.map(r=>candidateMessages({pack,effectiveSystem},r))] : prompt),
       caseSetHash: hash(rows),
-      prompt: mode === "quick" ? prompt : null,
+      prompt: mode === "quick" ? prompt ?? null : null,
       invocations: candidates.map((c) => ({
         candidateId: c.id,
         adapter:
@@ -324,11 +347,11 @@ class Bench {
               ? "LM Studio chat completions"
               : c.provider,
         template: fixture ? null : "Runtime model chat template",
-        reasoning: require("./guardrail.cjs").reasoningPolicy(c, {
+        reasoning: reasoningPolicy(c, {
           mode, outputCap: caps.outputCap, structured: pack?.outputSchema, verifiedAdapter: !!this.adapters.checkInputBudget,
         }),
       })),
-      outputPolicy: fixture ? null : {mode:caps.outputCap == null ? "automatic" : "explicit", automaticTarget:require("./guardrail.cjs").autoOutputTarget, providerFallback:providers.settings.maxTokens},
+      outputPolicy: fixture ? null : {mode:caps.outputCap == null ? "automatic" : "explicit", automaticTarget:autoOutputTarget, providerFallback:providers.settings.maxTokens},
       parameters: fixture ? {} : { ...providers.settings, maxTokens: caps.outputCap ?? original?.parameters?.maxTokens ?? providers.settings.maxTokens },
       device: {
         platform: os.platform(),
@@ -342,6 +365,7 @@ class Bench {
     const insertRun = () => this.db.prepare("INSERT INTO runs VALUES(?,?,?,?)")
       .run(id, manifest.created, "queued", JSON.stringify(manifest));
     if (mode === "quick") {
+      if(!approved)throw Error("Choose an approved Quick compare prompt.");
       this.db.exec("BEGIN IMMEDIATE");
       try {
         manifest.graders = this.graders.resolveQuick(approved, manifest.graders, outcomeRubric, this.servers.flatMap(s => s.models));
@@ -354,26 +378,25 @@ class Bench {
     } else {
       insertRun();
     }
-    const job = { id, controller: new AbortController(), partial: null };
+    const job:Job = { id, controller: new AbortController(), partial: null };
     this.active = job;
-    job.done = new Promise((resolve) => setImmediate(resolve)).then(() =>
+    job.done = new Promise<void>((resolve) => setImmediate(resolve)).then(() =>
       this.execute(job, manifest, rows, replay),
     );
     return id;
   }
-  async execute(job, m, rows, replay) {
+  async execute(job:Job, m:CurrentManifest, rows:CaseRow[], replay:Record<string,unknown>) {
     const signal = job.controller.signal;
-    const status = (value) =>
+    const status = (value:RunStatus) =>
       this.db.prepare("UPDATE runs SET status=? WHERE id=?").run(value, m.id);
     let errors = 0;
     try {
       status("running");
       // Complete all lane/case checks before generating the first candidate response.
-      const { assessCase, lengthFailure } = require("./guardrail.cjs");
-      const decisions = new Map();
+      const decisions = new Map<string,Map<string,GuardrailDecision>>();
       if (!m.fixture) {
         for (const candidate of m.candidates) {
-          const cases = new Map();
+          const cases = new Map<string,GuardrailDecision>();
           decisions.set(candidate.id, cases);
           for (const row of rows) {
             signal.throwIfAborted();
@@ -381,13 +404,13 @@ class Bench {
               const decision = await assessCase({
                 candidate, messages: candidateMessages(m, row), serializedCaseInput: !!m.pack && m.pack.kind !== "reference" && !row.prompt && !row.messages,
                 mode: m.mode, structured: m.pack?.outputSchema, budget: m.tokenBudget,
-                defaultOutput: m.parameters.maxTokens, checkInputBudget: this.adapters.checkInputBudget, signal,
+                defaultOutput: m.parameters.maxTokens ?? providers.settings.maxTokens, checkInputBudget: this.adapters.checkInputBudget, signal,
               });
               cases.set(row.case_id, decision);
             } catch (error) {
-              if (error.guardrail)
+              if (error instanceof GuardrailError)
                 m.guardrailFailure = { ...error.guardrail, candidateId: candidate.id, caseId: row.case_id };
-              throw Error(candidate.model + " · " + row.case_id + " — " + error.message);
+              throw Error(candidate.model + " · " + row.case_id + " — " + errorMessage(error));
             }
           }
         }
@@ -395,7 +418,7 @@ class Bench {
       for (const c of m.candidates)
         for (const row of rows) {
           if (signal.aborted) break;
-          const trace = {
+          const trace:RunResult["trace"] = {
             id: randomUUID(),
             runId: m.id,
             candidateId: c.id,
@@ -403,7 +426,7 @@ class Bench {
             started: now(),
             steps: [],
           };
-          const rec = {
+          const rec:RunResult = {
             candidateId: c.id,
             caseId: row.case_id,
             trace,
@@ -422,7 +445,9 @@ class Bench {
             });
             if (m.fixture) rec.output = JSON.stringify(replay[row.case_id]);
             else {
-              const { receipt: inputBudget, guardrail, preparedMessages } = decisions.get(c.id).get(row.case_id);
+              const decision=decisions.get(c.id)?.get(row.case_id);
+              if(!decision || c.provider==="fixture")throw Error("Missing dispatch plan");
+              const { receipt: inputBudget, guardrail, preparedMessages } = decision;
               const messages = preparedMessages ?? candidateMessages(m, row);
               rec.guardrail = guardrail;
               trace.steps.unshift({ at: trace.started, action: "Check model capacity", guardrail });
@@ -437,15 +462,15 @@ class Bench {
                   maxTokens: guardrail.outputReserve,
                   inputBudget,
                   structured: m.pack?.outputSchema,
-                  onText: (text) => { job.partial.text = text; },
+                  onText: (text) => { if (job.partial) job.partial.text = text; },
                 });
               } finally {
                 rec.telemetry = { ...response?.telemetry, device_power: await finishPower() };
               }
               rec.output = response.output;
-              if (m.tokenBudget.inputCap != null && response.telemetry?.input_tokens > m.tokenBudget.inputCap)
+              if (m.tokenBudget.inputCap != null && (response.telemetry?.input_tokens ?? 0) > m.tokenBudget.inputCap)
                 throw Error("The runtime reported input usage above the approved cap.");
-              if (response.telemetry?.output_tokens > guardrail.outputReserve)
+              if ((response.telemetry?.output_tokens ?? 0) > guardrail.outputReserve)
                 throw Error(`The runtime reported ${response.telemetry.output_tokens} output tokens above its ${guardrail.outputReserve}-token allocation.`);
               rec.finishReason = response.finishReason ?? null;
               if (rec.finishReason === "length")
@@ -457,7 +482,8 @@ class Bench {
             }
             if (signal.aborted) break;
             if (m.pack && m.datasetScorer !== "selected-graders") {
-              rec.score = m.datasetScorer === "exact-reference" ? await exactReference(row,rec.output) : grade(m.pack, row, rec.output);
+              if (m.datasetScorer === "exact-reference") rec.score = await exactReference(row,rec.output);
+              else if(m.pack.kind !== "reference") rec.score = grade(m.pack,row,rec.output);
               trace.steps.push({
                 at: now(),
                 action: "Grade with " + m.pack.scorer,
@@ -466,7 +492,7 @@ class Bench {
           } catch (e) {
             if (signal.aborted) break;
             errors++;
-            rec.error = e.message;
+            rec.error = errorMessage(e);
           }
           trace.finished = now();
           if (!signal.aborted && !rec.error) {
@@ -486,7 +512,7 @@ class Bench {
             .run(m.id, c.id, row.case_id, JSON.stringify(rec));
         }
       if (!m.fixture && !errors && !signal.aborted && typeof this.adapters.reportStage === "function") {
-        const completed = { ...this.detail(m.id), status: "completed" };
+        const completed:RunData = { ...this.detail(m.id), status: "completed" };
         await this.reports.finalize(completed, this.adapters, signal, stage => {
           job.partial = { stage, text: "" };
         });
@@ -495,7 +521,7 @@ class Bench {
     } catch (e) {
       if (signal.aborted) status("canceled");
       else {
-        m.error = e.message;
+        m.error = errorMessage(e);
         this.db.prepare("UPDATE runs SET status='failed', manifest=? WHERE id=?").run(JSON.stringify(m), m.id);
       }
     } finally {
@@ -504,29 +530,28 @@ class Bench {
       this.detail(m.id);
     }
   }
-  stop(id) {
+  stop(id:string) {
     if (id !== this.active?.id) throw Error("This run is no longer active.");
     this.active.controller.abort();
   }
-  detail(id) {
+  detail(id:string):RunDetail {
     const run = this.db
       .prepare("SELECT status,manifest FROM runs WHERE id=?")
       .get(id);
     if (!run) throw Error("Run not found");
-    const detail = {
-      status: run.status,
-      manifest: JSON.parse(run.manifest),
+    const detail:RunData = {
+      status: statusValue(run.status),
+      manifest: decodeManifest(run.manifest),
       results: this.db
         .prepare("SELECT record FROM results WHERE run=? ORDER BY rowid")
         .all(id)
-        .map((r) => JSON.parse(r.record)),
+        .map((r)=>decodeResult(r.record)),
       assessments: this.graders.recorded(id),
       partial: this.active?.id === id ? this.active.partial : null,
     };
-    detail.report = this.reports.get(detail);
-    return detail;
+    return {...detail,report:this.reports.get(detail)};
   }
-  exportRun(id) {
+  exportRun(id:string) {
     const { status, manifest, results, assessments, report } = this.detail(id);
     return {
       format: "dash-run/1",
@@ -543,4 +568,3 @@ class Bench {
     };
   }
 }
-module.exports = { Bench, replayCandidate };

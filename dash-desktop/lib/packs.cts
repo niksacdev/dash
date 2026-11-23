@@ -1,20 +1,23 @@
-const fs = require("node:fs");
-const path = require("node:path");
-const { createHash } = require("node:crypto");
-const { isDeepStrictEqual } = require("node:util");
+import * as fs from "node:fs";
+import * as path from "node:path";
+import {createHash} from "node:crypto";
+import {isDeepStrictEqual} from "node:util";
+import {validateCase} from "./evaluation-cases.cjs";
+import {isRecord,isCaseRow,isScenarioPack,objectValue,stringValue,errorMessage,jsonText} from "./run-types.cjs";
+import type {ScoredPack,ScenarioPack,DatasetCase,CaseRow} from "./run-types.cjs";
 
-const hash = (value) =>
+export const hash = (value:unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
-function field(obj, key) {
+function field(obj:unknown, key:string):unknown {
   return key
     .split(".")
-    .reduce(
+    .reduce<unknown>(
       (v, k) =>
-        v && typeof v === "object" && Object.hasOwn(v, k) ? v[k] : undefined,
+        isRecord(v) && Object.hasOwn(v, k) ? v[k] : undefined,
       obj,
     );
 }
-function decimal(value) {
+function decimal(value:unknown) {
   if (typeof value !== "string" || !/^-?\d+(?:\.\d+)?$/.test(value))
     return undefined;
   let [whole, fraction = ""] = value.replace(/^-/, "").split(".");
@@ -26,15 +29,14 @@ function decimal(value) {
     (fraction ? "." + fraction : "")
   );
 }
-function equal(pack, key, actual, expected) {
+function equal(pack:ScoredPack, key:string, actual:unknown, expected:unknown):boolean {
   if (pack.decimalFields.includes(key) && expected !== null) {
     const target = decimal(expected);
     return target !== undefined && decimal(actual) === target;
   }
-  if (expected && typeof expected === "object" && !Array.isArray(expected)) {
+  if (isRecord(expected)) {
     return (
-      !!actual &&
-      typeof actual === "object" &&
+      isRecord(actual) &&
       Object.keys(expected).every((k) =>
         equal(pack, key + "." + k, actual[k], expected[k]),
       )
@@ -44,8 +46,8 @@ function equal(pack, key, actual, expected) {
 }
 // JSON.parse retains only the last value for each key. Inspect valid JSON tokens
 // before discarding duplicates so an ambiguous record cannot pass the grader.
-function duplicateKey(text) {
-  const objects = [];
+function duplicateKey(text:string) {
+  const objects:Set<string>[] = [];
   const tokens = /("(?:\\.|[^"\\])*")\s*(:)?|[{}]/g;
   for (const match of text.matchAll(tokens)) {
     if (match[0] === "{") objects.push(new Set());
@@ -53,15 +55,16 @@ function duplicateKey(text) {
     else if (match[2]) {
       const key = JSON.parse(match[1]);
       const keys = objects.at(-1);
+      if(!keys) throw Error("Invalid JSON object");
       if (keys.has(key)) return key;
       keys.add(key);
     }
   }
   return null;
 }
-function grade(pack, row, text) {
+export function grade(pack:ScoredPack, row:CaseRow, text:string) {
   const reasons = [];
-  let output;
+  let output:unknown;
   try {
     output = JSON.parse(text);
     const duplicate = duplicateKey(text);
@@ -69,7 +72,7 @@ function grade(pack, row, text) {
   } catch {
     reasons.push("Response is invalid JSON");
   }
-  if (!output || typeof output !== "object" || Array.isArray(output))
+  if (!isRecord(output))
     reasons.push("Expected a JSON object");
   else {
     for (const check of pack.checks) {
@@ -89,12 +92,12 @@ function grade(pack, row, text) {
         quote != null &&
         (typeof quote !== "string" ||
           !quote.length ||
-          !row.input[pack.sourceText].includes(quote))
+          !(pack.sourceText && isRecord(row.input) && String(row.input[pack.sourceText] ?? "").includes(quote)))
       )
         reasons.push("Unsupported quote in " + key);
     }
   }
-  const proposedAccept = output?.[pack.decisionField] === pack.accept;
+  const proposedAccept = isRecord(output) && output[pack.decisionField] === pack.accept;
   const pass = reasons.length === 0;
   return {
     pass,
@@ -104,15 +107,15 @@ function grade(pack, row, text) {
     review: !(pass && proposedAccept),
   };
 }
-function parseDataset(text, pack) {
+export function parseDataset(text:string, pack:ScenarioPack):DatasetCase[] {
   if (Buffer.byteLength(text) > 2_000_000)
     throw Error("Maximum dataset size is 2 MB.");
   const seen = new Set();
-  const rows = [];
+  const rows:DatasetCase[] = [];
   for (const [i, line] of text.split(/\r?\n/).entries()) {
     if (!line.trim()) continue;
     try {
-      const row = JSON.parse(line);
+      const row = objectValue(jsonText(line),"case");
       if (duplicateKey(line) !== null) throw Error("Duplicate JSON key");
       if (
         !row ||
@@ -122,15 +125,10 @@ function parseDataset(text, pack) {
         seen.has(row.case_id)
       )
         throw Error("Missing, invalid or duplicate case ID");
-      require("./evaluation-cases.cjs").validateCase(row, pack);
+      validateCase(row, pack);
       if (pack.kind !== "reference") {
         if (
-          !row.input ||
-          typeof row.input !== "object" ||
-          Array.isArray(row.input) ||
-          !row.gold ||
-          typeof row.gold !== "object" ||
-          Array.isArray(row.gold)
+          !isRecord(row.input) || !isRecord(row.gold)
         )
           throw Error("Expected input and gold objects");
         if (pack.sourceText && typeof row.input[pack.sourceText] !== "string")
@@ -138,15 +136,10 @@ function parseDataset(text, pack) {
         for (const check of pack.checks)
           if (!check.optional && field(row, check.ref) === undefined)
             throw Error("Missing " + check.ref);
-        if (![pack.accept, pack.review].includes(row.gold[pack.decisionField]))
+        if (![pack.accept, pack.review].includes(String(row.gold[pack.decisionField])))
           throw Error("Invalid gold decision");
       }
-      if (
-        !["development", "holdout"].includes(row.split) ||
-        typeof row.dataset_version !== "string" ||
-        !row.dataset_version.trim()
-      )
-        throw Error("Expected split and dataset_version");
+      if (!isCaseRow(row) || !row.dataset_version.trim()) throw Error("Expected split and dataset_version");
       if (
         rows.length &&
         (rows[0].split !== row.split ||
@@ -157,23 +150,23 @@ function parseDataset(text, pack) {
       rows.push(row);
       seen.add(row.case_id);
     } catch (e) {
-      throw Error("Line " + (i + 1) + ": " + e.message);
+      throw Error("Line " + (i + 1) + ": " + errorMessage(e));
     }
   }
   if (!rows.length) throw Error("The dataset has no cases.");
   return rows;
 }
-function loadPacks() {
+export function loadPacks() {
   const root = path.join(__dirname, "../packs");
   return fs
     .readdirSync(root, { withFileTypes: true })
     .filter((f) => f.isDirectory())
     .map((f) => {
-      const read = (name) =>
+      const read = (name:string) =>
         fs.readFileSync(path.join(root, f.name, name), "utf8");
-      const { casesFile = "cases.jsonl", ...pack } = JSON.parse(read("pack.json"));
-      const rows = parseDataset(read(casesFile), pack);
-      return { pack, rows, replay: JSON.parse(read("replay.json")) };
+      const { casesFile = "cases.jsonl", ...pack } = objectValue(jsonText(read("pack.json")), "scenario pack");
+      if (!isScenarioPack(pack) || pack.kind === "reference") throw Error("Invalid domain scenario pack: " + f.name);
+      const rows = parseDataset(read(stringValue(casesFile)), pack);
+      return { pack, rows, replay: objectValue(jsonText(read("replay.json")),"fixture replay") };
     });
 }
-module.exports = { loadPacks, parseDataset, grade, hash };

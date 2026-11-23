@@ -1,5 +1,6 @@
+import type { RunManifest,RunResult,RunData } from "./run-types.cjs";
 // Summarize a saved run for inspection without modifying its original scores.
-function classify(manifest, result) {
+function classify(manifest:RunManifest, result:RunResult) {
   if (result.error) return { stage: "Runtime error", note: result.error };
   if (manifest.mode === "quick")
     return { stage: "Response", note: "Prompt completed" };
@@ -32,7 +33,7 @@ function classify(manifest, result) {
     ? { stage: "Passed", note: "Matched the recorded reference" }
     : { stage: "Grading", note: result.score.reasons.join(" · ") };
 }
-function diagnostics(run) {
+export function diagnostics(run:RunData) {
   return {
     id: run.manifest.id,
     status: run.status,
@@ -58,4 +59,3 @@ function diagnostics(run) {
     })),
   };
 }
-module.exports = { diagnostics };

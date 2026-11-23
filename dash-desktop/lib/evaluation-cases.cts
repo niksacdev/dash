@@ -1,14 +1,20 @@
-const { isDeepStrictEqual } = require("node:util");
+import { isDeepStrictEqual } from "node:util";
+import { isRecord, validTurns } from "./run-types.cjs";
+import type { CaseRow, CaseScore, RunResult, ScenarioPack, ReferencePack } from "./run-types.cjs";
+import type { LocalCandidate, ChatTurn } from "./runtime-types.cjs";
+import { exactTextScore,opikVersion,decodeGraderSpec } from "./graders.cjs";
+import type {GraderSpec,GraderEvidence} from "./graders.cjs";
+import {hash} from "./packs.cjs";
 
-const referencePack = {
+export const referencePack:ReferencePack = {
   id: "reference", kind: "reference", title: "Prompt and reference evaluation",
   description: "Compare answers to versioned evaluation cases and SME guidance.",
   system: "", outputSchema: null, metrics: [], scorer: "Case reference or selected grader",
 };
 
-function nonempty(value) { return typeof value === "string" && !!value.trim(); }
+function nonempty(value:unknown):value is string { return typeof value === "string" && !!value.trim(); }
 
-function validateCase(row, pack) {
+export function validateCase(row:Record<string,unknown>, pack:ScenarioPack) {
   for (const key of ["rubric", "sme_rationale"]) {
     if (row[key] != null && !nonempty(row[key])) throw Error(key + " must be nonempty text");
   }
@@ -20,7 +26,7 @@ function validateCase(row, pack) {
   if ((row.prompt !== undefined) === (row.messages !== undefined))
     throw Error("Provide either a prompt or a messages array ending with a user turn");
   if (row.messages !== undefined) {
-    if (!Array.isArray(row.messages) || !row.messages.length || row.messages.at(-1)?.role !== "user")
+    if (!validTurns(row.messages) || !row.messages.length || row.messages.at(-1)?.role !== "user")
       throw Error("messages must end with a user turn. Put the expected answer in reference");
     for (const [i,m] of row.messages.entries()) {
       if (!m || !["system","user","assistant"].includes(m.role) || !nonempty(m.content) ||
@@ -31,8 +37,8 @@ function validateCase(row, pack) {
   if (typeof row.reference === "string" && !row.reference.trim()) throw Error("The reference answer is empty");
 }
 
-function caseMessages(manifest, row) {
-  if (!manifest.pack) return [{role:"user", content:manifest.prompt}];
+export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:string|null;prompt?:string|null}, row:Partial<CaseRow>):ChatTurn[] {
+  if (!manifest.pack) return [{role:"user", content:manifest.prompt ?? ""}];
   const mapped = row.messages?.map(({role,content})=>({role,content}));
   if (manifest.pack.kind === "reference") {
     if (mapped) return mapped;
@@ -41,26 +47,25 @@ function caseMessages(manifest, row) {
   }
   const source = JSON.stringify({input:row.input, source_locator:row.source_locator});
   return [
-    {role:"system", content:manifest.effectiveSystem},
+    {role:"system", content:manifest.effectiveSystem ?? ""},
     {role:"user", content:row.prompt ? row.prompt + "\n\n" + source : source},
   ];
 }
 
-function graderEvidence(manifest, row, result) {
+export function graderEvidence(manifest:Parameters<typeof caseMessages>[0], row:CaseRow, result:RunResult):GraderEvidence {
   return {
     input: manifest.pack ? caseMessages(manifest,row) : manifest.prompt,
     reference: row.reference ?? row.gold ?? null,
     ...(row.sme_rationale && {sme_rationale:row.sme_rationale}),
     ...(row.rubric && {rubric:row.rubric}),
-    output:result.output, trajectory:result.trace.steps,
+    output:result.output ?? "", trajectory:result.trace.steps,
   };
 }
 
-async function exactReference(row, text) {
+export async function exactReference(row:CaseRow, text:string):Promise<CaseScore> {
   if (typeof row.reference === "string") {
-    const {exactTextScore, opikVersion} = require("./graders.cjs");
     const score = await exactTextScore(text, row.reference);
-    return {pass:score.value === 1, reasons:score.value === 1 ? [] : [score.reason], evaluator:opikVersion};
+    return {pass:score.value === 1, reasons:score.value === 1 ? [] : [score.reason ?? "Answer differs from the case reference"], evaluator:opikVersion};
   }
   let actual;
   try { actual = JSON.parse(text); } catch { return {pass:false,reasons:["Expected a JSON value matching the reference"]}; }
@@ -68,12 +73,11 @@ async function exactReference(row, text) {
   return {pass, reasons:pass ? [] : ["Answer differs from the case reference"]};
 }
 
-function caseJudgeSpec(judge) {
+export function caseJudgeSpec(judge:LocalCandidate|undefined):GraderSpec {
   if (!judge || !["lmstudio","ollama"].includes(judge.provider)) throw Error("Choose a connected local judge for the case references and rubrics.");
   const criteria = "Apply the case rubric to the candidate response. Use the SME reference and rationale as grading evidence. Accept equivalent wording unless the case explicitly calls for an exact format. On the 0 to 10 scale, award 10 for complete fulfillment, partial credit for partially meeting the criteria, or 0 for a materially wrong answer. Cite the decisive case evidence.";
   const identity = {id:judge.id,model:judge.model,provider:judge.provider,revision:judge.revision ?? null, nativeChat:!!judge.nativeChat, reasoningOff:!!judge.reasoningOff};
-  const spec = {name:"Case reference and rubric",type:"opik",opikEngine:require("./graders.cjs").opikVersion,category:"Dataset evaluation",version:2,criteria,threshold:0.8,judge:identity};
-  return {...spec,id:"case-judge/"+require("./packs.cjs").hash(spec)};
+  const spec = {name:"Case reference and rubric",type:"opik" as const,opikEngine:opikVersion,category:"Dataset evaluation",version:2,criteria,threshold:0.8,judge:identity};
+  return decodeGraderSpec({...spec,id:"case-judge/"+hash(spec)});
 }
 
-module.exports = { caseJudgeSpec, referencePack, validateCase, caseMessages, graderEvidence, exactReference };
