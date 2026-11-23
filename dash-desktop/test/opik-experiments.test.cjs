@@ -39,8 +39,13 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   const prompts=new Map(),promptVersions=new Map();
   const versions=new Map(), snapshots=new Map(), changes=[], failures=[];
   let interrupt=true, loseNextVersion=false, losePrompt=true;
+  // The managed local destination presents no API key even when a cloud key exists in the process.
+  const priorKey=process.env.OPIK_API_KEY;
+  process.env.OPIK_API_KEY="isolated-cloud-key";
+  t.after(()=>{if(priorKey===undefined)delete process.env.OPIK_API_KEY;else process.env.OPIK_API_KEY=priorKey;});
   const server=http.createServer(async(req,res)=>{
     try{
+      assert.doesNotMatch(JSON.stringify(req.headers),/isolated-cloud-key/);
       const chunks=[];for await(const c of req)chunks.push(c);
       const body=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
       const url=new URL(req.url,"http://localhost"), [group,sub,leaf]=url.pathname.replace("/api/v1/private/","").split("/");

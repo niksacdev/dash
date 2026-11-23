@@ -1,12 +1,32 @@
-const { PlanningRoute } = require("./planner-routing.cjs");
+import {z} from "opik";
+import {PlanningRoute,type PlannerAdapters} from "./planner-routing.cjs";
+import {isRecord,type RuntimeInventory} from "./runtime-types.cjs";
+import {loadAgent,agentPin} from "../agents/registry.cjs";
+import type {DatabaseSync} from "node:sqlite";
+import type {GraderDefinition} from "./grader-types.cjs";
+import type {Graders} from "./graders.cjs";
+import type {ApprovedPrompt} from "./outcome-workflow.cjs";
+import type {DatasetSnapshot,ScenarioPack} from "./run-types.cjs";
+import type {PlannerSettings} from "./planner-settings.cjs";
+interface DesignerBench {
+  active:unknown;designing:boolean;readonly adapters:PlannerAdapters;readonly db:DatabaseSync;readonly graders:Graders;
+  workflow:{get(id:string):ApprovedPrompt};dataset(id:string):DatasetSnapshot;pack(id:string):{pack:ScenarioPack};
+  plannerSettings:Pick<PlannerSettings,"fallback">;servers:RuntimeInventory[];
+}
+const designRequest=z.object({promptId:z.string().optional(),datasetId:z.string().optional(),objective:z.string().optional(),
+  metrics:z.string().optional(),industry:z.string().optional(),target:z.enum(["response","agent"]).optional()});
+const methodSchema=z.enum(["contains","exact","judge","field","trajectory"]);
+type Method=z.infer<typeof methodSchema>;
+const checkSchema=z.object({name:z.string(),method:methodSchema,metric:z.string(),criteria:z.string(),reason:z.string(),threshold:z.number().gt(0).lte(1)});
 
-function bounded(value, limit, label) {
+
+function bounded(value:unknown, limit:number, label:string):string {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
     throw Error("Enter " + label + " (up to " + limit + " characters).");
   return value.trim();
 }
 
-function gradingBrief(bench, request) {
+function gradingBrief(bench:DesignerBench, request:z.infer<typeof designRequest>) {
   const approved = request.promptId ? bench.workflow.get(request.promptId) : null;
   const datasetId = approved?.datasetId || request.datasetId;
   const dataset = datasetId ? bench.dataset(datasetId) : null;
@@ -17,15 +37,15 @@ function gradingBrief(bench, request) {
   const target = approved || dataset ? "response" : request.target === "agent" ? "agent" : "response";
   const references = dataset?.rows.map(r=>r.reference ?? r.gold) || [];
   const referenceFields = Object.keys(references[0] && typeof references[0]==="object" && !Array.isArray(references[0]) ? references[0] : {})
-    .filter(k=>references.every(item=>item && Object.hasOwn(item,k)));
+    .filter(k=>references.every(item=>isRecord(item) && Object.hasOwn(item,k)));
   return { objective, metrics, industry, target, criteria:approved?.requirements || [], referenceFields,
     outputFields:Object.keys(pack?.outputSchema?.properties || {}), existingScorer:pack?.kind==="reference"?null:pack?.scorer };
 }
 
 // A literal metric scores the same string on every case. Conditional instructions need a judge
 // or a labeled reference so a response taking another valid branch can earn full credit.
-function literalRules(brief) {
-  const rules = {exact:[], contains:[]};
+function literalRules(brief:ReturnType<typeof gradingBrief>) {
+  const rules:Record<"exact"|"contains",string[]> = {exact:[], contains:[]};
   for (const instruction of [brief.objective, ...brief.criteria, ...brief.metrics]) {
     if (/\b(if|when|whenever|unless|otherwise|depending|except|only for)\b/i.test(instruction)) continue;
     const clauses = instruction.split(/[.\n;]/);
@@ -41,13 +61,13 @@ function literalRules(brief) {
   return rules;
 }
 
-async function designGraderPlan(bench, request) {
+export async function designGraderPlan(bench:DesignerBench, request:unknown) {
   if (bench.active || bench.designing) throw Error("Wait for the current run or planning request to finish.");
   bench.designing = true;
   try {
-    const brief = gradingBrief(bench, request);
+    const brief = gradingBrief(bench, designRequest.parse(request));
     const literals = literalRules(brief);
-    const methods = Object.keys(literals).filter(method => literals[method].length > 0);
+    const methods:Method[] = (["exact","contains"] as const).filter(method=>literals[method].length>0);
     methods.push("judge");
     if (brief.referenceFields.length) methods.push("field");
     if (brief.target==="agent") methods.push("trajectory");
@@ -60,12 +80,14 @@ async function designGraderPlan(bench, request) {
       summary:{type:"string"},checks:{type:"array",maxItems:8,items:grade}
     }};
     const route = await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),()=>{});
-    const prompt = "You design inference graders. Read the objective, success measures, approved criteria and available evidence. Select the smallest set of independent checks needed. Explain coverage and unmeasurable business outcomes in summary. A rate or aggregate KPI is not an individual response score. Do not duplicate the existing scenario scorer. Zero checks is valid when evidence is insufficient. A judge rubric needs observable full, partial and zero-credit anchors. For exact or contains, criteria is only a literal explicitly required by the objective. For field, criteria is a JSON string with outputField and referenceField using the supplied field names. For trajectory, list only explicitly required tool names in order, one per line. Use only measures listed in metrics. Give each observable measure one focused check unless two independent checks are essential. Approved criteria describe the domain expert guidance the operator accepted. Never introduce additional industry policies or requirements. Use judge for conditional instructions and for evidence expressed in natural language. For contains or exact select one of the allowed literals for that method. Use no invented reference values, policy thresholds, or tool names.";
+    const role=loadAgent("grader-designer");
+    const prompt=role.instructions;
     const result = await route.ask("Grader designer",prompt,{...brief,allowedLiterals:literals},schema,1600,output=>{
       const summary = bounded(output.summary,1500,"a coverage explanation");
       if (!Array.isArray(output.checks) || output.checks.length>8) throw Error("Propose up to eight graders.");
       const names = new Set();
-      const checks = output.checks.map(item=>{
+      const checks = output.checks.map((value:unknown):GraderDefinition & {reason:string}=>{
+        const item=checkSchema.parse(value);
         const name = bounded(item.name,100,"a grader name"), method=item.method;
         if (names.has(name.toLowerCase()) || !methods.includes(method)) throw Error("Choose distinct names and compatible methods.");
         names.add(name.toLowerCase());
@@ -78,7 +100,7 @@ async function designGraderPlan(bench, request) {
         }
         if (!Number.isFinite(item.threshold) || item.threshold<=0 || item.threshold>1) throw Error("Choose a pass threshold between zero and one.");
         if (method==="field") {
-          const rule=JSON.parse(criteria);
+          const rule=z.object({outputField:z.string(),referenceField:z.string()}).parse(JSON.parse(criteria));
           if (!brief.referenceFields.includes(rule.referenceField) || (brief.outputFields.length && !brief.outputFields.includes(rule.outputField))) throw Error("Use a field present in the dataset schema and reference.");
         }
         return {name,category:item.metric.slice(0,100),industry:brief.industry,
@@ -87,11 +109,11 @@ async function designGraderPlan(bench, request) {
       });
       return {summary,checks};
     });
-    return {...result,designer:route.designer,industry:brief.industry};
+    return {...result,designer:route.designer,agent:agentPin(role),industry:brief.industry};
   } finally { bench.designing=false; }
 }
 
-function confirmGraderPlan(bench, definitions) {
+export function confirmGraderPlan(bench:DesignerBench, definitions:unknown) {
   if (!Array.isArray(definitions) || !definitions.length || definitions.length>8) throw Error("Choose one to eight graders.");
   const models=bench.servers.flatMap(s=>s.models).filter(m=>["lmstudio","ollama"].includes(m.provider));
   const db=bench.db;
@@ -103,4 +125,4 @@ function confirmGraderPlan(bench, definitions) {
     return ids;
   } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
-module.exports={designGraderPlan,confirmGraderPlan};
+
