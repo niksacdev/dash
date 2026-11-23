@@ -89,7 +89,7 @@ async function checkOverview(window, js, wait) {
     const bounds = await js(`(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect();
       const hero = rect('.hero'), controls = rect('#appearance'), count = rect('#overview-total-runs');
-      return {overflow:document.documentElement.scrollWidth - innerWidth,
+      return {overflow:document.documentElement.scrollWidth - document.documentElement.clientWidth,
         left: hero.left - rect('aside').right, top: hero.top - rect('header').bottom,
         controlsFit:controls.left >= hero.left && controls.right <= innerWidth, countFits:count.right <= innerWidth};
     })()`);
