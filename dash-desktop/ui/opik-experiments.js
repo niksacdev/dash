@@ -11,9 +11,9 @@ async function opikExperimentPanel(saved) {
   const finished=["completed","failed","canceled","interrupted"].includes(saved.status);
   const receipt=state.receipt;
   return '<section class="panel" aria-label="Opik experiments"><h3>Opik experiments</h3><p>'+esc(state.workspace)+' / '+esc(state.project)+' · '+esc(state.apiUrl)+'</p>'+
-    (state.state==="synced" && receipt ? '<p>Synced '+esc(receipt.caseCount)+' cases · dataset '+esc(receipt.datasetName)+' · '+esc(receipt.version || receipt.versionId)+'</p>'+
+    (state.state==="synced" && receipt ? '<p>Synced '+esc(receipt.caseCount)+' dataset cases · dataset '+esc(receipt.datasetName)+' · '+esc(receipt.version || receipt.versionId)+'</p>'+
       receipt.experiments.map(e=>'<div class="listrow"><div><strong>'+esc(e.candidate)+'</strong><small>'+esc(e.id)+'</small></div><span>'+esc(e.traces)+' traces · '+esc(e.scores)+' scores</span></div>').join("") :
-    '<p>Sync sends this run’s cases, reference answers and SME guidance, candidate inputs and outputs, trace timing, token usage and recorded scores to this destination.</p><button type="button" data-opik-sync="'+esc(id)+'" '+(!finished||running?'disabled':'')+'>'+
+    '<p>Sync sends the complete saved dataset snapshot, including case references and SME guidance. It sends candidate inputs, outputs, timing, token usage and scores for this run’s evaluated cases.</p><button type="button" data-opik-sync="'+esc(id)+'" '+(!finished||running?'disabled':'')+'>'+
     (running?'Syncing…':state.state==="partial"||state.state==="syncing"?'Resume saved run sync':'Sync saved run to Opik')+'</button>')+
     (state.hasDashboard?' <button type="button" data-opik-dashboard>Open Opik dashboard ↗</button>':'')+
     (opikWarnings.has(id)||receipt?.error?'<p role="alert">'+esc(opikWarnings.get(id)||receipt.error)+'</p>':'')+'</section>';

@@ -114,4 +114,4 @@ function lengthFailure(check, telemetry) {
   return `Output stopped at the generation or context limit${amount} (output allocation ${check.outputReserve}). The partial response was saved without a score. ${next}`;
 }
 
-module.exports = { assessCase, lengthFailure, autoOutputTarget, reasoningPolicy };
+module.exports = { assessCase, lengthFailure, autoOutputTarget, reasoningPolicy, prepareInput };

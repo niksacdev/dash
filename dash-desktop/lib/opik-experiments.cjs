@@ -1,7 +1,7 @@
 "use strict";
 
 const { createHash, randomBytes, randomUUID } = require("node:crypto");
-const { isDeepStrictEqual } = require("node:util");
+const {caseData,nativeVersion} = require("./opik-dataset-versions.cjs");
 const { caseMessages } = require("./evaluation-cases.cjs");
 
 const terminal = new Set(["completed", "failed", "canceled", "interrupted"]);
@@ -134,34 +134,34 @@ class OpikExperiments {
   }
   async send(api, saved, step) {
     const m=saved.manifest, projectName=this.config.project;
-    const rows=m.datasetId ? saved.cases : [{case_id:"prompt",prompt:m.prompt}];
-    if (!rows.length || new Set(rows.map(r=>r.case_id)).size!==m.caseIds.length)
+    const source=m.datasetId ? this.bench.dataset(m.datasetId) : null;
+    const rows=source?.rows ?? [{case_id:"prompt",prompt:m.prompt}];
+    const byId=new Set(rows.map(r=>r.case_id));
+    if(!rows.length || byId.size!==rows.length || m.caseIds.some(id=>!byId.has(id)))
       throw problem("The saved case snapshot is incomplete.");
-    const snapshot=digest([m.datasetId || "quick",rows]);
-    const datasetId=this.stableId("dataset/"+snapshot);
-    const datasetName=("DASH "+(m.datasetMetadata?.family || m.pack?.title || "Quick compare")).slice(0,95)+" · "+snapshot.slice(0,16);
+    const metadata=m.datasetMetadata || source?.metadata || {};
+    const family=source ? metadata.family || m.datasetId : m.approvedPrompt?.familyId || m.approvedPromptId || digest(m.prompt);
+    const industry=m.industry || metadata.industry || "Unclassified";
+    const normalized=value=>value.trim().toLowerCase();
+    const identity=digest([source?"dataset":"quick",normalized(industry),m.pack?.id || "",normalized(family)]);
+    const snapshot=digest([m.datasetId || m.approvedPromptId || "quick",rows]);
+    const datasetId=this.stableId("dataset-family/"+identity);
+    const proposedName=("DASH "+(source?family:"Quick compare")).slice(0,95)+" · "+identity.slice(0,16);
     const dsKey="dataset/"+datasetId;
-    const items=rows.map(row=>({id:this.stableId(dsKey+"/case/"+row.case_id),source:"sdk",data:row}));
-    const byCase=new Map(rows.map((row,i)=>[row.case_id,{row,item:items[i]}]));
-    await step(dsKey+"/create",async()=>{
+    const items=rows.map(row=>({source:"sdk",data:caseData(row)}));
+    const byCase=new Map(rows.map(row=>[row.case_id,row]));
+    const datasetName=await step(dsKey+"/registered-name",async()=>{
       const remote=await ensure(()=>api.datasets.getDatasetById(datasetId,{},options),
-        ()=>api.datasets.createDataset({id:datasetId,name:datasetName,projectName,description:"DASH case snapshot "+(m.datasetVersion || snapshot.slice(0,16)),tags:["DASH"]},options));
-      if (remote.name!==datasetName) throw problem("The destination dataset identity did not match the saved snapshot.");
+        ()=>api.datasets.createDataset({id:datasetId,name:proposedName,projectName,description:industry+" · "+(m.pack?.title || "Quick comparison prompts"),tags:["DASH"]},options));
+      if (!remote.name || (remote.id && remote.id!==datasetId)) throw problem("The destination dataset identity did not match this family.");
+      return remote.name;
     });
-    const groupId=this.stableId(dsKey+"/version");
-    for (const [i,chunk] of batches(items).entries())
-      await step(dsKey+"/batch/"+i,()=>api.datasets.createOrUpdateDatasetItems({datasetId,projectName,batchGroupId:groupId,items:chunk},options));
-    const version=await step(dsKey+"/verified-version",async()=>{
-      const latest=(await api.datasets.listDatasetVersions(datasetId,{page:1,size:1},options)).content?.[0];
-      if (!latest?.id || !latest.versionHash || latest.itemsTotal!==items.length) throw problem("Opik has not confirmed the complete dataset version. Retry sync after indexing.");
-      const actual=new Map();
-      for(let page=1;page<=Math.ceil(items.length/100);page++){
-        const result=await api.datasets.getDatasetItems(datasetId,{page,size:100,version:latest.versionHash,truncate:false},options);
-        for(const item of result.content || []) actual.set(item.id,item.data);
-      }
-      if(items.some(item=>!isDeepStrictEqual(actual.get(item.id),item.data))) throw problem("Opik has not confirmed the exact case content. Retry after its dataset index has updated.");
-      return {id:latest.id,hash:latest.versionHash,name:latest.versionName || latest.versionHash};
-    });
+    const version=await step(dsKey+"/snapshot/"+snapshot,()=>nativeVersion(api,datasetId,items,snapshot,{
+      dash_dataset_id:m.datasetId || "", dash_dataset_version:m.datasetVersion || rows[0].dataset_version || "",
+      dash_prompt_id:m.approvedPromptId || "",family:source?family:"Quick compare",industry,pack:m.pack?.id || "",
+      split:m.split || rows[0].split || "quick",change_note:metadata.changeNote || "",parent_snapshot:metadata.parentId || "",
+      category:metadata.category || "",source:metadata.source || "",dataset_tags:JSON.stringify(metadata.tags || []),
+    },options,problem));
     const experiments=[];
     for(const candidate of m.candidates){
       const eid=this.stableId("experiment/"+m.id+"/"+candidate.id), prefix="experiment/"+eid;
@@ -174,7 +174,7 @@ class OpikExperiments {
         const e=await ensure(()=>api.experiments.getExperimentById(eid,{},options),
           ()=>api.experiments.createExperiment({id:eid,name,projectName,datasetName,datasetVersionId:version.id,status:"running",
             metadata:{dash_run_id:m.id,candidate_id:candidate.id,model:candidate.model,revision:candidate.revision,industry:m.industry,
-              fixture:m.fixture,dataset_id:m.datasetId,case_set_hash:m.caseSetHash,approved_prompt_id:m.approvedPromptId,policy_hash:m.policyHash,
+              fixture:m.fixture,dataset_id:m.datasetId,dataset_version:m.datasetVersion,dataset_family:metadata.family,pinned_dataset_metadata:metadata,case_set_hash:m.caseSetHash,approved_prompt_id:m.approvedPromptId,policy_hash:m.policyHash,
               token_budget:m.tokenBudget,run_status:saved.status},tags:["DASH",...(m.fixture?["fixture"]:[])]},options));
         if(e.name!==name || (e.datasetId && e.datasetId!==datasetId))throw problem("An experiment ID did not match this candidate and dataset.");
       });
@@ -184,15 +184,28 @@ class OpikExperiments {
         if(!data)throw problem("A saved response has no matching source case.");
         const key=prefix+"/case/"+result.caseId, traceId=this.stableId(key+"/trace");
         const startTime=date(result.trace?.started),endTime=date(result.trace?.finished), tel=result.telemetry || {};
-        const input={messages:caseMessages({...m,effectiveSystem:m.effectiveSystem ?? m.pack?.system},data.row)};
+        let messages, provenance;
+        if(!m.fixture && Array.isArray(result.dispatchedMessages)) {
+          messages=result.dispatchedMessages;
+          provenance="Recorded adapter request";
+        } else {
+          const legacySystem=m.effectiveSystem ?? (m.pack ? m.pack.system+"\nOutput schema: "+JSON.stringify(m.pack.outputSchema)+
+            "\nReturn only the raw JSON object. Start with { and end with }. Omit Markdown code fences, labels, comments and surrounding prose." : null);
+          messages=caseMessages({...m,effectiveSystem:legacySystem},data);
+          if(!m.fixture && result.guardrail?.inputOptimization?.status==="compacted")
+            messages=require("./guardrail.cjs").prepareInput(messages,true).messages;
+          provenance=m.fixture ? "Fixture replay; reconstructed case only, no inference request" : result.error ?
+            "Reconstructed legacy input; dispatch may have failed" : "Reconstructed from the saved run, case and input optimization";
+        }
+        const input={messages};
         const output={response:result.output ?? null,...(result.error && {error:result.error})};
         const trace={id:traceId,projectName,name:result.caseId,startTime,endTime,input,output,source:"experiment",
           metadata:{dash_trace_id:result.trace?.id,dash_steps:result.trace?.steps,case_id:result.caseId,candidate_id:candidate.id,
             actual_usage:tel,guardrail:result.guardrail,finish_reason:result.finishReason,fixture:m.fixture,
-            input_provenance: m.pack && m.pack.kind!=="reference" && !m.effectiveSystem ? "Reconstructed from legacy scenario" : "Saved run manifest and case"}};
+            input_provenance:provenance}};
         if(Number.isFinite(tel.first_token_ms))trace.ttft=tel.first_token_ms;
         traces.push(trace);
-        if(!m.fixture){
+        if(!m.fixture && (!result.error || Array.isArray(result.dispatchedMessages) || result.telemetry?.input_tokens!=null)){
           const usage={};
           if(Number.isFinite(tel.input_tokens))usage.prompt_tokens=tel.input_tokens;
           if(Number.isFinite(tel.output_tokens))usage.completion_tokens=tel.output_tokens;
@@ -201,7 +214,7 @@ class OpikExperiments {
             provider:candidate.provider,startTime,endTime,input,output,source:"experiment",usage,
             ...(Number.isFinite(tel.cost_usd) && {totalEstimatedCost:tel.cost_usd})});
         }
-        links.push({id:this.stableId(key+"/item"),experimentId:eid,datasetItemId:data.item.id,traceId,projectName});
+        links.push({id:this.stableId(key+"/item"),experimentId:eid,datasetItemId:version.caseIds[result.caseId],traceId,projectName});
         for(const metric of saved.report?.metrics || []){
           const evidence=metric.caseScores.find(r=>r.caseId===result.caseId)?.values.find(v=>v.candidateId===candidate.id);
           if(Number.isFinite(evidence?.score)) scores.push({id:traceId,projectName,name:metric.label+" ["+metric.id.slice(-8)+"]",value:evidence.score,
