@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "id": "financial-services-expert",
+      "version": 1,
+      "path": "prompts/financial-services-expert.md",
+      "domain": "Financial Services",
+      "role": "expert",
+      "sources": [
+        {
+          "title": "SEC staff interpretations of non-GAAP financial measures",
+          "url": "https://www.sec.gov/rules-regulations/staff-guidance/corporation-finance-interpretations/non-gaap-financial-measures"
+        },
+        {
+          "title": "SEC EDGAR filing and XBRL APIs",
+          "url": "https://www.sec.gov/search-filings/edgar-application-programming-interfaces"
+        }
+      ],
+      "legacyHash": "b9f6e634236ee26c03970a98ca9e8be420c5029d90256ecca2b66d314df3411c"
+    },
+    {
+      "id": "financial-services-implementer",
+      "version": 1,
+      "path": "prompts/financial-services-implementer.md",
+      "domain": "Financial Services",
+      "role": "implementer",
+      "sources": [
+        {
+          "title": "SEC EDGAR filing and XBRL APIs",
+          "url": "https://www.sec.gov/search-filings/edgar-application-programming-interfaces"
+        },
+        {
+          "title": "SEC staff interpretations of non-GAAP financial measures",
+          "url": "https://www.sec.gov/rules-regulations/staff-guidance/corporation-finance-interpretations/non-gaap-financial-measures"
+        }
+      ],
+      "legacyHash": "d3b571224d848fc2ea8f62abc120768053f6f59d2e516a9824cb2617a3040199"
+    },
+    {
+      "id": "manufacturing-expert",
+      "version": 1,
+      "path": "prompts/manufacturing-expert.md",
+      "domain": "Manufacturing",
+      "role": "expert",
+      "sources": [
+        {
+          "title": "NIST assessment of conformity, decision rules and risk",
+          "url": "https://www.nist.gov/publications/assessment-conformity-decision-rules-and-risk-analysis"
+        },
+        {
+          "title": "JPL supplier quality clause QC120 on reporting nonconforming product",
+          "url": "https://qaexternal.jpl.nasa.gov/qcprint.php?clause=QC120"
+        }
+      ],
+      "legacyHash": "b324a8f5a438ee2b36be94cae6e09684d15c1d5fcbe18817993eb09a7439dd68"
+    },
+    {
+      "id": "manufacturing-implementer",
+      "version": 1,
+      "path": "prompts/manufacturing-implementer.md",
+      "domain": "Manufacturing",
+      "role": "implementer",
+      "sources": [
+        {
+          "title": "NIST assessment of conformity, decision rules and risk",
+          "url": "https://www.nist.gov/publications/assessment-conformity-decision-rules-and-risk-analysis"
+        },
+        {
+          "title": "JPL supplier quality clause QC120 on reporting nonconforming product",
+          "url": "https://qaexternal.jpl.nasa.gov/qcprint.php?clause=QC120"
+        }
+      ],
+      "legacyHash": "e29d2eaef4eab1b182cd90782e5872fb16b1d6b6fb98e1220aeafbbe6ac4f1dc"
+    },
+    {
+      "id": "general-expert",
+      "version": 1,
+      "path": "prompts/general-expert.md",
+      "domain": "General",
+      "role": "expert",
+      "sources": [],
+      "legacyHash": "0d376651ef10fa47cb480debf2ab682f9171eb83e78164cb91ab67f772bc000a"
+    },
+    {
+      "id": "general-implementer",
+      "version": 1,
+      "path": "prompts/general-implementer.md",
+      "domain": "General",
+      "role": "implementer",
+      "sources": [],
+      "legacyHash": "4e2825660bee49d7857a33cff2fcd29aa0c71011266cb1fbc48c42a1e3f0c6e8"
+    },
+    {
+      "id": "prompt-guide",
+      "version": 1,
+      "path": "prompts/prompt-guide.md"
+    },
+    {
+      "id": "workflow-router",
+      "version": 1,
+      "path": "prompts/workflow-router.md"
+    },
+    {
+      "id": "workflow-expert",
+      "version": 1,
+      "path": "prompts/workflow-expert.md"
+    },
+    {
+      "id": "workflow-implementer",
+      "version": 1,
+      "path": "prompts/workflow-implementer.md"
+    },
+    {
+      "id": "grader-designer",
+      "version": 1,
+      "path": "prompts/grader-designer.md"
+    },
+    {
+      "id": "report-analyzer",
+      "version": 1,
+      "path": "prompts/report-analyzer.md"
+    },
+    {
+      "id": "report-reporter",
+      "version": 1,
+      "path": "prompts/report-reporter.md"
+    },
+    {
+      "id": "workflow-expert-assignment",
+      "version": 1,
+      "path": "prompts/workflow-expert-assignment.md"
+    },
+    {
+      "id": "workflow-implementer-assignment",
+      "version": 1,
+      "path": "prompts/workflow-implementer-assignment.md"
+    }
+  ]
+}

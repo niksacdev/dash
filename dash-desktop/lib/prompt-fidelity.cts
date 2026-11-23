@@ -1,6 +1,8 @@
+export interface GuidanceContext { objective:string; dataset?:{system?:string;outputSchema?:unknown}|null; domain?:string|null; expert?:boolean }
+export interface GuidanceReview { text:string; omitted:number; reasons:string[]; supplementSource?:string }
 // DASH sends the operator's objective verbatim. A generated instruction that
 // restates quantities or policy is useful only when its meaning is grounded.
-function normalized(text) {
+function normalized(text:unknown) {
   return String(text).normalize("NFKC").replace(/[\u2010-\u2015]/g,"-").toLowerCase().replace(/\s+/g, " ").trim();
 }
 const scoring = /\b(?:grader|grading rubric|dataset[- ](?:wide|level)|(?:over|across) (?:all |the )?(?:cases|records|responses)|(?:pass|failure|error|referral|review|acceptance|detection|success) rates?|(?:false|true) (?:accepts?|positives?|negatives?|releases?)|missed (?:out[- ]of[- ]limit|nonconforming) (?:findings|items)|(?:metrics?|percentages?) (?:across|over|for all))\b/i;
@@ -13,10 +15,10 @@ const dependent = /\b(?:as (?:described|specified|calculated) (?:above|below)|th
 const unrequestedFields = ["uncertainty", "sampling plan", "drawing revision", "calibration", "tolerance", "safety factor"];
 const externalAuthority = /\b(?:NIST|JPL|ISO|EDGAR|XBRL|SEC|ASTM|ASME)\b/g;
 const protectedWarning = /^(?:do not|don't|never|avoid)\s+(?:assum|infer|invent|apply|use|calculat|comput|imput)/i;
-function sentencesOf(text) {
+function sentencesOf(text:string) {
   return text.replace(/^\s*(?:[-*]\s+|\d+[.)]\s+)/gm, "").split(/(?<=[.!?])\s+|[;\r\n]+/).map(s=>s.trim()).filter(Boolean);
 }
-function inspectionCheck(domain, objective, dataset) {
+export function inspectionCheck(domain:string|null|undefined, objective:string, dataset:GuidanceContext['dataset']) {
   const task = objective + " " + (dataset?.system || "");
   if (domain !== "Manufacturing" || !/\b(?:limit|tolerance|specification)\b/i.test(task) || !/\b(?:measur\w*|reading|dimension)\b/i.test(task)) return null;
   return {
@@ -25,13 +27,13 @@ function inspectionCheck(domain, objective, dataset) {
     source:"DASH built-in manufacturing inspection check",
   };
 }
-function candidateGuidance(prompt, {objective, dataset, domain, expert = false}) {
+export function candidateGuidance(prompt:string, {objective, dataset, domain, expert = false}:GuidanceContext):GuidanceReview {
   // Deliberately exclude expert proposals, previous runs and hidden case data.
   // User-entered budgets specify API limits and cannot become inspection limits.
-  const sources = [objective, dataset?.system].filter(Boolean);
+  const sources = dataset?.system ? [objective, dataset.system] : [objective];
   if (dataset?.outputSchema) {
     // Scalar schema descriptions may contain genuine task instructions.
-    const walk = value => {
+    const walk = (value:unknown):void => {
       if (typeof value === "string") sources.push(value);
       else if (value && typeof value === "object") Object.values(value).forEach(walk);
     };
@@ -69,4 +71,4 @@ function candidateGuidance(prompt, {objective, dataset, domain, expert = false})
     throw Error("the implementer added unsupported rules, quantities or cross-case scoring; write standalone per-case guidance using only stated facts");
   return { text, omitted:omissions.length, reasons:[...new Set(omissions)] };
 }
-module.exports = { candidateGuidance, inspectionCheck };
+

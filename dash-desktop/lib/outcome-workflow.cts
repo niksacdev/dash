@@ -1,50 +1,27 @@
-const { randomUUID } = require("node:crypto");
-const { hash } = require("./packs.cjs");
-const { profiles } = require("./domain-profiles.cjs");
-const { candidateGuidance, inspectionCheck } = require("./prompt-fidelity.cjs");
-const { PlanningRoute, repetitive, tokens } = require("./planner-routing.cjs");
-
-const domains = ["Financial Services", "Manufacturing", "General"];
+import {randomUUID} from "node:crypto";
+import type {DatabaseSync} from "node:sqlite";
+import {hash} from "./packs.cjs";
+import {RoleStore,transaction,type DomainRole} from "./domain-profiles.cjs";
+import {bundledAgents,agentPin,isRecord,domains,isDomain,type Domain,type AgentRegistry} from "../agents/registry.cjs";
+import {candidateGuidance,inspectionCheck} from "./prompt-fidelity.cjs";
+import {PlanningRoute,repetitive,tokens,type PlannerAdapters,type PlannerOptions,type PlannerIdentity,type PlanningAttempt} from "./planner-routing.cjs";
+import {required,optional,lines,cap,decodeRequest,decodeApprovedPrompt,type ApprovedPrompt,type DesignRequest,type DesignContext,type PlanningPurpose,type ScenarioContract,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
+export {decodeApprovedPrompt} from "./outcome-contracts.cjs";
+export type {ApprovedPrompt,PromptDraft,DesignRequest,DesignContext,PlanningPurpose,MetricSuggestion} from "./outcome-contracts.cjs";
+export type {DomainRole} from "./domain-profiles.cjs";
 const string = { type: "string" };
 const strings = { type: "array", minItems: 1, maxItems: 3, items: { type: "string", maxLength: 180 } };
-function objectSchema(properties) {
+function objectSchema(properties:Record<string,unknown>) {
   return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
 }
 const routeSchema = objectSchema({ domain: { type: "string", enum: domains } });
 const measureSchema = objectSchema({ requirements: strings, metrics: strings });
 const expertSchema = objectSchema({ title: string, metrics: strings, requirements: strings });
 const implementerSchema = objectSchema({ prompt: { type: "string", maxLength: 900 } });
-const expertEvaluationInstructions = [
-  "Your task is to design an evaluator. Inspect what the ANSWER does, never inventory what happens to appear in an input document. The operator's objective controls the scope.",
-  "For each explicitly requested action, write a single-case pass test under requirements. State what in the candidate answer must match what in the supplied case. Then write the corresponding cross-case metric under metrics in the same order. Each metric measures correct decisions, errors, or coverage of its pass test.",
-  "For an extraction, compare the answer value to the case evidence. For a citation, verify that its source supports the answer. For a requested exception, count correct referrals among cases containing that exception. Apply only the relevant checks and name the specific business field or exception requested.",
-  "Use specific terms from this operator's goal. Match each metric to its requirement. Use only supplied case material and the user's measures. External filings, conversions, targets and other domain-profile examples apply only if the operator asks for them. All quantities are proposed checks for a future run.",
-].join("\n");
-
-
-function required(value, name, max = 24000) {
-  if (typeof value !== "string" || !value.trim() || value.length > max)
-    throw Error(name + " must be text between 1 and " + max + " characters.");
-  return value.trim();
-}
-function optional(value, name, max) {
-  return value == null || value === "" ? "" : required(value, name, max);
-}
-function lines(value, label, maxLength = 1000, minimum = 1) {
-  if (!Array.isArray(value) || value.length < minimum || value.length > 8)
-    throw Error(label + " must contain between " + minimum + " and eight entries.");
-  return [...new Set(value.map(x => required(x, label, maxLength)))];
-}
-function cap(value, name) {
-  if (value == null) return null;
-  if (!Number.isSafeInteger(value) || value < 1 || value > 1000000)
-    throw Error(name + " must be a whole number between 1 and 1,000,000 tokens.");
-  return value;
-}
-function contractHash(pack) {
+export function contractHash(pack:Pick<ScenarioContract,'id'|'system'|'outputSchema'|'metrics'>) {
   return hash({ id:pack.id, system:pack.system, outputSchema:pack.outputSchema, metrics:pack.metrics });
 }
-function datasetContext(request, context) {
+function datasetContext(request:DesignRequest, context:DesignContext) {
   if (request.mode === "quick") {
     if (request.datasetId) throw Error("Use a dataset run to attach a dataset.");
     return null;
@@ -58,16 +35,12 @@ function datasetContext(request, context) {
     industry:context.industry ?? null, version:context.version ?? null, split:context.split ?? null,
   };
 }
-function configuredRole(profile, version, instructions) {
-  const spec = { domain:profile.domain, role:profile.role, instructions, sources:profile.sources };
-  return { ...spec, version, hash:hash(spec) };
-}
-function titleFor(raw, objective) {
+function titleFor(raw:unknown, objective:string) {
   if (typeof raw === "string" && raw.trim() && raw.length <= 180 && !repetitive(raw)) return raw.trim();
   const sentence = objective.replace(/\s+/g, " ").trim();
   return sentence.length <= 96 ? sentence : sentence.slice(0, 95).trimEnd() + "…";
 }
-function measureLines(value, label) {
+function measureLines(value:unknown, label:string) {
   const entries = lines(value, label);
   for (const entry of entries) {
     const namedMetric = label === "Expert metrics" && /^(precision|recall|latency|throughput|accuracy|mae|rmse|f1)$/i.test(entry);
@@ -80,10 +53,10 @@ function measureLines(value, label) {
 // A pass rate for that specific criterion has a defined numerator and denominator.
 const commonMeasureWords = new Set(("a an and are as at by case cases count each for from in is it of on or per rate records " +
   "responses results share supplied that the their this to with answers candidate correctly correct applicable accuracy").split(" "));
-function measureTerms(text) {
+function measureTerms(text:string) {
   return new Set(tokens(text).filter(t => t.length > 2 && !commonMeasureWords.has(t)).map(t => t.replace(/s$/, "")));
 }
-function evaluationMeasures(result, objective, requestedMetrics, domain, dataset) {
+function evaluationMeasures(result:Record<string,unknown>, objective:string, requestedMetrics:string, domain:Domain, dataset:ReturnType<typeof datasetContext>):Findings {
   const original = measureLines(result?.requirements ?? result?.criteria, "Expert criteria");
   const criteria = [], omissions = [];
   for (const criterion of original) {
@@ -115,72 +88,47 @@ function evaluationMeasures(result, objective, requestedMetrics, domain, dataset
   });
   return { title:titleFor(result?.title, objective), metrics, requirements:criteria, ...(omissions.length && {criteriaReview:{omitted:original.length-(supplementSource ? 0 : criteria.length),reasons:[...new Set(omissions)],supplementSource}}) };
 }
-function metricList(typed, suggested) {
+function metricList(typed:string, suggested:string[]) {
   return [...new Set([...(typed ? [typed] : []), ...suggested])].slice(0, 8);
 }
-function transaction(db, fn) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = fn();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+interface Findings {title:string;metrics:string[];requirements:string[];criteriaReview?:{omitted:number;reasons:string[];supplementSource?:string}}
+interface CachedSuggestion {scope:string;domain:Domain;domainSource:string;expert:DomainRole;designer:PlannerIdentity;findings:Findings;planningAttempts:PlanningAttempt[]}
+function decodeSaved(spec:unknown):ApprovedPrompt {
+  if (typeof spec!=="string") throw Error("Invalid saved prompt.");
+  return decodeApprovedPrompt(JSON.parse(spec));
 }
-
-class OutcomeWorkflow {
-  constructor(db, adapters, planning = {}) {
-    this.db = db;
-    this.adapters = adapters;
-    this.planning = planning;
-    this.drafts = new Map();
-    this.suggestions = new Map();
-    this.controllers = new Set();
-    db.exec([
-      "CREATE TABLE IF NOT EXISTS outcome_agent_roles(domain TEXT NOT NULL, role TEXT NOT NULL, version INTEGER NOT NULL, spec TEXT NOT NULL, PRIMARY KEY(domain, role, version))",
-      "CREATE TABLE IF NOT EXISTS outcome_prompts(id TEXT PRIMARY KEY, family TEXT NOT NULL, version INTEGER NOT NULL, draft TEXT UNIQUE NOT NULL, approval_hash TEXT NOT NULL, spec TEXT NOT NULL, UNIQUE(family, version))",
-    ].join(";"));
-    const seed = db.prepare("INSERT OR IGNORE INTO outcome_agent_roles(domain,role,version,spec) VALUES(?,?,1,?)");
-    for (const profile of profiles)
-      seed.run(profile.domain, profile.role, JSON.stringify(configuredRole(profile, 1, profile.instructions)));
+export class OutcomeWorkflow {
+  private readonly drafts = new Map<string,PromptDraft>();
+  private readonly suggestions = new Map<string,CachedSuggestion>();
+  private readonly controllers = new Set<AbortController>();
+  private readonly roleStore:RoleStore;
+  constructor(private readonly db:DatabaseSync,private readonly adapters:PlannerAdapters,private readonly planning:PlannerOptions={},
+              private readonly registry:AgentRegistry=bundledAgents) {
+    this.roleStore=new RoleStore(db,registry);
+    db.exec("CREATE TABLE IF NOT EXISTS outcome_prompts(id TEXT PRIMARY KEY, family TEXT NOT NULL, version INTEGER NOT NULL, draft TEXT UNIQUE NOT NULL, approval_hash TEXT NOT NULL, spec TEXT NOT NULL, UNIQUE(family, version))");
   }
-  roles() {
-    return this.db.prepare("SELECT a.spec FROM outcome_agent_roles a JOIN (SELECT domain,role,MAX(version) AS version FROM outcome_agent_roles GROUP BY domain,role) b USING(domain,role,version) ORDER BY domain,role")
-      .all().map(row => JSON.parse(row.spec));
-  }
-  saveRole({ domain, role, instructions, expectedVersion }) {
-    const profile = profiles.find(p => p.domain === domain && p.role === role);
-    if (!profile) throw Error("Choose an existing domain agent.");
-    const updated = required(instructions, "Agent instructions", 12000);
-    return transaction(this.db, () => {
-      const row = this.db.prepare("SELECT spec FROM outcome_agent_roles WHERE domain=? AND role=? ORDER BY version DESC LIMIT 1").get(domain, role);
-      const current = JSON.parse(row.spec);
-      if (current.version !== expectedVersion) throw Error("This agent changed. Refresh its instructions before saving.");
-      if (current.instructions === updated) return current;
-      const next = configuredRole(current, current.version + 1, updated);
-      this.db.prepare("INSERT INTO outcome_agent_roles VALUES(?,?,?,?)").run(domain, role, next.version, JSON.stringify(next));
-      return next;
-    });
-  }
-  get(id) {
+  roles() {return this.roleStore.roles();}
+  saveRole(input:unknown) {return this.roleStore.save(input);}
+  get(id:unknown):ApprovedPrompt {
     const row = typeof id === "string" && this.db.prepare("SELECT spec FROM outcome_prompts WHERE id=?").get(id);
     if (!row) throw Error("This approved prompt could not be found. Refresh the prompt catalogue.");
-    return JSON.parse(row.spec);
+    return decodeSaved(row.spec);
   }
   list() {
-    return this.db.prepare("SELECT spec FROM outcome_prompts ORDER BY rowid DESC").all().map(row => JSON.parse(row.spec));
+    return this.db.prepare("SELECT spec FROM outcome_prompts ORDER BY rowid DESC").all().map(row => decodeSaved(row.spec));
   }
-  history(id) {
+  history(id:unknown) {
     const { familyId } = this.get(id);
-    return this.db.prepare("SELECT spec FROM outcome_prompts WHERE family=? ORDER BY version").all(familyId).map(row => JSON.parse(row.spec));
+    return this.db.prepare("SELECT spec FROM outcome_prompts WHERE family=? ORDER BY version").all(familyId).map(row => decodeSaved(row.spec));
   }
   cancel() {
     for (const controller of this.controllers) controller.abort();
   }
-  async design(request, context = {}, purpose = "draft") {
-    if (!request || !["quick", "dataset"].includes(request.mode)) throw Error("Choose Quick compare or Dataset run.");
+  design(input:unknown,context?:DesignContext,purpose?:"draft"):Promise<PromptDraft>;
+  design(input:unknown,context:DesignContext,purpose:"suggest"):Promise<MetricSuggestion>;
+  design(input:unknown,context:DesignContext,purpose:PlanningPurpose):Promise<PromptDraft|MetricSuggestion>;
+  async design(input:unknown, context:DesignContext = {}, purpose:PlanningPurpose = "draft"):Promise<PromptDraft|MetricSuggestion> {
+    const request=decodeRequest(input);
     const objective = required(request.objective, "Business outcome", 12000);
     const requestedMetrics = optional(request.metrics, "Business metrics", 2000);
     const inputCap = cap(request.inputCap, "Input budget");
@@ -188,14 +136,14 @@ class OutcomeWorkflow {
     const dataset = datasetContext(request, context);
     const selectedDomain = optional(request.domain, "Planning domain", 100);
     const manual = selectedDomain && selectedDomain.toLowerCase() !== "auto" ? selectedDomain : null;
-    if (manual && !domains.includes(manual)) throw Error("Choose Financial Services, Manufacturing or General.");
-    const pinned = domains.includes(dataset?.industry) ? dataset.industry : null;
+    if (manual && !isDomain(manual)) throw Error("Choose Financial Services, Manufacturing or General.");
+    const pinned = isDomain(dataset?.industry) ? dataset.industry : null;
     if (pinned && manual && manual !== pinned) throw Error("Use the domain assigned to this dataset snapshot.");
     const parent = request.parentId ? this.get(request.parentId) : null;
     if (parent && (parent.mode !== request.mode || parent.datasetId !== (dataset?.datasetId ?? null)))
       throw Error("Revise this prompt with its original run type and dataset snapshot.");
     const scope = hash([request.mode, objective, manual, dataset?.datasetId, dataset?.contractHash, parent?.id, context.priorRun?.id]);
-    const prior = request.suggestionId && this.suggestions.get(request.suggestionId);
+    const prior = request.suggestionId ? this.suggestions.get(request.suggestionId) : undefined;
     if (request.suggestionId && prior?.scope !== scope)
       throw Error("The objective or scenario changed, or the suggestions expired. Choose Suggest Metrics again.");
     const choices = request.measures == null ? null : {
@@ -203,7 +151,7 @@ class OutcomeWorkflow {
       criteria: lines(request.measures.criteria, "Success criteria", 2000, 0),
     };
     // Snapshot IDs, versions and splits describe the catalogue. They are never case evidence.
-    const publicTask = dataset && {
+    const publicTask:(Pick<ScenarioContract,'title'|'description'|'system'|'outputSchema'|'metrics'> & {scoringDefinitions?:Record<string,string>})|null = dataset && {
       title:dataset.title, description:dataset.description, system:dataset.system,
       outputSchema:dataset.outputSchema, metrics:dataset.metrics,
     };
@@ -215,7 +163,7 @@ class OutcomeWorkflow {
         [review]: "Fraction of scored responses that either require review or fail the grader.",
       };
     }
-    const brief = { mode:request.mode, objective, requestedMetrics, inputCap, outputCap, dataset:publicTask };
+    const brief:{mode:DesignRequest['mode'];objective:string;requestedMetrics:string;inputCap:number|null;outputCap:number|null;dataset:typeof publicTask;successCriteria?:string[];previousApproved?:{prompt:string;metrics:string[]};priorRun?:DesignContext['priorRun']} = { mode:request.mode, objective, requestedMetrics, inputCap, outputCap, dataset:publicTask };
     if (choices) {
       brief.requestedMetrics = choices.metrics.join("\n");
       brief.successCriteria = choices.criteria;
@@ -230,33 +178,35 @@ class OutcomeWorkflow {
     try {
       const route = await PlanningRoute.start(this.adapters, this.planning, controller.signal,
         event => context.onStage?.({ mode:request.mode, ...event }));
-      const ask = (...args) => route.ask(...args);
+      const ask = route.ask.bind(route);
+      const promptAsset=(id:string)=>this.registry.get(id);
 
-      let domain = prior?.domain || pinned || manual;
+      let domain:Domain|null=prior?.domain || pinned || (isDomain(manual)?manual:null);
       const domainSource = prior?.domainSource || (pinned ? "dataset" : manual ? "user" : "inferred");
       if (!domain) {
         domain = await ask("Domain routing",
-          "Select the domain that best fits the outcome and its task context. Use General for unsupported industries or ambiguous work. Do not perform the task.",
+          promptAsset("workflow-router").instructions,
           { objective, requestedMetrics, scenario:dataset?.title ?? null, datasetIndustry:dataset?.industry ?? null }, routeSchema, 48, result => {
-            if (!domains.includes(result?.domain)) throw Error("the router returned an unknown domain");
+            if (!isDomain(result.domain)) throw Error("the router returned an unknown domain");
             return result.domain;
           });
       }
       const agents = configs.filter(c => c.domain === domain);
       const expert = prior?.expert ?? agents.find(c => c.role === "expert");
       const implementer = agents.find(c => c.role === "implementer");
-      const grounding = role => role.instructions + "\nReference material behind this profile: " + JSON.stringify(role.sources);
+      if (!expert || !implementer) throw Error("Missing configured domain role.");
+      const grounding = (role:DomainRole) => role.instructions + "\nReference material behind this profile: " + JSON.stringify(role.sources);
       const findings = prior?.findings ?? await ask(domain + " expert", grounding(expert) +
-        "\n" + expertEvaluationInstructions +
+        "\n" + promptAsset("workflow-expert").instructions +
         (purpose === "suggest" ? "\nReturn only the metrics and requirements arrays." : "\nGive the brief a short title."),
-        { ...brief, assignment:"Grade only these requested actions: " + objective +
-          ". Return matching pass tests and answer-quality metrics. Skip background details and unrequested procedures." },
+        { ...brief, assignment:promptAsset("workflow-expert-assignment").instructions.replace("{{objective}}",()=>objective) },
         purpose === "suggest" ? measureSchema : expertSchema, 550, result => evaluationMeasures(result, objective, requestedMetrics, domain, dataset));
       const expertDesigner = prior?.designer ?? route.designer;
+      if (!expertDesigner) throw Error("Missing expert planning identity.");
       if (purpose === "suggest") {
         const id = randomUUID();
         this.suggestions.set(id, { scope, domain, domainSource, expert, designer:expertDesigner, findings, planningAttempts:route.attempts });
-        if (this.suggestions.size > 64) this.suggestions.delete(this.suggestions.keys().next().value);
+        if (this.suggestions.size > 64) this.suggestions.delete(this.suggestions.keys().next().value ?? '');
         return structuredClone({ id, domain, expertVersion:expert.version, model:expertDesigner.model, designer:expertDesigner, planningAttempts:route.attempts,
           metrics:findings.metrics, criteria:findings.requirements, criteriaReview:findings.criteriaReview });
       }
@@ -264,39 +214,42 @@ class OutcomeWorkflow {
       const requirements = choices ? choices.criteria : findings.requirements;
       const expertBrief = { title:findings.title, metrics: choices ? metrics : findings.metrics, requirements };
       const guidance = await ask(domain + " implementer", grounding(implementer) +
-        "\nWrite three to six short sentences of executable instructions addressed to the evaluated model. The original business outcome is included verbatim by DASH, so do not repeat the objective or its input material. Specify observable requirements, evidence and handling of missing input where relevant. Use the selected metrics and success criteria to shape the instructions. Leave aggregate scoring to the evaluator. Respect both optional token budgets. If a prior run contains a tokenConstraint or truncatedOutputs, reduce repetition and request a concise answer that fits the indicated budget. Preserve the objective, source material and required fields. For a dataset, the case input and protected response contract will be supplied at dispatch. Refer to case-specific fields by their meaning and leave their values to each case. Do not repeat the schema or its field list, change the grader, add an answer, invent facts, use placeholder syntax or manufacture a case. Return the instructions in prompt.",
-        { ...brief, expertBrief, metrics, assignment:"Write two standalone sentences. In the first, tell the candidate where to find the requested field in the supplied case. In the second, ask it to explain its decision using the supplied evidence. Leave the decision to the candidate. Use only the values, units and decision rules explicitly given in the case or task. Refer to them by meaning without restating their numbers. Never invent a tolerance or assume customary practice. The metrics belong to the evaluator; omit cross-case counts and rates. Ask for review if a necessary rule is absent." },
+        "\n" + promptAsset("workflow-implementer").instructions,
+        { ...brief, expertBrief, metrics, assignment:promptAsset("workflow-implementer-assignment").instructions },
         implementerSchema, 650, result => {
           const prompt = required(result?.prompt, "Implementer prompt", 1500);
           if (new Set(tokens(prompt)).size < 3) throw Error("the implementer returned an incomplete instruction");
           return candidateGuidance(prompt, {objective,dataset,domain});
         });
-      const draft = {
+      const draft:PromptDraft = {
         draftId:randomUUID(), mode:request.mode, objective, requestedMetrics, metrics, inputCap, outputCap,
         domain, domainSource, title:findings.title, requirements,
         prompt:objective + "\n\n" + guidance.text, criteriaReview:findings.criteriaReview ?? null, guidanceReview:{omitted:guidance.omitted,reasons:guidance.reasons,...(guidance.supplementSource && {supplementSource:guidance.supplementSource})}, parentId:parent?.id ?? null,
         datasetId:dataset?.datasetId ?? null, packId:dataset?.packId ?? null, contractHash:dataset?.contractHash ?? null, dataset,
         sourceRunId:brief.priorRun?.id ?? null, priorRun:brief.priorRun ?? null,
         suggestions:prior ? { domain, expertVersion:expert.version, designer:prior.designer, metrics:findings.metrics, criteria:findings.requirements } : null,
-        agents:[expert, implementer].map(({domain,role,version,hash,sources}) => ({domain,role,version,hash,sources})),
+        agents:[expert, implementer].map(({domain,role,version,hash,sources,origin,bundle}) => ({domain,role,version,hash,sources,origin,bundle})),
+        workflowAgents:[...(domainSource==="inferred"?["workflow-router"]:[]),"workflow-expert","workflow-expert-assignment","workflow-implementer","workflow-implementer-assignment"].map(id=>agentPin(promptAsset(id))),
         designer:route.designer, expertDesigner, planningAttempts:[...(prior?.planningAttempts ?? []), ...route.attempts],
         createdAt:new Date().toISOString(),
       };
       this.drafts.set(draft.draftId, draft);
-      if (this.drafts.size > 64) this.drafts.delete(this.drafts.keys().next().value);
+      if (this.drafts.size > 64) this.drafts.delete(this.drafts.keys().next().value ?? '');
       return structuredClone(draft);
     } finally {
       this.controllers.delete(controller);
     }
   }
-  approve({ draftId, prompt, metrics }) {
+  approve(input:unknown):ApprovedPrompt {
+    if (!isRecord(input)) throw Error('Invalid prompt approval.');
+    const {draftId,prompt,metrics}=input;
     const draftKey = required(draftId, "Draft ID", 128);
     const approvedText = required(prompt, "Approved prompt");
     const approvedMetrics = metrics == null ? null : lines(metrics, "Approved metrics", 2000, 0);
     const approved = transaction(this.db, () => {
       const previous = this.db.prepare("SELECT spec,approval_hash FROM outcome_prompts WHERE draft=?").get(draftKey);
       if (previous) {
-        const entry = JSON.parse(previous.spec);
+        const entry = decodeSaved(previous.spec);
         if (previous.approval_hash !== hash({ prompt:approvedText, metrics:approvedMetrics ?? entry.metrics }))
           throw Error("This draft was already approved with different edits. Create a revision to save your changes.");
         return entry;
@@ -306,7 +259,7 @@ class OutcomeWorkflow {
       const parent = draft.parentId ? this.get(draft.parentId) : null;
       if (parent) {
         const latest = this.db.prepare("SELECT MAX(version) AS version FROM outcome_prompts WHERE family=?").get(parent.familyId);
-        if (latest.version !== parent.version) throw Error("A newer revision was approved. Start from the latest catalogue version.");
+        if (latest?.version !== parent.version) throw Error("A newer revision was approved. Start from the latest catalogue version.");
       }
       const id = randomUUID();
       const entry = {
@@ -322,4 +275,4 @@ class OutcomeWorkflow {
     return approved;
   }
 }
-module.exports = { OutcomeWorkflow, contractHash };
+
