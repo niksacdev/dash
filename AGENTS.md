@@ -17,9 +17,16 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 - Give asynchronous operations explicit success, failure, and cancellation behavior. Keep candidate errors separate from grader, telemetry, and sync errors. Do not retry an inference call to recover a telemetry write.
 - Preserve old run records, selected immutable versions and public entry points when changing storage, language, or adapters. A refactor should leave evaluation results comparable.
 
+## Planning, critique, and drift
+
+- Start a substantive feature or architectural change by reading the relevant product specification, ADRs and current implementation. State the operator’s objective, a representative scenario, observable acceptance criteria, and assumptions. Update the existing spec or write a focused one when behavior changes. Straightforward fixes can cite the existing acceptance criterion.
+- Before implementing a substantial change, ask an independent product critic to walk through that scenario. Have them challenge whether the feature improves a domain decision, whether the evidence can support the promised outcome, and what can be removed. Resolve findings against the spec.
+- Use a technical critic for changes to scoring, data ownership, runtime boundaries, or external integrations. Check SDK reuse, migration and retry behavior, privacy, and the normal user entry points. Record material findings and their resolution in the PR or ADR.
+- Recheck the original goal when implementation choices change and before calling work complete. Explain any remaining gap using a concrete example. A working build alone does not establish that a business outcome was achieved.
+
 ## Verification and review
 
 - Verify changes through their real entry points. Cover domain regressions with synthetic cases, exercise SDK serialization against an isolated service, and run Electron checks against a fresh test profile. Record which paths used real models, simulated transports, or a live service.
 - Use the repository's typecheck, build, tests and documentation-link check. GitHub Actions should exercise the same commands that contributors run locally. Update setup instructions with build changes.
-- Make focused commits. Use pull requests for review and record decisions affecting architecture, data ownership, scoring or reproducibility in [docs/adr](docs/adr/). Include the user-visible effect, verification evidence and any remaining limitations.
+- Work on a feature branch and commit each coherent, verified increment. Keep mechanical moves separate from behavioral changes when practical. Push the branch, open or update its pull request, and verify CI on its current head. Use the PR for review before merging. Record decisions affecting architecture, data ownership, scoring or reproducibility in [docs/adr](docs/adr/). Include the user-visible effect, verification evidence and any remaining limitations.
 - Use the [documentation index](docs/START_HERE.md) for the original artifacts and product reviews. Maintain a single source for each dataset fixture and preserve original design/specification files when moving them.
