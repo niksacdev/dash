@@ -30,3 +30,11 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 - Use the repository's typecheck, build, tests and documentation-link check. GitHub Actions should exercise the same commands that contributors run locally. Update setup instructions with build changes.
 - Work on a feature branch and commit each coherent, verified increment. Keep mechanical moves separate from behavioral changes when practical. Push the branch, open or update its pull request, and verify CI on its current head. Use the PR for review before merging. Record decisions affecting architecture, data ownership, scoring or reproducibility in [docs/adr](docs/adr/). Include the user-visible effect, verification evidence and any remaining limitations.
 - Use the [documentation index](docs/START_HERE.md) for the original artifacts and product reviews. Maintain a single source for each dataset fixture and preserve original design/specification files when moving them.
+
+## Continuous learning
+
+- Before committing, check the changed behavior against its spec, setup guide, agent instructions and ADRs. Update affected documentation in the same change. If the behavior did not change, record the verification in the PR.
+- When a real run, incident or review exposes a repeatable failure, capture the smallest reproducible case with synthetic inputs. Fix the cause, add a regression check, and document what the evidence established. Label assumptions and distinguish a simulated transport from a live integration.
+- When a lesson applies across future tasks, Codex should call it out in its update or PR, propose a concrete change to this file, and include the change for review. Put task-specific findings in the owning guide or ADR. Keep instructions short and retire superseded guidance.
+- Version runtime agents and their sources alongside the code. Record which revision produced a result. Evaluate changed instructions against representative positive, negative, and missing-evidence cases before adopting them. Preserve earlier revisions and distinguish local administrator overrides from shipped defaults.
+- Make changes small enough to test, review and reverse. Link the spec, critic findings, commit, tests and observed run evidence in the PR when relevant. Keep secrets, private prompts and production outputs out of learning notes and fixtures.
