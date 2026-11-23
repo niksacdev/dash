@@ -1,42 +1,51 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const { Bench } = require("../lib/bench.cjs");
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { Bench } from "../lib/bench.cjs";
 
-const { opikJudgeRequest } = require("./opik-judge-fixture.cjs");
+import { opikJudgeRequest, judgeEvidence } from "./opik-judge-fixture.cjs";
+import { inventory,reply,withoutPower,present } from "./runtime-fixtures.cjs";
+import type { TestContext } from "node:test";
+import type { LocalCandidate,RuntimeAdapters } from "../lib/runtime-types.cjs";
+import type { GraderDefinition } from "../lib/grader-types.cjs";
+import type { StartRun } from "../lib/run-types.cjs";
+import {z} from "zod";
 
-async function setup(t) {
-  const models = ["lfm3-1.7b","lane-b","local-judge"].map(model => ({
-    id:"lmstudio/" + model, provider:"lmstudio", model, revision:"weights-v1", loaded:true,
+const requestProperties=z.object({properties:z.record(z.string(),z.unknown())});
+
+async function setup(t:TestContext) {
+  const models = ["lfm3-1.7b","lane-b","local-judge"].map((model):LocalCandidate => ({
+    id:"lmstudio/" + model, provider:"lmstudio", kind:"model", model, revision:"weights-v1", loaded:true,
   }));
-  const judgeCalls = [];
-  const adapters = {
-    discover:async () => [{ models }],
+  const judgeCalls:Record<string,unknown>[] = [];
+  const adapters:RuntimeAdapters = {
+    discover:async () => [inventory(models)],
     async invoke(model, messages, options) {
       if (options.planning) {
-        const expert = options.structured.properties.requirements;
-        return {output:JSON.stringify(expert
+        const expert = requestProperties.parse(options.structured).properties.requirements;
+        return reply(JSON.stringify(expert
           ? {title:"Capture earnings", metrics:["GAAP EPS capture accuracy"], requirements:["Distinguish GAAP from adjusted EPS."]}
-          : {prompt:"Extract the reported GAAP EPS."})};
+          : {prompt:"Extract the reported GAAP EPS."}));
       }
       if (model.model === "local-judge") {
         const evaluation = opikJudgeRequest(messages);
-        if (evaluation?.stage === "geval-steps") return {output:"Check the earnings basis against the citation."};
-        const evidence = evaluation ? evaluation.evidence : JSON.parse(messages[1].content);
+        if (evaluation?.stage === "geval-steps") return reply("Check the earnings basis against the citation.");
+        const evidence = evaluation ? evaluation.evidence : judgeEvidence(messages[1].content);
         const maxScore = evaluation ? 10 : 1;
-        assert.equal(options.structured.properties.score.maximum, maxScore);
+        const spec=requestProperties.parse(options.structured);
+        assert.equal(z.object({maximum:z.number()}).parse(spec.properties.score).maximum,maxScore);
         judgeCalls.push(evidence);
-        return {output:JSON.stringify({score:evidence.output === "GAAP EPS 1.24" ? maxScore : 0, reason:"Checked the cited earnings basis."})};
+        return reply(JSON.stringify({score:evidence.output === "GAAP EPS 1.24" ? maxScore : 0, reason:"Checked the cited earnings basis."}));
       }
-      return {output:model.model === "lfm3-1.7b" ? "GAAP EPS 1.24" : "Adjusted EPS 1.80"};
+      return reply(model.model === "lfm3-1.7b" ? "GAAP EPS 1.24" : "Adjusted EPS 1.80");
     },
   };
-  const bench = new Bench(":memory:", adapters, async () => async () => null);
+  const bench = new Bench(":memory:", adapters, withoutPower);
   t.after(() => bench.db.close());
   await bench.refresh();
   const draft = await bench.designPrompt({mode:"quick",domain:"Financial Services",objective:"Extract GAAP EPS from the earnings release."});
   const approved = bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
-  const start = extra => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
-  function save(name, change = {}) {
+  const start = (extra:Pick<StartRun,"graderIds"|"outcomeRubric">) => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
+  function save(name:string, change:Partial<GraderDefinition> = {}) {
     return bench.graders.save({name,type:"contains",category:"Extraction",threshold:1,criteria:"GAAP",industry:"Financial Services",...change},models);
   }
   return {bench, approved, models, judgeCalls, start, save};
@@ -71,14 +80,14 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   assert.equal(options.generated.type, "opik");
   const outcomeRubric = {judgeId:models[2].id, criteria:options.generated.criteria};
   const runId = start({outcomeRubric});
-  await bench.active.done;
+  await present(bench.active).done;
   const {manifest,assessments,status} = bench.detail(runId);
   assert.equal(status, "completed");
   assert.equal(manifest.graders.length, 1);
   const pinned = manifest.graders[0];
   assert.deepEqual(pinned.origin,{kind:"approved-outcome",promptId:approved.id,promptFamilyId:approved.familyId,promptVersion:1});
   assert.equal(pinned.type, "opik");
-  assert.match(pinned.opikEngine, /^opik-js@/);
+  assert.match(present(pinned.opikEngine), /^opik-js@/);
   assert.ok(assessments.every(a => a.evaluator === pinned.opikEngine));
   assert.equal(judgeCalls.length, 2);
   assert.equal(pinned.judge.revision, "weights-v1");
@@ -94,7 +103,7 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   }
   assert.equal(bench.quickGraderOptions(approved.id).recommended[0].id,pinned.id);
   const reuse = start({graderIds:[pinned.id],outcomeRubric});
-  await bench.active.done;
+  await present(bench.active).done;
   assert.equal(bench.exportRun(reuse).assessments.length,2);
   assert.equal(bench.graders.list().length,1);
 });
@@ -102,7 +111,7 @@ test("the approved outcome rubric runs separately for both candidates and pins i
 test("an explicitly requested legacy outcome rubric retains its original scoring scale", async t => {
   const {bench,models,start} = await setup(t);
   const id = start({outcomeRubric:{type:"judge",judgeId:models[2].id}});
-  await bench.active.done;
+  await present(bench.active).done;
   const {manifest,assessments} = bench.detail(id);
   assert.equal(manifest.graders[0].type,"judge");
   assert.deepEqual(assessments.map(a => a.value),[1,0]);

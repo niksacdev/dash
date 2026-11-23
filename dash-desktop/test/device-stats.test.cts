@@ -1,10 +1,10 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const { createDeviceSampler } = require("../lib/device-stats.cjs");
+import { test } from "node:test";
+import assert = require("node:assert/strict");
+import { createDeviceSampler } from "../lib/device-stats.cjs";
 
-function fake(overrides={}) {
+function fake(overrides: Partial<Parameters<typeof createDeviceSampler>[0]> = {}) {
   let t = 0, queries = 0;
-  const process = (pid, cpu) => ({pid, creationTime:pid, cpu:{cumulativeCPUUsage:cpu}, memory:{workingSetSize:100}});
+  const process = (pid: number, cpu: number) => ({pid, creationTime:pid, cpu:{cumulativeCPUUsage:cpu}, memory:{workingSetSize:100}});
   const sample = createDeviceSampler({
     userData:"/synthetic/profile", clock:()=>t, wait:async ms=>{t+=ms;},
     hostCpus:()=>[1,2].map(()=>({times:{idle:t*0.75,user:t*0.25,sys:0,irq:0,nice:0}})),
@@ -13,7 +13,7 @@ function fake(overrides={}) {
     filesystem:async path=>{assert.equal(path,"/synthetic/profile");return {blocks:100n,bsize:1024n,bfree:40n,bavail:35n};},
     ...overrides,
   });
-  return {sample,queries:()=>queries,advance:ms=>{t+=ms;}};
+  return {sample,queries:()=>queries,advance:(ms: number)=>{t+=ms;}};
 }
 
 test("reports host CPU and total-machine app CPU, aggregate working sets and profile volume availability", async () => {

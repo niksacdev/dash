@@ -1,19 +1,39 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const os = require("node:os");
-const { Bench, replayCandidate } = require("../lib/bench.cjs");
-const { loadPacks, parseDataset, grade } = require("../lib/packs.cjs");
-const { invoke } = require("../lib/providers.cjs");
-const fixture = (b, d) => ({
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import { Bench, replayCandidate } from "../lib/bench.cjs";
+import { loadPacks, parseDataset, grade } from "../lib/packs.cjs";
+import { invoke } from "../lib/providers.cjs";
+import { performance as runPerformance } from "../lib/performance.cjs";
+import { objectValue, jsonText, isRecord, type RunResult, type StartRun } from "../lib/run-types.cjs";
+import type { ChatTurn, LocalCandidate } from "../lib/runtime-types.cjs";
+import { inventory, reply, withoutPower, present } from "./runtime-fixtures.cjs";
+
+function latch() {
+  let signal:()=>void=()=>{throw Error("Signal not initialized")};
+  const promise=new Promise<void>(done=>{signal=done});
+  return {signal,promise};
+}
+function completion(b:Bench):Promise<void> {
+  assert.ok(b.active?.done,"The runner started a job");
+  return b.active.done;
+}
+function scoreOf(result:RunResult) {return present(result.score);}
+function earnings() {
+  const bundle=loadPacks().find(item=>item.pack.id==="earnings");
+  assert.ok(bundle);
+  return bundle;
+}
+const fixture = (d:{id:string}):StartRun => ({
   mode: "dataset",
   datasetId: d.id,
   candidateIds: [replayCandidate.id],
 });
-async function finish(b, config) {
+async function finish(b:Bench, config:StartRun) {
   const id = b.start(config);
-  await b.active.done;
+  await completion(b);
   return b.exportRun(id);
 }
 test("bundled packs score the recorded responses, preserve trace identities and survive a restart", async (t) => {
@@ -21,13 +41,13 @@ test("bundled packs score the recorded responses, preserve trace identities and 
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "runs.db");
   let b = new Bench(file);
-  const ids = [];
+  const ids:string[] = [];
   for (const d of b.list().datasets) {
-    const run = await finish(b, fixture(b, d));
+    const run = await finish(b, fixture(d));
     assert.equal(run.status, "completed");
     assert.equal(run.results.length, d.count);
-    assert.equal(run.results.filter((r) => r.score.falseAccept).length, 1);
-    assert.equal(run.results.filter((r) => r.score.pass).length, d.count - 1);
+    assert.equal(run.results.filter((r) => scoreOf(r).falseAccept).length, 1);
+    assert.equal(run.results.filter((r) => scoreOf(r).pass).length, d.count - 1);
     for (const r of run.results) {
       assert.equal(r.trace.caseId, r.caseId);
       assert.equal(r.trace.runId, run.manifest.id);
@@ -35,9 +55,10 @@ test("bundled packs score the recorded responses, preserve trace identities and 
       assert.equal(r.telemetry, null);
     }
     ids.push(run.manifest.id);
-    const failure = run.results.find((r) => !r.score.pass);
+    const failure = run.results.find((r) => !scoreOf(r).pass);
+    assert.ok(failure);
     const rerun = await finish(b, {
-      ...fixture(b, d),
+      ...fixture(d),
       parentId: run.manifest.id,
       caseId: failure.caseId,
     });
@@ -52,7 +73,7 @@ test("bundled packs score the recorded responses, preserve trace identities and 
   b.db.close();
 });
 test("model boundary excludes reference labels and distinguishes runtime failure from wrong answers", async () => {
-  const c = {
+  const c:LocalCandidate = {
     id: "test/local",
     model: "lfm3-local",
     provider: "lmstudio",
@@ -62,23 +83,26 @@ test("model boundary excludes reference labels and distinguishes runtime failure
   };
   let calls = 0;
   const b = new Bench(":memory:", {
-    discover: async () => [{ models: [c] }],
+    discover: async () => [inventory([c])],
     invoke: async (candidate, messages, options) => {
       assert.equal(candidate.id, c.id);
       assert.equal(messages.length, 2);
-      if (options.structured?.properties?.requirements)
-        return { output: JSON.stringify({title: "Extract earnings", metrics: ["Correct values"], requirements: ["Ground answers in the case"]}) };
-      if (options.structured?.properties?.prompt)
-        return { output: JSON.stringify({prompt: "Use the provided earnings release."}) };
-      const payload = JSON.parse(messages[1].content);
+      const fields=options.structured?.properties;
+      if (isRecord(fields) && fields.requirements)
+        return reply(JSON.stringify({title:"Extract earnings",metrics:["Correct values"],requirements:["Ground answers in the case"]}));
+      if (isRecord(fields) && fields.prompt)
+        return reply(JSON.stringify({prompt:"Use the provided earnings release."}));
+      const payload = objectValue(jsonText(messages[1].content));
       assert.deepEqual(Object.keys(payload).sort(), [
         "input",
         "source_locator",
       ]);
+      assert.ok(isRecord(payload.input));
       assert.equal("gold" in payload.input, false);
       if (++calls === 2) throw Error("test provider offline");
+      assert.ok(options.onText);
       options.onText("invalid");
-      return { output: "invalid", telemetry: { latency_ms: 7 } };
+      return reply("invalid",{latency_ms:7});
     },
   });
   await b.refresh();
@@ -93,7 +117,7 @@ test("model boundary excludes reference labels and distinguishes runtime failure
     });
   assert.equal(run.status, "failed");
   assert.equal(run.results.length, 8);
-  assert.equal(run.results[0].score.review, true);
+  assert.equal(scoreOf(run.results[0]).review, true);
   assert.equal(run.results[1].score, null);
   assert.equal(run.results[1].error, "test provider offline");
   b.db.close();
@@ -101,18 +125,16 @@ test("model boundary excludes reference labels and distinguishes runtime failure
 test("cancellation preserves the run and stops work", async () => {
   const b = new Bench(":memory:"),
     d = b.list().datasets[0],
-    id = b.start(fixture(b, d));
-  assert.throws(() => b.start(fixture(b, d)), /active/);
+    id = b.start(fixture(d));
+  assert.throws(() => b.start(fixture(d)), /active/);
   b.stop(id);
-  await b.active.done;
+  await completion(b);
   assert.equal(b.detail(id).status, "canceled");
   assert.equal(b.detail(id).results.length, 0);
   b.db.close();
 });
 test("dataset imports reject duplicates, report line numbers and preserve snapshots", () => {
-  const { pack, rows, replay } = loadPacks().find(
-    (x) => x.pack.id === "earnings",
-  );
+  const { pack, rows, replay } = earnings();
   const line = JSON.stringify(rows[0]);
   assert.throws(
     () => parseDataset(line + "\n" + line, pack),
@@ -120,19 +142,21 @@ test("dataset imports reject duplicates, report line numbers and preserve snapsh
   );
   assert.throws(() => parseDataset('{"input":', pack), /Line 1/);
   const zero = rows.find((r) => r.case_id === "eps-zero");
+  assert.ok(zero);
   assert.ok(
     grade(
       pack,
       zero,
-      JSON.stringify({ ...replay["eps-zero"], value: "-0.000" }),
+      JSON.stringify({ ...objectValue(replay["eps-zero"]), value: "-0.000" }),
     ).pass,
   );
   const absent = rows.find((r) => r.case_id === "eps-absent");
+  assert.ok(absent);
   assert.equal(
     grade(
       pack,
       absent,
-      JSON.stringify({ ...replay["eps-absent"], value: "0.00" }),
+      JSON.stringify({ ...objectValue(replay["eps-absent"]), value: "0.00" }),
     ).pass,
     false,
   );
@@ -147,12 +171,12 @@ test("dataset imports reject duplicates, report line numbers and preserve snapsh
     ),
     key,
   );
-  assert.throws(() => b.start(fixture(b, { id: key })), /bundled dataset/);
+  assert.throws(() => b.start(fixture({ id: key })), /bundled dataset/);
   b.db.close();
 });
 test("both streaming adapters send identical prompt content, reconstruct text and retain usage", async (t) => {
-  const messages = [{ role: "user", content: "Short test" }];
-  for (const provider of ["ollama", "lmstudio"]) {
+  const messages:ChatTurn[] = [{ role: "user", content: "Short test" }];
+  for (const provider of ["ollama", "lmstudio"] as const) {
     const stream =
       provider === "ollama"
         ? [
@@ -166,12 +190,13 @@ test("both streaming adapters send identical prompt content, reconstruct text an
             "",
             "data: [DONE]",
           ];
-    const mock = t.mock.method(globalThis, "fetch", async (url, options) => {
+    const mock = t.mock.method(globalThis, "fetch", async (url:RequestInfo|URL, options?:RequestInit) => {
+      assert.ok(typeof url==="string");
       assert.ok(url.startsWith("http://127.0.0.1:"));
-      assert.deepEqual(JSON.parse(options.body).messages, messages);
+      assert.deepEqual(objectValue(jsonText(options?.body)).messages, messages);
       return new Response(stream.join("\n") + "\n");
     });
-    const result = await invoke({ provider, model: "test" }, messages, {
+    const result = await invoke({ provider, model: "test",kind:"model",id:provider+"/test" }, messages, {
       signal: new AbortController().signal,
     });
     assert.equal(result.output, "Hi!");
@@ -182,9 +207,7 @@ test("both streaming adapters send identical prompt content, reconstruct text an
 });
 
 test("duplicate JSON keys cannot silently replace a conflicting financial fact", () => {
-  const { pack, rows, replay } = loadPacks().find(
-    (x) => x.pack.id === "earnings",
-  );
+  const { pack, rows, replay } = earnings();
   const correct = JSON.stringify(replay["rev-scale"]);
   const ambiguous = correct.replace("{", '{"value":"999",');
   const score = grade(pack, rows[0], ambiguous);
@@ -196,30 +219,30 @@ test("duplicate JSON keys cannot silently replace a conflicting financial fact",
 test("stop retains every observed fragment; reopening an in-flight checkpoint preserves only confirmed evidence", async t => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),"dash-interruption-"));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
-  const candidate={id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  const candidate:LocalCandidate={id:"ollama/qa",model:"qa",provider:"ollama",loaded:true,kind:"model"};
   const first="First fragment.";
-  let notify;
-  const dispatched=new Promise(resolve=>{notify=resolve;});
-  let observed;
+  const dispatched=latch();
+  let observed:ChatTurn[]|undefined;
   let calls=0;
   const bench=new Bench(":memory:",{
-    discover:async()=>[{models:[candidate]}],
+    discover:async()=>[inventory([candidate])],
     invoke:async(_candidate,messages,{signal,onText})=>{
       calls++;
       observed=messages;
+      assert.ok(onText);
       onText(first);
       onText(first+" Second fragment.");
-      notify();
-      return new Promise((_,reject)=>signal.addEventListener("abort",()=>reject(Error("stopped")),{once:true}));
+      dispatched.signal();
+      return new Promise<never>((_,reject)=>signal.addEventListener("abort",()=>reject(Error("stopped")),{once:true}));
     }
-  },async()=>async()=>null);
+  },withoutPower);
   t.after(()=>bench.db.close());
   await bench.refresh();
   const rows=["first","second"].map(case_id=>({case_id,dataset_version:"1",split:"development",prompt:"Name a color.",reference:"blue"}));
   const datasetId=bench.import("reference","Interrupted QA",rows.map(x=>JSON.stringify(x)).join("\n"));
   const id=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],datasetScorer:"exact-reference"});
-  const done=bench.active.done;
-  await dispatched;
+  const done=completion(bench);
+  await dispatched.promise;
   assert.equal(bench.detail(id).results.length,0);
   const image=path.join(dir,"checkpoint.sqlite");
   bench.db.prepare("VACUUM INTO ?").run(image);
@@ -234,10 +257,11 @@ test("stop retains every observed fragment; reopening an in-flight checkpoint pr
   assert.deepEqual(canceled.dispatchedMessages,observed);
   assert.equal(canceled.trace.finished,undefined);
   assert.equal(canceled.score,null);
+  assert.ok(saved.report);
   assert.equal(saved.report.verdict,"incomplete");
   assert.equal(saved.assessments.length,0);
   assert.ok(canceled.trace.steps.find(s=>s.action==="DASH stopped observing this request"));
-  assert.equal(require("../lib/performance.cjs").performance(bench.db,id).candidates[0].errors,0);
+  assert.equal(runPerformance(bench.db,id).candidates[0].errors,0);
 
   const recovery=new Bench(image,{discover:async()=>[],invoke:()=>assert.fail("must not dispatch an interrupted request")});
   const reopened=recovery.exportRun(id);
@@ -248,12 +272,13 @@ test("stop retains every observed fragment; reopening an in-flight checkpoint pr
   assert.equal(interrupted.dispatchState,"interrupted");
   assert.deepEqual(interrupted.dispatchedMessages,observed);
   // Wall-clock scheduling can produce a second valid checkpoint before the snapshot.
-  assert.ok([first,canceled.output].includes(interrupted.output));
+  assert.ok([first,canceled.output].includes(present(interrupted.output)));
   assert.equal(interrupted.trace.finished,undefined);
   assert.equal(interrupted.trace.id,canceled.trace.id);
   assert.equal(interrupted.score,null);
   assert.equal(interrupted.telemetry,null);
   assert.equal(reopened.assessments.length,0);
+  assert.ok(reopened.report);
   assert.equal(reopened.report.verdict,"incomplete");
   const again=new Bench(image);
   t.after(()=>again.db.close());
@@ -261,21 +286,20 @@ test("stop retains every observed fragment; reopening an in-flight checkpoint pr
 });
 
 test("stopping during the initial sensor read records no candidate dispatch", async t => {
-  let sampling,finishSample;
-  const started=new Promise(resolve=>{sampling=resolve;});
-  const candidate={id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
-  const bench=new Bench(":memory:",{discover:async()=>[{models:[candidate]}],invoke:()=>assert.fail("canceled before dispatch")},async()=>{
-    sampling();
-    await new Promise(resolve=>{finishSample=resolve;});
-    return async()=>null;
+  const started=latch(),finishSample=latch();
+  const candidate:LocalCandidate={id:"ollama/qa",model:"qa",provider:"ollama",loaded:true,kind:"model"};
+  const bench=new Bench(":memory:",{discover:async()=>[inventory([candidate])],invoke:()=>assert.fail("canceled before dispatch")},async()=>{
+    started.signal();
+    await finishSample.promise;
+    return withoutPower();
   });
   t.after(()=>bench.db.close());
   await bench.refresh();
   const id=bench.start({mode:"dataset",datasetId:bench.list().datasets[0].id,candidateIds:[candidate.id]});
-  const done=bench.active.done;
-  await started;
+  const done=completion(bench);
+  await started.promise;
   bench.stop(id);
-  finishSample();
+  finishSample.signal();
   await done;
   const saved=bench.exportRun(id);
   assert.equal(saved.status,"canceled");

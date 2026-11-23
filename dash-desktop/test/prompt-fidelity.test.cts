@@ -1,6 +1,6 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const { candidateGuidance } = require("../lib/prompt-fidelity.cjs");
+import { test } from "node:test";
+import assert = require("node:assert/strict");
+import { candidateGuidance } from "../lib/prompt-fidelity.cjs";
 
 const objective = "Extract the part ID and decide whether to hold this lot. Sample: part B-71 measures 5.04 mm against a 5.02 mm upper limit.";
 const safe = "Identify the part in the supplied inspection record.";

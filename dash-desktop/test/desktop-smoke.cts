@@ -1,26 +1,35 @@
-const { app, BrowserWindow } = require("electron");
-const { once } = require("node:events");
-const { mkdtempSync, writeFileSync } = require("node:fs");
-const os = require("node:os"),
-  path = require("node:path"),
-  assert = require("node:assert/strict");
+import {app, BrowserWindow} from "electron";
+import {once} from "node:events";
+import {mkdtempSync, writeFileSync} from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import assert from "node:assert/strict";
+import {mock} from "node:test";
+import {z} from "zod";
+import power = require("../lib/power.cjs");
+import deviceStats = require("../lib/device-stats.cjs");
+
+type RendererEval = (source:string)=>Promise<unknown>;
+const pointShape=z.object({x:z.number(),y:z.number()});
+const sizeShape=z.object({width:z.number(),height:z.number()});
+const rectShape=sizeShape.extend({left:z.number(),right:z.number(),top:z.number(),bottom:z.number()});
 const temporary = mkdtempSync(path.join(os.tmpdir(), "dash-desktop-smoke-"));
 app.setPath("userData", temporary);
 app.dock?.hide();
 app.on("browser-window-created", (_event, win) => { win.show = () => {}; });
 globalThis.fetch = async () => { throw Error("Offline replay test"); };
-require("../lib/power.cjs").readPower = async () => ({ watts: null });
+mock.method(power,"readPower",async ():ReturnType<typeof power.readPower>=>({watts:null,source:"QA",at:new Date().toISOString()}));
 
-const device = require("../lib/device-stats.cjs");
-const actualSampler = device.createDeviceSampler;
+const actualSampler = deviceStats.createDeviceSampler;
 let detailedSamples = 0;
-device.createDeviceSampler = options => {
+const countedSampler:typeof actualSampler = options => {
   const sample = actualSampler(options);
   return () => { detailedSamples++; return sample(); };
 };
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+mock.method(deviceStats,"createDeviceSampler",countedSampler);
+const delay = (ms:number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function checkIpc(window) {
+async function checkIpc(window:BrowserWindow) {
   const contents = window.webContents;
   assert.equal(await contents.executeJavaScript("typeof window.dash.invoke"), "undefined");
   assert.equal(await contents.executeJavaScript("typeof window.require"), "undefined");
@@ -35,7 +44,7 @@ async function checkIpc(window) {
   } finally { foreign.destroy(); }
 }
 
-async function waitForSamples(minimum) {
+async function waitForSamples(minimum:number) {
   for (let i=0;i<100;i++) {
     if (detailedSamples>=minimum) return;
     await delay(100);
@@ -43,25 +52,25 @@ async function waitForSamples(minimum) {
   assert.fail("Device details did not request a new measurement.");
 }
 
-async function checkOverview(window, js, wait) {
+async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source:string)=>Promise<void>) {
   const client = window.webContents.debugger;
   client.attach();
-  const send = (method, args) => client.sendCommand(method, args);
-  const point = selector => js(`(() => {
+  const send = (method:string, args:Record<string,unknown>):Promise<unknown> => client.sendCommand(method, args);
+  const point = async (selector:string) => pointShape.parse(await js(`(() => {
     const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
     return {x: r.x + r.width / 2, y: r.y + r.height / 2};
-  })()`);
-  const key = async (name, code) => {
+  })()`));
+  const key = async (name:string, code:number) => {
     for (const type of ["keyDown", "keyUp"])
       await send("Input.dispatchKeyEvent", {type, key:name, code:name, windowsVirtualKeyCode:code});
   };
-  const screenshot = async name => {
-    const { data } = await send("Page.captureScreenshot", {format: "png"});
+  const screenshot = async (name:string) => {
+    const {data}=z.object({data:z.string().min(1)}).parse(await send("Page.captureScreenshot",{format:"png"}));
     writeFileSync(path.join(temporary, name), Buffer.from(data, "base64"));
   };
-  const selectTheme = value =>
+  const selectTheme = (value:"light"|"dark") =>
     js(`document.querySelector('#appearance input[value="${value}"]').closest('label').click()`);
-  const themeIs = value =>
+  const themeIs = (value:"light"|"dark") =>
     `document.documentElement.dataset.appearance === "${value}" &&
      document.querySelector('#appearance input[value="${value}"]').checked &&
      getComputedStyle(document.documentElement).colorScheme === "${value}"`;
@@ -131,15 +140,15 @@ async function checkOverview(window, js, wait) {
     })()`);
     assert.deepEqual(bounds,{overflow:0,left:0,top:0,controlsFit:true,countFits:true});
     await js("document.activeElement.blur()");
-    const tap = async position => {
+    const tap = async (position:z.infer<typeof pointShape>) => {
       await send("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[position]});
       await send("Input.dispatchTouchEvent",{type:"touchEnd",touchPoints:[]});
     };
     const beforeTap=detailedSamples;
     await tap(await point(".device-stat"));
     await wait(open);
-    const popup = await js("document.querySelector('#device-details').getBoundingClientRect().toJSON()");
-    const viewport = await js("({width:innerWidth,height:innerHeight})");
+    const popup = rectShape.parse(await js("document.querySelector('#device-details').getBoundingClientRect().toJSON()"));
+    const viewport = sizeShape.parse(await js("({width:innerWidth,height:innerHeight})"));
     assert.ok(popup.width > 0 && popup.left >= 0 && popup.right <= viewport.width &&
       popup.top >= 0 && popup.bottom <= viewport.height, "Device popover outside viewport: "+JSON.stringify({popup,viewport}));
     await waitForSamples(beforeTap+2);
@@ -157,12 +166,12 @@ async function checkOverview(window, js, wait) {
 app
   .whenReady()
   .then(async () => {
-    const window = await require("../desktop.cjs").openWindow();
-    const js = async source => {
+    const window = await (await import("../desktop.cjs")).openWindow();
+    const js:RendererEval = async source => {
       try { return await window.webContents.executeJavaScript(source); }
       catch (error) { throw new Error("Renderer assertion failed: " + source, {cause:error}); }
     };
-    const wait = async (check) => {
+    const wait = async (check:string) => {
       for (let i = 0; i < 110; i++) {
         if (await js(check)) return;
         await new Promise((resolve) => setTimeout(resolve, 80));
