@@ -36,8 +36,9 @@ test("Opik status remains offline and unconfigured unless the DASH destination i
 
 test("actual SDK syncs saved traces and scores into native version-pinned experiments and resumes a lost write acknowledgement",async t=>{
   const datasets=new Map(),experiments=new Map(),links=new Map(),traces=new Map(),spans=new Map(),scores=new Map(),requests=[];
+  const prompts=new Map(),promptVersions=new Map();
   const versions=new Map(), snapshots=new Map(), changes=[], failures=[];
-  let interrupt=true, loseNextVersion=false;
+  let interrupt=true, loseNextVersion=false, losePrompt=true;
   const server=http.createServer(async(req,res)=>{
     try{
       const chunks=[];for await(const c of req)chunks.push(c);
@@ -45,6 +46,17 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
       const url=new URL(req.url,"http://localhost"), [group,sub,leaf]=url.pathname.replace("/api/v1/private/","").split("/");
       requests.push([req.method,url.pathname]);res.setHeader("Content-Type","application/json");
       function send(status,value){res.writeHead(status);res.end(value===undefined?undefined:JSON.stringify(value));}
+      if(group==="prompts" && sub==="versions"){
+        if(req.method==="GET")return promptVersions.has(leaf)?send(200,promptVersions.get(leaf)):send(404,{message:"unknown prompt version"});
+        if(req.method==="POST"){
+          if(!prompts.has(body.name))prompts.set(body.name,randomUUID());
+          assert.ok(!promptVersions.has(body.version.id));assert.ok(!JSON.stringify(body).includes("PRIVATE_BLUEPRINT"));
+          const version={...body.version,prompt_id:prompts.get(body.name),commit:randomUUID().slice(0,8),version_number:"v"+(promptVersions.size+1)};
+          promptVersions.set(version.id,version);
+          if(losePrompt){losePrompt=false;return send(503,{message:"write committed"});}
+          return send(201,version);
+        }
+      }
       if(group==="datasets"){
         if(req.method==="POST"&&!sub){datasets.set(body.id,body);versions.set(body.id,[]);return send(201);}
         if(!datasets.has(sub))return send(404,{message:"missing"});
@@ -180,11 +192,21 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   assert.equal(next.experiments[0].scores,0);assert.equal(next.experiments[1].scores,0);
   assert.equal([...traces.values()].at(-1).input.messages[0].content,quick.manifest.prompt);
   const snapshotCount=versions.get(next.datasetId).length;
-  const promptFamily={...quick,manifest:{...quick.manifest,id:"prompt-v1",approvedPromptId:"p1",approvedPrompt:{familyId:"catalog-family"}}};
+  const promptFamily={...quick,manifest:{...quick.manifest,id:"prompt-v1",approvedPromptId:"p1",approvedPrompt:{id:"p1",version:1,familyId:"catalog-family",requirements:["PRIVATE_BLUEPRINT"]}}};
+  assert.equal(promptVersions.size,0);
+  await assert.rejects(new OpikExperiments(bench(db,promptFamily),{env}).sync(promptFamily.manifest.id),/503/);
   const p1=await new OpikExperiments(bench(db,promptFamily),{env}).sync(promptFamily.manifest.id);
-  const revised={...promptFamily,manifest:{...promptFamily.manifest,id:"prompt-v2",prompt:"New approved prompt",approvedPromptId:"p2"}};
+  const revised={...promptFamily,manifest:{...promptFamily.manifest,id:"prompt-v2",prompt:"New approved prompt",approvedPromptId:"p2",approvedPrompt:{id:"p2",version:2,familyId:"catalog-family"}}};
   const p2=await new OpikExperiments(bench(db,revised),{env}).sync(revised.manifest.id);
   assert.equal(p1.datasetId,p2.datasetId);assert.notEqual(p1.versionId,p2.versionId);
+  assert.equal(prompts.size,1);assert.equal(promptVersions.size,2);
+  assert.equal(p1.promptVersion.promptId,p2.promptVersion.promptId);assert.notEqual(p1.promptVersion.id,p2.promptVersion.id);
+  assert.equal(promptVersions.get(p1.promptVersion.id).template,quick.manifest.prompt);
+  assert.equal(promptVersions.get(p2.promptVersion.id).template,"New approved prompt");
+  for(const v of [p1,p2])for(const e of v.experiments)assert.deepEqual(experiments.get(e.id).prompt_versions,[{id:v.promptVersion.id}]);
+  const prior={...promptFamily,manifest:{...promptFamily.manifest,id:"later-p1"}};
+  const priorReceipt=await new OpikExperiments(bench(db,prior),{env}).sync(prior.manifest.id);
+  assert.equal(promptVersions.size,2);assert.equal(priorReceipt.promptVersion.id,p1.promptVersion.id);
   assert.notEqual(p1.datasetId,next.datasetId);assert.equal(versions.get(next.datasetId).length,snapshotCount);
 
   const compactedRow={case_id:"compact",input:{message:"keep  spaces"},source_locator:"loc",dataset_version:"1",split:"development"};
@@ -192,7 +214,11 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
     caseIds:["compact"],datasetId:"compact-source",candidates:[saved.manifest.candidates[0]]},results:[
       {...saved.results[0],caseId:"compact",guardrail:{inputOptimization:{status:"compacted"}}},
     ],report:{metrics:[]}};
-  await new OpikExperiments(bench(db,compacted),{env}).sync("compacted");
+  compacted.manifest.approvedPromptId="dataset-p1";
+  compacted.manifest.approvedPrompt={id:"dataset-p1",familyId:"inspection",version:1,requirements:["PRIVATE_BLUEPRINT"]};
+  const measured=await new OpikExperiments(bench(db,compacted),{env}).sync("compacted");
+  assert.equal(promptVersions.get(measured.promptVersion.id).template,compacted.manifest.effectiveSystem);
+  assert.equal(measured.promptVersion.variant,"dataset-system");
   assert.equal([...traces.values()].at(-1).input.messages[0].content,"Pinned effective system");
   assert.deepEqual(JSON.parse([...traces.values()].at(-1).input.messages[1].content).input,compactedRow.input);
   const fixture={...saved,manifest:{...saved.manifest,id:"fixture",fixture:true}};

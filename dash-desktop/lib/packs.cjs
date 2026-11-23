@@ -171,8 +171,8 @@ function loadPacks() {
     .map((f) => {
       const read = (name) =>
         fs.readFileSync(path.join(root, f.name, name), "utf8");
-      const pack = JSON.parse(read("pack.json"));
-      const rows = parseDataset(read("cases.jsonl"), pack);
+      const { casesFile = "cases.jsonl", ...pack } = JSON.parse(read("pack.json"));
+      const rows = parseDataset(read(casesFile), pack);
       return { pack, rows, replay: JSON.parse(read("replay.json")) };
     });
 }

@@ -28,4 +28,4 @@ The Overview track reads **Business outcome → Success metrics → Evaluation r
 
 A live LM Studio test used LFM3 1.7B to prepare and execute the five synthetic Manufacturing inspection cases. Two passed the scenario grader, two returned incorrect proposed accepts and one further response failed grading. Tokenizer preflight matched reported input usage on all five. This test used an isolated database.
 
-The desktop integration tests exercise the Quick compare and Dataset interfaces, approval, prompt and role revisions, request formatting across two adapters, dataset grading, run-informed revision, and historical replay. Their model responses are deterministic. See the [desktop guide](dash-desktop/README.md) for test commands.
+The desktop integration tests exercise the Quick compare and Dataset interfaces, approval, prompt and role revisions, request formatting across two adapters, dataset grading, run-informed revision, and historical replay. Their model responses are deterministic. See the [contributor guide](../../.github/CONTRIBUTING.md) for test commands.
