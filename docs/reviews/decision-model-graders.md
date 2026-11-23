@@ -35,6 +35,8 @@ The checkpoint has 1.92 billion parameters and accepts text, images and video. L
 
 Snapshot the domain, scenario, case version, rubric, question definitions, threshold policy, model artifact revision and quantization, runtime build, and submitted evidence with each local assessment. Opik’s official TypeScript `BaseMetric` supports a validated custom scorer over this narrow adapter. Use the installed `opik` SDK’s `EvaluationScoreResult` for an observed grade. Keep abstentions and transport errors unscored in DASH. Reuse the existing experiment and trace feedback path for actual scores when the operator chooses to sync. Retain the raw distribution as evidence, separate from the rubric’s business metric. A sync retry reuses the recorded assessment. [Opik TypeScript metrics](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics) · [DASH synchronization decision](../adr/0002-opik-and-offline-runs.md)
 
+A separate review compares DASH’s existing Opik integration with DeepEval’s published TypeScript decision metrics, including the handling of inapplicable questions. [Opik and DeepEval](opik-and-deepeval.md)
+
 ## Optional hosted comparison
 
 OpenRouter publishes these list prices in USD, checked November 23, 2026. Its Decisions API uses `POST /api/alpha/decisions`. TypeSafe’s direct service calls the current pinned Jev release `jev-1.14.0`. Its official catalog documents hosted access. Public weights, a local inference license and an Apple Silicon runtime for TypeSafe Jev were unverified. The MIT license covers TypeSafe’s client SDK. [OpenRouter Decisions API](https://openrouter.ai/docs/guides/features/decisions) · [TypeSafe catalog](https://docs.typesafe.ai/models) · [TypeSafe SDK](https://github.com/typesafe-ai/typesafe-sdk-js)
