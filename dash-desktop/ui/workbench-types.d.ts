@@ -1,6 +1,6 @@
 /** Local renderer DTOs shared by the classic scripts and the isolated preload. */
 type UiMode = "quick" | "dataset";
-type UiGradeType = "contains" | "exact" | "field" | "trajectory" | "judge" | "opik";
+type UiGradeType = "contains" | "exact" | "field" | "trajectory" | "judge" | "opik" | "decision";
 interface UiModelIdentity { model: string; provider: string }
 interface UiModel extends UiModelIdentity {
   id: string; revision?: string | null; quantization?: string | null; loaded?: boolean | null;
@@ -37,7 +37,14 @@ interface UiDesignInput extends UiTokenCaps {
   measures?:{metrics:string[];criteria:string[]}; suggestionId?:string;
 }
 interface UiApproval {draftId:string; prompt:string; metrics:string[]}
-interface UiGraderDefinition {name:string;category:string;industry:string;type:UiGradeType;criteria:string;threshold:number;judgeId?:string|null}
+type UiDecisionEvidence = "reference" | "trajectory";
+type UiDecisionProtocol = "systemone" | "mlx-vlm";
+interface UiDecisionConfig {protocol?:UiDecisionProtocol;fallbackModel?:string;provider:"local"|"openrouter";endpoint?:string;model:string;failAt:number}
+interface UiDecisionRequest {protocol?:UiDecisionProtocol;fallbackModel?:string;provider:"local"|"openrouter";requestedModel:string;failAt:number;passAt:number;endpoint?:string}
+type UiDecisionFallbackReason = "primary-unavailable" | "primary-not-decision-capable";
+interface UiDecisionObservation extends UiDecisionRequest {actualModel:string;probabilityYes:number;dispatchedModel?:string;fallbackReason?:UiDecisionFallbackReason}
+interface UiDecisionAttempt {dispatchedModel:string;fallbackReason:UiDecisionFallbackReason}
+interface UiGraderDefinition {name:string;category:string;industry:string;type:UiGradeType;criteria:string;threshold:number;judgeId?:string|null;decision?:UiDecisionConfig;requiredEvidence?:UiDecisionEvidence[]}
 interface UiGrader extends UiGraderDefinition {id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
 interface UiProposedGrader extends UiGraderDefinition {reason:string}
 interface UiGraderDesign { checks:UiProposedGrader[]; summary:string; designer:UiModelIdentity|null }
@@ -47,7 +54,7 @@ interface UiGraderDraft {objective:string;metrics:string;industry:string;target:
 interface UiQuickOptions {recommended:UiGrader[];available:UiGrader[];generated:UiGraderDefinition;judges:UiModel[]}
 interface UiQuickPlan {options:UiQuickOptions|null; saved:Set<string>; enabled:boolean;designed:boolean;
  criteria:string;judgeId:string;threshold:number|string;error:string;sequence:number}
-interface UiAssessment {name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
+interface UiAssessment {decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
 interface UiScore {pass:boolean;ready?:boolean;falseAccept?:boolean;review?:boolean;reasons:string[]}
 interface UiTelemetry {latency_ms?:number|null;first_token_ms?:number|null;input_tokens?:number|null;output_tokens?:number|null;device_power?:{average_w?:number|null}|null}
 interface UiResult {candidateId:string;caseId:string;dispatchState?:"pending"|"canceled"|"interrupted";error?:string|null;output?:string|null;score?:UiScore|null;telemetry?:UiTelemetry|null;
@@ -72,9 +79,9 @@ interface UiState {packs:UiPack[];datasets:UiDataset[];runs:UiRunSummary[];promp
 interface UiLaneBudget {candidateId?:string;status:"pending"|"verified"|"blocked"|"unverified";message?:string;inputTokens?:number|null;contextTokens?:number|null;outputReserve?:number|null}
 interface UiStartRun extends UiTokenCaps {
  mode:UiMode;datasetId:string|null;candidateIds:string[];graderIds:string[];animation:boolean;approvedPromptId?:string;parentId?:string;caseId?:string;
- datasetScorer?:string;caseJudgeId?:string;outcomeRubric?:{criteria:string;judgeId:string;threshold:number;type:"opik"|"judge"};
+ allowHostedDecision?:true;datasetScorer?:string;caseJudgeId?:string;outcomeRubric?:{criteria:string;judgeId:string;threshold:number;type:"opik"|"judge"};
 }
-type UiGradeRequest = {grader:string;run:string;index:number} | {grader:string;evidence:{input:string;output:string;reference:unknown;trajectory?:unknown[]}};
+type UiGradeRequest = {grader:string;allowHostedDecision?:true} & ({run:string;index:number} | {evidence:{input:string;output:string;reference:unknown;trajectory?:unknown[]}});
 type UiDesignGraderRequest = {promptId:string} | {objective:string;metrics:string;industry:string;target:"response"|"agent";datasetId?:string};
 interface UiPlanningEvent {mode:UiMode;stage:string;model:string;status:string;attempt:number}
 interface DashBridge {
@@ -86,6 +93,7 @@ interface DashBridge {
  guidePrompt(draft:string):Promise<UiGuideResult>;cancelGuide():Promise<void>;power(detailed?:boolean):Promise<UiPower>;
  saveEndpoint(request:{section:string;model:string;baseUrl:string;key:string}):Promise<string>;
  designGraders(request:UiDesignGraderRequest):Promise<UiGraderDesign>;confirmGraders(request:UiGraderDefinition[]):Promise<string[]>;
+ listDecisionModels(baseUrl:string,protocol?:UiDecisionProtocol):Promise<string[]>;
  saveGrader(request:UiGraderDefinition):Promise<string>;graderSamples():Promise<UiAssessment[]>;
  quickGraderOptions(id:string):Promise<UiQuickOptions>;previewQuickBudget(id:string,models:string[]):Promise<UiLaneBudget[]>;
  assess(request:UiGradeRequest):Promise<UiAssessment>;diagnostics(id:string):Promise<UiDiagnostic>;

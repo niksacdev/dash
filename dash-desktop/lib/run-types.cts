@@ -40,7 +40,7 @@ export interface RunResult {
 }
 export type RunPartial = {candidateId:string;caseId:string;text:string}|{stage:string;text:string};
 export interface RunManifest {
-  format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string;
+  format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string; hostedDecisionApproved?:boolean;
   candidates:Candidate[]; caseIds:string[]; pack:ScenarioPack|null; graders:GraderSpec[];
   datasetScorer?:DatasetScorer|null; approvedPromptId?:string|null; approvedPrompt?:ApprovedPrompt|null;
   prompt:string|null; objective?:string|null; effectiveSystem?:string|null; promptSource?:string;
@@ -58,7 +58,7 @@ export interface RunData {status:RunStatus;manifest:RunManifest;results:RunResul
 export interface RunDetail extends RunData {report:RunReport|null}
 export interface StartRun {
   mode:RunMode; candidateIds:string[]; datasetId?:string; caseId?:string; parentId?:string;
-  approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[];
+  approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[]; allowHostedDecision?:boolean;
   inputCap?:number|null; outputCap?:number|null; outcomeRubric?:unknown; animation?:boolean;
 }
 export function isRecord(value:unknown):value is Record<string,unknown> {return !!value && typeof value==="object" && !Array.isArray(value);}

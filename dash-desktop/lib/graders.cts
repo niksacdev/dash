@@ -5,9 +5,10 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { Contains, ExactMatch, GEval, OpikBaseModel, z } from "opik";
+import {DecisionDispatchError,evaluateDecision} from "./decision-model.cjs";
 import { hash } from "./packs.cjs";
 import { isRecord,errorText,type LocalCandidate,type ModelCandidate,type RuntimeAdapters,type ChatTurn } from "./runtime-types.cjs";
-import {rubricOrigin,graderType,savedGrader,storedAssessment,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
+import {decisionSettings,graderType,savedGrader,storedAssessment,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
 import type {ApprovedPrompt} from "./outcome-workflow.cjs";
 export type {GraderSpec,GraderEvidence,GraderAssessment,RecordedAssessment,GraderDefinition} from "./grader-types.cjs";
 export const decodeGraderSpec = (value:unknown):GraderSpec => savedGrader.parse(value);
@@ -117,6 +118,7 @@ function terms(values:string[]):Set<string> {
   return new Set(words.filter(word => word.length > 2 && !commonTerms.has(word)));
 }
 function quickCompatible(grader:GraderSpec, judges:LocalCandidate[]) {
+  if (grader.type === "decision") return !grader.requiredEvidence?.length;
   if (grader.type === "contains" || grader.type === "exact") return true;
   if (!judgeTypes.has(grader.type) || (grader.type === "opik" && !sdkEnabled())) return false;
   const current = judges.find(m => m.id === grader.judge?.id);
@@ -161,7 +163,6 @@ export class Graders {
     if(!isRecord(input))throw Error("Provide a grader definition.");
     const name=text(input.name,100),category=text(input.category,100),industry=text(input.industry,100),
       type=graderType.parse(input.type),criteria=text(input.criteria,6000),threshold=Number(input.threshold);
-    if(!Object.hasOwn(checks,type)&&!["contains","exact","judge","opik"].includes(type))throw Error("Select a supported grader.");
     if(input.threshold===""||!Number.isFinite(threshold)||threshold<=0||threshold>1)throw Error("Choose a pass threshold above 0 and up to 1.");
     const judge=["judge","opik"].includes(type)?models.find(m=>m.id===input.judgeId):null;
     if(["judge","opik"].includes(type)&&!judge)throw Error("Choose a connected local judge model.");
@@ -170,8 +171,13 @@ export class Graders {
       const rule=referenceRule.parse(readJson(criteria));
       if(![rule?.outputField,rule?.referenceField].every(v=>typeof v==="string" && /^[\w.-]+$/.test(v)))throw Error("Specify outputField and referenceField.");
     }
+    const settings=type==="decision" ? decisionSettings.parse({
+      decision:input.decision, threshold:input.threshold, requiredEvidence:input.requiredEvidence,
+    }) : null;
     const family=origin ? 'outcome/'+origin.promptFamilyId : name.toLowerCase();
-    const spec={name,category,industry,type,criteria,threshold,judge,...(type==="opik"?{opikEngine:opikVersion}:{}),...(origin ? {origin} : {})};
+    const spec={name,category,industry,type,criteria,threshold,judge,...((type==="opik" || type==="decision") ? {opikEngine:opikVersion} : {}),
+      ...(settings && {decision:settings.decision}),
+      ...(settings?.requiredEvidence?.length && {requiredEvidence:[...settings.requiredEvidence].sort()}),...(origin ? {origin} : {})};
     const id=hash(spec);
     const existing=this.db.prepare("SELECT id FROM graders WHERE id=?").get(id);
     if(existing)return id;
@@ -221,9 +227,28 @@ export class Graders {
     const id = this.save(input, [pinnedJudge(judge)], origin);
     return this.select([...new Set([...selected.map(g => g.id), id])]);
   }
-  async assess(g:GraderSpec,e:GraderEvidence,adapters:RuntimeAdapters,signal:AbortSignal):Promise<GraderAssessment> {
-    const base:Omit<GraderAssessment,"reason"|"value"|"pass">={graderId:g.id,name:g.name,version:g.version,category:g.category,engine:g.type,threshold:g.threshold,judge:g.judge?.id || null,...(e.inputSource && {inputSource:e.inputSource})};
+  async assess(g:GraderSpec,e:GraderEvidence,adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false):Promise<GraderAssessment> {
+    const base:Omit<GraderAssessment,"reason"|"value"|"pass">={graderId:g.id,name:g.name,version:g.version,category:g.category,engine:g.type,threshold:g.threshold,judge:g.type==="decision" ? g.decision.model : g.judge?.id || null,...(e.inputSource && {inputSource:e.inputSource})};
     try {
+      if (g.type==="decision") {
+        const {provider,model,endpoint,failAt,protocol,fallbackModel}=g.decision;
+        base.decisionRequest = {
+          provider, requestedModel:model, failAt, passAt:g.threshold,
+          ...(endpoint && {endpoint}),
+          ...(provider === "local" && {protocol:protocol ?? "systemone"}),
+          ...(fallbackModel && {fallbackModel}),
+        };
+        signal.throwIfAborted();
+        if (provider==="openrouter" && allowHostedDecision!==true)
+          throw Error("Allow this operation to send grading evidence to OpenRouter first.");
+        if (g.requiredEvidence?.includes("reference") && (e.reference==null || (typeof e.reference==="string" && !e.reference.trim())))
+          throw Error("This decision criterion requires a reference answer. The case has none.");
+        if (g.requiredEvidence?.includes("trajectory") && !Array.isArray(e.trajectory))
+          throw Error("This decision criterion requires an observed agent trajectory. The case has none.");
+        const result=await evaluateDecision(g.decision,g.threshold,g.criteria,e,signal);
+        const evaluator=`dash-decision/1 · ${opikVersion} · decision_criterion`;
+        return {...base,...result,evaluator};
+      }
       let value:unknown,reason:unknown;
       if (g.type==="exact" || g.type==="contains") {
         const score = g.type==="exact"
@@ -256,10 +281,13 @@ export class Graders {
       }
       if(typeof value!=="number" || !Number.isFinite(value) || value<0 || value>1 || typeof reason!=="string" || !reason.trim())throw Error("Judge returned an invalid score or rationale.");
       return {...base,value,reason:reason.slice(0,6000),pass:value>=g.threshold};
-    }catch(err){return {...base,value:null,pass:null,reason:errorText(err).slice(0,700)};}
+    } catch (err) {
+      return {...base, value:null, pass:null, reason:errorText(err).slice(0,700),
+        ...(err instanceof DecisionDispatchError && {decisionAttempt:err.attempt})};
+    }
   }
-  async record(g:GraderSpec,e:GraderEvidence,where:{run?:string;candidate?:string;caseId?:string},adapters:RuntimeAdapters,signal:AbortSignal){
-    const verdict=await this.assess(g,e,adapters,signal), id=randomUUID(),created=new Date().toISOString();
+  async record(g:GraderSpec,e:GraderEvidence,where:{run?:string;candidate?:string;caseId?:string},adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false){
+    const verdict=await this.assess(g,e,adapters,signal,allowHostedDecision), id=randomUUID(),created=new Date().toISOString();
     const item={...verdict,id,created,...(where.run?{}:{evidence:e})};
     this.db.prepare("INSERT INTO assessments VALUES(?,?,?,?,?,?)").run(id,where.run||null,where.candidate||null,where.caseId||null,created,JSON.stringify(item));
     return item;

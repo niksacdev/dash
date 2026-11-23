@@ -5,6 +5,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 import {mock} from "node:test";
+import {createServer} from "node:http";
+import {once} from "node:events";
 import {app} from "electron";
 import {z} from "zod";
 import {opikJudgeRequest} from "./opik-judge-fixture.cjs";
@@ -86,10 +88,26 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   return { decision: "review", evidence: model === models.ollama ? "QA inspection record" : "QA response" };
 }
 
+// Only this dedicated loopback listener can receive real HTTP in the smoke test.
+const localFetch=globalThis.fetch;
+let decisionOrigin="", hostedGrades=0;
+const decisionQuestion=z.object({model:z.string(),state:z.string(),questions:z.object({criterion:z.object({type:z.literal("noul"),instructions:z.string()})})});
+function decisionAnswer(model:string,probability:number){
+  return {model,answers:{criterion:{type:"noul",noul:probability}},usage:{input_tokens:12,output_tokens:0}};
+}
 // Intercept HTTP at the transport boundary. Discovery, request formatting,
 // streaming response parsing and all Electron IPC handlers remain in use.
 globalThis.fetch = async (url, options = {}) => {
   const target = new URL(url instanceof Request ? url.url : url);
+  if(decisionOrigin && target.origin===decisionOrigin)return localFetch(url,options);
+  if(target.href==="https://openrouter.ai/api/alpha/decisions"){
+    assert.equal(new Headers(options.headers).get("authorization"),"Bearer synthetic-workflow-smoke-key");
+    assert.ok(typeof options.body==="string");
+    const question=decisionQuestion.parse(JSON.parse(options.body));
+    assert.equal(question.model,"typesafe/jev-1.14");
+    hostedGrades++;
+    return Response.json(decisionAnswer(question.model,.91));
+  }
   assert.equal(target.hostname, "127.0.0.1");
   if (target.port === "11434" && ["/api/tags", "/api/ps"].includes(target.pathname)) {
     return Response.json({ models: [
@@ -435,11 +453,178 @@ async function smoke() {
     assert.equal(brief.priorRun.candidates[0].scored, dataset.caseIds.length);
     assert.doesNotMatch(JSON.stringify(brief.priorRun), /QA response|gold/);
   }
+  // Create and revise one grader as an operator would. The scoring server and
+  // credential are synthetic; the IPC, validation, version store and UI are real.
+  process.env.OPENROUTER_API_KEY="synthetic-workflow-smoke-key";
+  const localAlias="qa/decision", localQuestions:string[]=[];
+  const checkpoint=mkdtempSync(path.join(profile,"synthetic-checkpoint-"));
+  let mlxGrades=0;
+  const server=createServer(async(req,res)=>{
+    res.setHeader("content-type","application/json");
+    if(req.method==="GET" && req.url==="/health"){
+      res.end(JSON.stringify({status:"healthy",loaded_models:{decision:{model:checkpoint,model_kind:"decision",adapter:null}}}));return;
+    }
+    if(req.method==="POST" && req.url==="/v1/decisions"){
+      let raw="";
+      for await(const chunk of req)raw+=String(chunk);
+      try{
+        const {model}=z.object({model:z.literal(checkpoint)}).parse(JSON.parse(raw));
+        mlxGrades++;
+        res.end(JSON.stringify({model,answers:{criterion:{type:"bool",value:true,probability:.94}},usage:{input_tokens:12,output_tokens:0}}));
+      }catch{res.statusCode=400;res.end("{}");}
+      return;
+    }
+    if(req.method==="GET" && req.url==="/v1/models"){
+      res.end(JSON.stringify({data:[{id:localAlias,architecture:{output_modalities:["decisions"]}}]}));return;
+    }
+    if(req.method==="POST" && req.url==="/v1/systemone"){
+      let body="";
+      for await(const chunk of req)body+=String(chunk);
+      try {
+        const question=decisionQuestion.parse(JSON.parse(body));
+        assert.equal(question.model,localAlias);
+        localQuestions.push(question.state);
+        res.end(JSON.stringify(decisionAnswer(localAlias,question.state.includes("UNCERTAIN")?.5:.92)));
+      } catch {res.statusCode=400;res.end("{}");}
+      return;
+    }
+    res.statusCode=404;res.end("{}");
+  });
+  server.listen(0,"127.0.0.1");
+  await once(server,"listening");
+  try {
+    const address=server.address();
+    assert.ok(address && typeof address!=="string");
+    decisionOrigin="http://127.0.0.1:"+address.port;
+    await route("graders");
+    await wait(()=>exists("#grade-create"),"Grader editor");
+    await js("document.querySelector('#grade-create').closest('details').open=true");
+    await fill("#grade-type","decision");
+    await click("[data-decision-starter=earnings]");
+    assert.equal(await text("document.querySelector('#grade-create [name=industry]').value"),"Financial Services");
+    await click("[data-decision-starter=inspection]");
+    const criterion=await text("document.querySelector('#grade-create [name=criteria]').value");
+    assert.match(criterion,/current drawing revision/);
+    assert.equal(await js("document.querySelector('#grade-create [value=reference]').checked"),true);
+    await fill("[name=decision-endpoint]",decisionOrigin);
+    await click("#grade-discover");
+    await wait(()=>js("document.querySelector('[name=decision-model]').value==="+q(localAlias)),"Discovered served decision model");
+    const reveal=async(selector:string)=>{
+      await wait(()=>exists(selector),"Available control "+selector);
+      await js("(() => {for(let node=document.querySelector("+q(selector)+");node;node=node.parentElement)if(node instanceof HTMLDetailsElement)node.open=true})()");
+    };
+    const primaryAlias="qa/unloaded-primary";
+    await fill("[name=decision-model]",primaryAlias);
+    await reveal("[name=decision-fallback]");await fill("[name=decision-fallback]",localAlias);
+    await click("#grade-create button.yellow");
+    const versionId=(n:number)=>db.prepare("SELECT id FROM graders WHERE family=? AND version=?").get("inspection disposition evidence",n)?.id;
+    await wait(()=>versionId(1),"Saved local decision grader");
+    const localId=z.string().parse(versionId(1));
+    const manualCount=()=>Number(db.prepare("SELECT count(*) n FROM assessments WHERE run IS NULL").get()?.n);
+    async function provideSample(id:string,output:string,reference:string) {
+      await wait(()=>exists('#grade-sample [value="'+id+'"]'),"Grader available to assess");
+      await fill("#grade-sample [name=grader]",id);
+      await fill("#grade-sample [name=input]","Synthetic lot B at 10.04 mm; current upper limit 10.03 mm.");
+      await fill("#grade-sample [name=output]",output);
+      await reveal("#grade-sample [name=reference]");await fill("#grade-sample [name=reference]",reference);
+      await click("#grade-sample button");
+    }
+    const manualStart=manualCount();
+    await provideSample(localId,"Hold lot B.","");
+    await wait(()=>manualCount()===manualStart+1,"Missing required evidence recorded");
+    await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('Unscored')"),"Unscored evidence shown");
+    assert.equal(localQuestions.length,0);
+    await provideSample(localId,"Hold lot B.","Current drawing calls for a hold.");
+    await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('P(yes) 0.92')"),"Local decision probability");
+    assert.match(await text("document.querySelector('#screen table').innerText"),/Alternate model used/);
+    assert.equal(localQuestions.length,1);
+    assert.match(localQuestions[0],/Current drawing calls for a hold/);
+    await provideSample(localId,"UNCERTAIN: hold for reinspection.","Current drawing calls for a hold.");
+    await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('Abstained · unscored')"),"Uncertain decision excluded from numeric scores");
+    assert.equal(manualCount(),manualStart+3);
+    await click('[data-revise="'+localId+'"]');
+    await wait(()=>js("document.querySelector('#grade-create [name=decision-model]').value==="+q(primaryAlias)),"Pinned model in the revision editor");
+    await fill("[name=decision-provider]","openrouter");
+    await fill("[name=decision-hosted-model]","typesafe/jev-1.14");
+    await click("#grade-create input[value=reference]");
+    assert.equal(await text("document.querySelector('#grade-create [name=criteria]').value"),criterion);
+    await click("#grade-create button.yellow");
+    await wait(()=>versionId(2),"New hosted version of the same criterion");
+    const hostedId=z.string().parse(versionId(2));
+    assert.notEqual(hostedId,localId);
+    const loadedAgain=once(win.webContents,"did-finish-load");
+    win.webContents.reload();await loadedAgain;
+    await wait(()=>exists("#grade-sample"),"Saved grader versions after reload");
+    await js("window.consentPrompts=[];window.allowNextDecision=false;window.confirm=s=>{window.consentPrompts.push(s);const answer=window.allowNextDecision;window.allowNextDecision=false;return answer};true");
+    await provideSample(hostedId,"Hold lot B.","Current drawing calls for a hold.");
+    assert.equal(manualCount(),manualStart+3);
+    assert.equal(hostedGrades,0);
+    const confirmation=await text("window.consentPrompts.at(-1)");
+    assert.match(confirmation,/OpenRouter/);assert.match(confirmation,/typesafe\/jev-1.14/);assert.match(confirmation,/reference answer/);
+    await js("window.allowNextDecision=true");
+    await click("#grade-sample button");
+    await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('P(yes) 0.91')"),"Consented hosted sample");
+    assert.equal(hostedGrades,1);
+    await route("prompts");
+    await click('[data-wf-use="'+first.id+'"]');
+    await reveal('[name=qc-saved-grader][value="'+hostedId+'"]');
+    await click('[name=qc-saved-grader][value="'+hostedId+'"]');
+    for(const provider of ["ollama","lmstudio"] as const){
+      const item=pick(provider);
+      if(await js("document.querySelector("+q(item)+").getAttribute('aria-pressed')")!=="true")await click(item);
+    }
+    const runCount=()=>Number(db.prepare("SELECT count(*) n FROM runs").get()?.n),beforeHostedRun=runCount();
+    await click("#setup .go-button");
+    assert.match(await text("window.consentPrompts.at(-1)"),/Quick comparison/);
+    assert.equal(runCount(),beforeHostedRun);
+    await route("new");
+    await fill("#pack","earnings");await fill("#ds",scenario);
+    await reveal('[name=custom-grader][value="'+hostedId+'"]');
+    await click('[name=custom-grader][value="'+hostedId+'"]');
+    const localCandidate='#dataset-models [data-model="ollama/'+models.ollama+'"]';
+    await wait(()=>exists(localCandidate),"Dataset model selection");
+    for(const id of z.array(z.string()).parse(await js("Array.from(document.querySelectorAll('#dataset-models [data-remove]'),e=>e.dataset.remove)")))
+      if(id!=="ollama/"+models.ollama)await click('#dataset-models [data-remove="'+id+'"]');
+    if(await js("document.querySelector("+q(localCandidate)+").getAttribute('aria-pressed')")!=="true")await click(localCandidate);
+    await click("#dataset-run-form button[type=submit]");
+    assert.match(await text("window.consentPrompts.at(-1)"),/dataset run of/);
+    assert.equal(runCount(),beforeHostedRun);assert.equal(hostedGrades,1);
+    await js("window.allowNextDecision=true");
+    await click("#dataset-run-form button[type=submit]");
+    const hostedRun=await completedRun(4);
+    assert.ok(hostedRun.graders.some(g=>g.id===hostedId));
+    assert.equal(hostedGrades,1+hostedRun.caseIds.length);
+    await route("run/"+hostedRun.id+"/0");
+    await click("[data-act=rerun]");
+    assert.match(await text("window.consentPrompts.at(-1)"),/rerun of case/);
+    assert.equal(runCount(),beforeHostedRun+1);
+    await fill("#grade-case [name=grader]",hostedId);
+    await click("#grade-case button");
+    assert.match(await text("window.consentPrompts.at(-1)"),/this saved case/);
+    assert.equal(hostedGrades,1+hostedRun.caseIds.length);
+    await route("graders");
+    await click('[data-revise="'+hostedId+'"]');
+    await wait(()=>js("document.querySelector('[name=decision-provider]').value==='openrouter'"),"Reopen hosted version");
+    await fill("[name=decision-provider]","local");
+    await fill("[name=decision-protocol]","mlx-vlm");
+    await fill("[name=decision-endpoint]",decisionOrigin);
+    await click("#grade-discover");
+    await wait(()=>js("document.querySelector('[name=decision-model]').value==="+q(checkpoint)),"MLX preloaded checkpoint from health");
+    await click("#grade-create button.yellow");
+    await wait(()=>versionId(3),"Pinned MLX grader version");
+    const mlxId=z.string().parse(versionId(3));
+    await provideSample(mlxId,"Hold lot B.","Current drawing calls for a hold.");
+    await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('P(yes) 0.94')"),"Native MLX decision score");
+    assert.equal(mlxGrades,1);
+  } finally {
+    decisionOrigin="";
+    server.closeAllConnections();server.close();
+  }
   db.close();
 }
 
 app.whenReady().then(smoke).then(() => {
-  console.log("Workflow smoke passed: mobile planning, automatic Quick judging, winner and case rationale, blocked preflight, direct dataset runs, approved variants and revisions.");
+  console.log("Workflow smoke passed: mobile planning, automatic Quick judging, winner and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader versioning, abstention and per-action consent.");
   rmSync(profile, { recursive: true, force: true });
   app.exit(0);
 }).catch(err => {

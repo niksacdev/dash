@@ -24,7 +24,7 @@ async function loadQuickGrading(approved:UiApproved|null) {
       plan.threshold = options.generated?.threshold ?? 1;
       if (!plan.designed) plan.enabled = !!plan.judgeId && options.judges.some(j=>j.id===plan.judgeId) && !!plan.criteria;
       if (!plan.designed && !plan.enabled) {
-        const reusable = options.recommended.find(g=>!["judge","opik"].includes(g.type));
+        const reusable = options.recommended.find(g=>!["judge","opik","decision"].includes(g.type));
         if (reusable) plan.saved.add(reusable.id);
       }
     }
@@ -69,7 +69,7 @@ function quickGradeStatus() {
 }
 function graderPick(g:UiGrader,plan:UiQuickPlan,reason?:string) {
   return '<label class="qc-grade-choice"><input type="checkbox" name="qc-saved-grader" value="'+esc(g.id)+'" '+(plan.saved.has(g.id)?"checked":"")+'><span><strong>'+
-    esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc([graderTypes[g.type],g.industry].filter(Boolean).join(" · "))+'</small>'+
+    esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc([graderTypes[g.type],g.industry,decisionTarget(g)].filter(Boolean).join(" · "))+'</small>'+
     (reason?'<small>'+esc(reason)+'</small>':'')+'</span></label>';
 }
 function quickGradePicker() {

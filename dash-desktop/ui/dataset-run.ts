@@ -117,7 +117,9 @@ document.addEventListener("submit",async e=>{
       const value=formText(f,key);
       if (value) config[key]=Number(value);
     }
-    const run=await api.start(config);
+    const consent=graderConsentById(config.graderIds,"this dataset run of "+d.count+" cases across "+ids.length+" candidates");
+    if(!consent)return;
+    const run=await api.start({...config,...consent});
     workflows.dataset.error=""; baseline=""; location.hash="run/"+run;
   } catch (err) {
     const msg=String(errorText(err)).replace(/^Error invoking remote method .dash:[^ ]+ Error: /,"");
