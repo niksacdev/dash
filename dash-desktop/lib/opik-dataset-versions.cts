@@ -55,9 +55,10 @@ export async function nativeVersion(api:NativeOpik,datasetId:string,items:CaseIt
     const {head,found}=await versions();
     if(found)return confirmed(found);
     if(!head){
-      // Opik requires an empty base when a new dataset has no versions.
+      // The server locks the dataset, rejects this null base if any version exists, and
+      // requires an empty change set. A concurrent initializer therefore cannot replace a head.
       try {
-        await api.datasets.applyDatasetItemChanges(datasetId,{override:false,body:{
+        await api.datasets.applyDatasetItemChanges(datasetId,{override:true,body:{
           base_version:null,tags:["dash-family-base"],change_description:"Initialize DASH dataset family",
         }},options);
       } catch(e) {

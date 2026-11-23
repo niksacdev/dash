@@ -284,7 +284,7 @@ export class OpikExperiments {
           const remote=new Map<string,Pick<NativeItem,"experimentId"|"datasetItemId"|"traceId">>();
           for(let page=1;page<=Math.ceil(items.length/100);page++){
             const data=await api.datasets.findDatasetItemsWithExperimentItems(datasetId,{page,size:100,
-              experimentIds:JSON.stringify([eid]),datasetVersion:version.hash},options);
+              experimentIds:JSON.stringify([eid])},options);
             for(const row of data.content || [])for(const item of row.experimentItems || [])if(item.id && item.experimentId && item.datasetItemId && item.traceId)remote.set(item.id,{experimentId:item.experimentId,datasetItemId:item.datasetItemId,traceId:item.traceId});
           }
           const unresolved=chunk.filter(item=>{
