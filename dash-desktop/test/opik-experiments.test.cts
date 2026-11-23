@@ -56,7 +56,7 @@ function approved(id:string, familyId:string, version:number, mode:RunManifest["
 
 // The isolated service observes JSON on the wire, after the official SDK has serialized it.
 const str = z.string(), fields = z.record(str,z.unknown());
-const datasetWire = z.looseObject({id:str,name:str});
+const datasetWire = z.looseObject({id:str,name:str,tags:z.array(str).optional(),project_id:str.optional(),project_name:str.optional()});
 const wireRow = z.looseObject({data:fields}), editedRow = wireRow.extend({id:str});
 const deltaWire = z.looseObject({base_version:str.nullable(),tags:z.array(str),metadata:fields.optional(),
   deleted_ids:z.array(str).default([]),added_items:z.array(wireRow).default([]),edited_items:z.array(editedRow).default([])});
@@ -87,6 +87,7 @@ test("Opik status remains offline and unconfigured unless the DASH destination i
 
 test("actual SDK syncs saved traces and scores into native version-pinned experiments and resumes a lost write acknowledgement",async t=>{
   const datasets=new Map<string,z.infer<typeof datasetWire>>(), experiments=new Map<string,z.infer<typeof experimentWire>>();
+  const projects=new Map<string,string>();
   const links=new Map<string,z.infer<typeof linkWire>>(), traces=new Map<string,z.infer<typeof traceWire>>();
   const spans=new Map<string,z.infer<typeof spanWire>>(), scores=new Map<string,z.infer<typeof scoreWire>>();
   const requests: [string,string][] = [], failures: string[] = [];
@@ -96,7 +97,7 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   const lastTrace = () => present([...traces.values()].at(-1));
   const historyFor = (datasetId:string) => present(versions.get(datasetId));
   const rowsFor = (datasetId:string) => present(snapshots.get(historyFor(datasetId)[0].version_hash));
-  let interrupt=true, loseNextVersion=false, losePrompt=true, competingInitializer=true;
+  let conflictName=false,interrupt=true, loseNextVersion=false, losePrompt=true, competingInitializer=true;
   // The managed local destination presents no API key even when a cloud key exists in the process.
   const priorKey=process.env.OPIK_API_KEY;
   process.env.OPIK_API_KEY="isolated-cloud-key";
@@ -124,8 +125,28 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
           return send(201,version);
         }
       }
+      if(group==="projects"){
+        const content=[...projects.entries()].map(([name,id])=>({id,name}));
+        if(sub){const found=content.find(p=>p.id===sub);return found?send(200,found):send(404);}
+        return send(200,{content:content.filter(p=>p.name===url.searchParams.get("name"))});
+      }
       if(group==="datasets"){
-        if(req.method==="POST"&&!sub){const body=datasetWire.parse(payload);datasets.set(body.id,body);versions.set(body.id,[]);return send(201);}
+        if(req.method==="GET"&&!sub)return send(200,{content:[...datasets.values()].filter(d=>d.project_id===url.searchParams.get("project_id"))});
+        if(sub==="retrieve"){
+          const body=z.object({dataset_name:str}).parse(payload);
+          const found=[...datasets.values()].find(d=>d.name===body.dataset_name);
+          return found?send(200,found):send(404);
+        }
+        if(req.method==="POST"&&!sub){
+          const body=datasetWire.parse(payload),project=present(body.project_name);
+          if(conflictName){
+            conflictName=false;
+            const id=randomUUID();datasets.set(id,{id,name:body.name,tags:["Unrelated"],project_id:projects.get("QA Second")});versions.set(id,[]);
+          }
+          if([...datasets.values()].some(d=>d.name===body.name))return send(409,{message:"Dataset name is already taken"});
+          if(!projects.has(project))projects.set(project,randomUUID());
+          datasets.set(body.id,{...body,project_id:projects.get(project)});versions.set(body.id,[]);return send(201);
+        }
         if(!datasets.has(sub))return send(404,{message:"missing"});
         const history=historyFor(sub), head=history[0];
         if(!leaf)return send(200,datasets.get(sub));
@@ -390,4 +411,52 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
     const native=[...scores.values()].filter(s=>s.id===trace.id);
     assert.deepEqual(native.map(s=>[s.name,s.value]),[["Customer grader ["+copied.id+"]",i===0?1:0]]);
   }
+
+  // Independent local profiles publish into one Opik workspace. The API enforces names across projects.
+  const renamed=present(datasets.get(receipt.datasetId));renamed.name="Renamed in Opik";
+  const publishFromFresh=async(run:TestRun,project="QA")=>{
+    const fresh=new DatabaseSync(":memory:");
+    try{
+      const service=new OpikExperiments(bench(fresh,run),{env:{...env,OPIK_PROJECT_NAME:project}});
+      const result=await service.sync(run.manifest.id),before=requests.length;
+      assert.deepEqual(await service.sync(run.manifest.id),result);assert.equal(requests.length,before);
+      return result;
+    }finally{fresh.close();}
+  };
+  const familyRun=(id:string):TestRun=>({...saved,manifest:{...saved.manifest,id}});
+  const otherProfile=await publishFromFresh(familyRun("new-profile"));
+  assert.equal(otherProfile.datasetId,receipt.datasetId);assert.equal(otherProfile.versionId,receipt.versionId);
+  assert.equal(otherProfile.datasetName,"Renamed in Opik");
+  const foreign=await publishFromFresh(familyRun("independent-project"),"QA Second");
+  assert.notEqual(foreign.datasetId,receipt.datasetId);
+  const foreignVersionCount=historyFor(foreign.datasetId).length;
+  const unrelated=familyRun("different-source");
+  unrelated.manifest={...unrelated.manifest,datasetMetadata:{...metadata,source:"Vendor B"},datasetId:"vendor-b-initial"};
+  const otherSource=await publishFromFresh(unrelated);
+  assert.notEqual(otherSource.datasetId,receipt.datasetId);assert.notEqual(otherSource.datasetId,foreign.datasetId);
+  assert.equal(historyFor(foreign.datasetId).length,foreignVersionCount);
+  const legacy=present(datasets.get(receipt.datasetId));legacy.tags=["DASH"];
+  const recovered=await publishFromFresh(familyRun("older-profile-unmarked"));
+  assert.equal(recovered.datasetId,receipt.datasetId);assert.equal(recovered.versionId,receipt.versionId);
+  // A legacy server can return snapshot tags but omit version metadata. Keep the registered family prefix as independent evidence.
+  const oldName=legacy.name;legacy.name="DASH Incoming inspection · "+requireFamilySuffix();
+  function requireFamilySuffix(){
+    const tagged=present(datasets.get(foreign.datasetId)).tags || [];
+    return present(tagged.find(tag=>tag.startsWith("dash-family-"))).slice("dash-family-".length,"dash-family-".length+16);
+  }
+  const legacyHistory=historyFor(receipt.datasetId);
+  const priorMetadata=legacyHistory.map(v=>v.metadata);
+  legacyHistory.forEach(v=>{delete v.metadata;});
+  const markerOnly=await publishFromFresh(familyRun("older-profile-tags-only"));
+  assert.equal(markerOnly.datasetId,receipt.datasetId);assert.equal(markerOnly.versionId,receipt.versionId);
+  legacyHistory.forEach((v,i)=>{v.metadata=priorMetadata[i];});legacy.name=oldName;
+  const countBeforeConflict=experiments.size;
+  conflictName=true;
+  const collision=familyRun("human-owned-name");collision.manifest={...collision.manifest,datasetMetadata:{...metadata,family:"Completely different"}};
+  await assert.rejects(publishFromFresh(collision),/different project or source/);
+  assert.equal(experiments.size,countBeforeConflict);
+  const sameSnapshot=familyRun("same-snapshot-new-source");
+  sameSnapshot.manifest={...sameSnapshot.manifest,datasetMetadata:{...metadata,source:"New publisher"}};
+  const exact=await publishFromFresh(sameSnapshot);
+  assert.equal(exact.datasetId,receipt.datasetId);assert.equal(exact.versionId,receipt.versionId);
 });

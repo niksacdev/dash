@@ -8,6 +8,7 @@ import type {GraderSpec} from "./grader-types.cjs";
 import {analyzeOutputs,type RunReport} from "./run-report.cjs";
 import {caseMessages} from "./evaluation-cases.cjs";
 import {prepareInput} from "./guardrail.cjs";
+import {resolveDatasetFamily} from "./opik-dataset-family.cjs";
 import {caseData,nativeVersion} from "./opik-dataset-versions.cjs";
 import type {RunManifest,CaseRow} from "./run-types.cjs";
 import {isRecord} from "./runtime-types.cjs";
@@ -250,17 +251,17 @@ export class OpikExperiments {
     const normalized=(value:string)=>value.trim().toLowerCase();
     const identity=digest([source?"dataset":"quick",normalized(industry),m.pack?.id || "",normalized(family)]);
     const snapshot=digest([m.datasetId || m.approvedPromptId || "quick",rows]);
-    const datasetId=this.stableId("dataset-family/"+identity);
-    const proposedName=("DASH "+(source?family:"Quick compare")).slice(0,95)+" · "+identity.slice(0,16);
-    const dsKey="dataset/"+datasetId;
+    const provisionalId=this.stableId("dataset-family/"+identity), dsKey="dataset/"+provisionalId;
     const items=rows.map(row=>({source:"sdk" as const,data:caseData(row)}));
-    const byCase=new Map(rows.map(row=>[row.case_id,row]));
-    const datasetName=await step(dsKey+"/registered-name",z.string(),async()=>{
-      const remote=await ensure(()=>api.datasets.getDatasetById(datasetId,{},options),
-        ()=>api.datasets.createDataset({id:datasetId,name:proposedName,projectName,description:industry+" · "+(m.pack?.title || "Quick comparison prompts"),tags:["DASH"]},options));
-      if (!remote.name || (remote.id && remote.id!==datasetId)) throw problem("The destination dataset identity did not match this family.");
-      return remote.name;
-    });
+    const byCase=new Map(rows.map(r=>[r.case_id,r]));
+    const binding=await step(dsKey+"/native-family",z.object({id:z.string(),projectId:z.string()}),()=>resolveDatasetFamily(api,{
+      provisionalId,identity,snapshot,title:source?family:"Quick compare",pack:m.pack?.id || "",industry,
+      project:projectName,workspace:this.destination.workspace,description:industry+" · "+(m.pack?.title || "Quick comparison prompts"),
+      source:source ? metadata?.source ?? "" : "DASH Quick compare",datasetId:m.datasetId,parentId:metadata?.parentId ?? null,
+    },problem));
+    const currentDataset=await api.datasets.getDatasetById(binding.id,{},options);
+    if(currentDataset.projectId!==binding.projectId)throw problem("The native dataset moved to a different project. No cases were changed.");
+    const datasetId=binding.id,datasetName=currentDataset.name;
     const version=await step(dsKey+"/snapshot/"+snapshot,datasetVersion,()=>nativeVersion(api,datasetId,items,snapshot,{
       dash_dataset_id:m.datasetId || "", dash_dataset_version:m.datasetVersion || rows[0].dataset_version || "",
       dash_prompt_id:m.approvedPromptId || "",family:source?family:"Quick compare",industry,pack:m.pack?.id || "",
