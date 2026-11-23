@@ -920,8 +920,12 @@ document.addEventListener("submit", async (e) => {
   requireElement("button[type=submit]",HTMLButtonElement,form).disabled = true;
   try {
     const grading = runMode === "quick" ? quickGradePayload(quickGradePlan()) : {graderIds:selectedGraderIds()};
+    const scope=runMode==="quick"?"this Quick comparison across "+candidateIds.length+" candidates":
+      "this dataset run of "+(state.datasets.find(d=>d.id===approved.datasetId)?.count ?? 0)+" cases across "+candidateIds.length+" candidates";
+    const consent=graderConsentById(grading.graderIds,scope);
+    if(!consent)return;
     const id = await api.start({
-      mode: runMode, datasetId: approved.datasetId || null, approvedPromptId: approved.id,
+      ...consent, mode: runMode, datasetId: approved.datasetId || null, approvedPromptId: approved.id,
       ...grading, candidateIds,
       animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
     });
@@ -972,8 +976,10 @@ document.addEventListener("click", async (e) => {
     if (act === "rerun" && current) {
       const r = current.results[Number(rec)],
         m = current.manifest;
+      const consent=hostedDecisionConsent(m.graders || [],"this rerun of case "+r.caseId);
+      if(!consent)return;
       const next = await api.start({
-        mode: "dataset",
+        ...consent, mode: "dataset",
         datasetId: m.datasetId,
         ...(m.approvedPrompt?.id && {approvedPromptId: m.approvedPrompt.id}),
         candidateIds: [r.candidateId],

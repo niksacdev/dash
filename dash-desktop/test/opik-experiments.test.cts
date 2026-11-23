@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import { buildReport } from "../lib/run-report.cjs";
 import { OpikExperiments } from "../lib/opik-experiments.cjs";
+import type { GraderSpec } from "../lib/grader-types.cjs";
 import type { SavedRun, SyncStore } from "../lib/opik-types.cjs";
 import type { RunManifest, RunResult, StoredGuardrail, DatasetCase, DatasetMetadata } from "../lib/run-types.cjs";
 import { isCaseRow } from "../lib/run-types.cjs";
@@ -106,6 +107,7 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
       const chunks: Buffer[]=[];
       for await(const chunk of req){assert.ok(Buffer.isBuffer(chunk));chunks.push(chunk);}
       const payload:unknown=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
+      assert.doesNotMatch(JSON.stringify(payload),/dash-synthetic-private|localhost:8181|Private grading instructions/);
       assert.ok(req.url && req.method);
       const url=new URL(req.url,"http://localhost"), [group,sub,leaf]=url.pathname.replace("/api/v1/private/","").split("/");
       requests.push([req.method,url.pathname]);res.setHeader("Content-Type","application/json");
@@ -327,4 +329,37 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   assert.equal(observation.end_time,undefined);
   assert.equal(present([...spans.values()].at(-1)).end_time,undefined);
   assert.equal(scores.size,scoredBeforeInterruption);
+
+  const grader={type:"decision",judge:null,id:"decision/r1",name:"Disposition follows evidence",version:1,threshold:.8,
+    category:"Quality",industry:"Manufacturing",criteria:"Private grading instructions",decision:{provider:"local",model:"/Users/dash-synthetic-private/primary",fallbackModel:"/Users/dash-synthetic-private/alternate",protocol:"mlx-vlm",endpoint:"http://localhost:8181",failAt:.2}} satisfies GraderSpec;
+  const decision:TestRun={...saved,manifest:{...saved.manifest,id:"decision-scoring",datasetScorer:"selected-graders",graders:[grader]}};
+  const pin={provider:grader.decision.provider,protocol:grader.decision.protocol,requestedModel:grader.decision.model,fallbackModel:grader.decision.fallbackModel,failAt:grader.decision.failAt,passAt:grader.threshold};
+  decision.assessments=decision.results.map((result,index)=>({
+    id:"grade-"+index,created:result.trace.started,graderId:grader.id,name:grader.name,version:grader.version,category:grader.category,
+    candidate:result.candidateId,caseId:result.caseId,threshold:grader.threshold,engine:grader.type,judge:pin.requestedModel,
+    decisionRequest:{...pin,endpoint:grader.decision.endpoint},decision:{...pin,dispatchedModel:pin.fallbackModel,actualModel:pin.fallbackModel,fallbackReason:"primary-unavailable",probabilityYes:index ? .55 : .87},
+    pass:index?null:true,value:index?null:1,reason:index?"Needs review.":"Met the criterion using "+pin.fallbackModel,
+  }));
+  decision.report=buildReport({...decision,partial:null});
+  await new OpikExperiments(bench(db,decision),{env}).sync(decision.manifest.id);
+  const [accepted,abstained]=[...traces.values()].slice(-2);
+  const seen=(trace:typeof accepted)=>z.array(z.record(z.string(),z.unknown())).parse(trace.metadata.dash_decision_graders);
+  const masked=seen(accepted)[0];
+  assert.match(z.string().parse(masked.requestedModel),/^local-file-[0-9a-f]{16}$/);
+  assert.match(z.string().parse(masked.fallbackModel),/^local-file-[0-9a-f]{16}$/);
+  assert.notEqual(masked.requestedModel,masked.fallbackModel);
+  const publicPin={...pin,requestedModel:masked.requestedModel,fallbackModel:masked.fallbackModel};
+  const dispatched={dispatchedModel:masked.fallbackModel,actualModel:masked.fallbackModel,fallbackReason:"primary-unavailable"};
+  assert.deepEqual(seen(accepted),[{...publicPin,...dispatched,status:"passed",probabilityYes:.87,grader_id:grader.id,grader_version:1}]);
+  assert.deepEqual(seen(abstained),[{...publicPin,...dispatched,status:"review",probabilityYes:.55,grader_id:grader.id,grader_version:1}]);
+  for (const trace of [accepted,abstained]) assert.doesNotMatch(JSON.stringify(trace.metadata),/localhost:8181|Private grading instructions/);
+  assert.deepEqual([...scores.values()].filter(score=>score.id===accepted.id).map(s=>s.value),[1]);
+  assert.ok(![...scores.values()].some(score=>score.id===abstained.id));
+  // Even a stale cached report cannot manufacture native feedback when its recorded receipt is absent.
+  decision.manifest={...decision.manifest,id:"decision-request-failed"};
+  decision.assessments=decision.assessments.map(a=>({...a,decision:undefined,decisionAttempt:{requestedModel:pin.requestedModel,dispatchedModel:pin.fallbackModel,protocol:pin.protocol,fallbackReason:"primary-unavailable"},value:null,pass:null,reason:"Endpoint unavailable."}));
+  const afterDecision=scores.size;
+  await new OpikExperiments(bench(db,decision),{env}).sync(decision.manifest.id);
+  assert.equal(scores.size,afterDecision);
+  assert.deepEqual(seen(lastTrace()),[{...publicPin,dispatchedModel:masked.fallbackModel,fallbackReason:"primary-unavailable",status:"unscored",grader_id:grader.id,grader_version:1}]);
 });

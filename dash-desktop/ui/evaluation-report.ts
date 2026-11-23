@@ -1,7 +1,7 @@
 "use strict";
 
 const scorePercent = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) ? (value * 100).toLocaleString(undefined,{maximumFractionDigits:2})+"%" : "Unscored";
-const scoreMethod = (method: UiReportMetric["method"]) => ({"deterministic":"Rule-based check","llm-judge":"LLM judge","opik-judge":"Opik G-Eval"}[method] || method);
+const scoreMethod = (method: UiReportMetric["method"]) => ({"deterministic":"Rule-based check","llm-judge":"LLM judge","opik-judge":"Opik G-Eval","decision-model":"Decision model"}[method] || method);
 function reportCandidateLabel(c: UiReportCandidate, candidates: UiReportCandidate[]) {
   return candidates.some(other=>other.id!==c.id && other.label===c.label)?c.id:c.label;
 }
@@ -60,11 +60,11 @@ function evaluationReport(run: UiRunDetail) {
     (r.metrics.length?'<div class="er-metrics">'+r.metrics.map((m,i)=>
       '<article class="er-metric"><div class="er-metric-head"><div><small>'+esc(scoreMethod(m.method))+(m.judge?' · '+esc(m.judge)+(r.candidates.some(c=>c.id===m.judge)?' · also a candidate':''):'')+'</small><h3>'+esc(m.label)+'</h3></div>'+
       '<span>'+esc(m.pairedCases)+' / '+esc(m.totalCases)+' matched cases</span></div>'+
-      metricComparisons(m,r.candidates)+
+      (m.comparisonIssue?'<p>'+esc(m.comparisonIssue)+'</p>':'')+metricComparisons(m,r.candidates)+
       '<details class="er-evidence" data-report-run="'+esc(run.manifest.id)+'" data-metric-index="'+i+'"><summary>Case scores and rationale</summary><div></div></details></article>').join("")+'</div>':'')+
     outcomeBenchmarks(r)+reportAssistance(r)+
     '<details class="er-policy"><summary>How DASH reached the verdict</summary><p>'+esc(r.decisionRule)+'</p>'+
-    (r.metrics.length?'<ul>'+r.metrics.map(m=>'<li>'+esc(m.label)+' · pass threshold '+esc(scorePercent(m.threshold))+'</li>').join("")+'</ul>':'')+
+    (r.metrics.length?'<ul>'+r.metrics.map(m=>'<li>'+esc(m.label)+' · '+(m.decisionPolicy?'Fail at or below '+esc(m.decisionPolicy.failAt)+', pass at or above '+esc(m.decisionPolicy.passAt)+', review between': 'Pass threshold '+esc(scorePercent(m.threshold)))+'</li>').join("")+'</ul>':'')+
     '<small>'+esc(r.analyzer?.name || "Output Analyzer")+' and '+esc(r.reporter?.name || "Report agent")+' summarize the recorded scores using a fixed decision rule.</small></details></section>';
 }
 document.addEventListener("toggle",e=>{
@@ -79,9 +79,13 @@ document.addEventListener("toggle",e=>{
   const labels=new Map(report.candidates.map(c=>[c.id,reportCandidateLabel(c,report.candidates)]));
   const rows=(metric.caseScores || []).flatMap(c=>c.values.map(v=>{
     const index=indexes.get(JSON.stringify([c.caseId,v.candidateId]));
+    const receipt=v.decision;
+    const transport=receipt?.provider==="local" ? (receipt.protocol==="mlx-vlm"?"Local MLX-VLM":"Local System One") : "OpenRouter";
+    const switchDetail=receipt?.fallbackReason ? " · switched to "+esc(receipt.dispatchedModel)+" ("+esc(receipt.fallbackReason.replaceAll("-"," "))+")" : "";
+    const evidence=receipt?.actualModel ? '<small>'+esc(transport)+switchDetail+' · served '+esc(receipt.actualModel)+' · P(yes) '+esc(receipt.probabilityYes)+'</small>' : switchDetail ? '<small>'+esc(transport)+switchDetail+' · no verified response</small>' : '';
     return [index==null?esc(c.caseId):link(esc(c.caseId),"run/"+encodeURIComponent(run.manifest.id)+"/"+index,"link"),
       esc(labels.get(v.candidateId) || v.candidateId), esc(scorePercent(v.score)),
-      v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.reason || "No rationale recorded")];
+      receipt?.status==="review"?"Review":v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.reason || "")+(evidence?"<br>"+evidence:"")];
   }));
   const target = details.querySelector("div");
   if (!target) return;

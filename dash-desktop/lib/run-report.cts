@@ -4,14 +4,21 @@ import type { RecordedAssessment, GraderSpec } from "./grader-types.cjs";
 import type { DatabaseSync } from "node:sqlite";
 import type { RuntimeAdapters } from "./runtime-types.cjs";
 import {jsonText} from "./run-types.cjs";
+import {observationSchema} from "./decision-model.cjs";
 import {assistReport} from "./report-agents.cjs";
 export const reportCandidate = z.object({id:z.string(),label:z.string()});
-const scoreValue = z.object({candidateId:z.string(),score:z.number().nullable(),pass:z.boolean().nullable(),reason:z.string()});
+const decisionPolicy = observationSchema.pick({provider:true,requestedModel:true,failAt:true,passAt:true})
+  .extend({protocol:z.enum(["systemone","mlx-vlm"]).optional(),fallbackModel:z.string().optional()});
+const decisionEvidence = decisionPolicy.extend({
+  status:z.enum(["passed","failed","review","unscored"]),
+  ...observationSchema.pick({actualModel:true,probabilityYes:true,usage:true,dispatchedModel:true,fallbackReason:true,identityVerification:true}).partial().shape,
+});
+const scoreValue = z.object({decision:decisionEvidence.optional(),candidateId:z.string(),score:z.number().nullable(),pass:z.boolean().nullable(),reason:z.string()});
 const gradedCase = z.object({caseId:z.string(),values:z.array(scoreValue)});
-const method = z.enum(["deterministic","llm-judge","opik-judge"]);
-const metricSpec = z.object({id:z.string(),label:z.string(),version:z.union([z.number(),z.string()]).nullable(),method,threshold:z.number(),judge:z.string().nullable(),builtIn:z.boolean()});
+const method = z.enum(["deterministic","llm-judge","opik-judge","decision-model"]);
+const metricSpec = z.object({id:z.string(),label:z.string(),version:z.union([z.number(),z.string()]).nullable(),method,threshold:z.number(),judge:z.string().nullable(),builtIn:z.boolean(),decisionPolicy:decisionPolicy.optional()});
 const reportMetric = metricSpec.extend({
-  totalCases:z.number(), pairedCases:z.number(), caseScores:z.array(gradedCase), values:z.array(z.object({
+  comparisonIssue:z.string().optional(),totalCases:z.number(), pairedCases:z.number(), caseScores:z.array(gradedCase), values:z.array(z.object({
     candidateId:z.string(),score:z.number().nullable(),passes:z.number(),scoredCases:z.number(),availableCases:z.number(),
   })),
 });
@@ -50,12 +57,65 @@ function coordinate(candidate:string, caseId:string) {
 }
 
 function methodFor(type:GraderSpec["type"]):MetricSpec["method"] {
+  if (type === "decision") return "decision-model";
   if (type === "judge") return "llm-judge";
   if (type === "opik") return "opik-judge";
   return "deterministic";
 }
 
-function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undefined, builtIn:boolean) {
+function pinnedJudge(grader:GraderSpec) {
+  return grader.type === "decision" ? grader.decision.model : grader.judge?.id ?? null;
+}
+function matchesGrader(grader:GraderSpec|undefined, a:RecordedAssessment) {
+  return grader && a.version === grader.version && a.engine === grader.type && a.judge === pinnedJudge(grader);
+}
+type DecisionGrader = Extract<GraderSpec,{type:"decision"}>;
+function decisionPolicyFor(grader:DecisionGrader) {
+  const pin=grader.decision;
+  return {provider:pin.provider, requestedModel:pin.model, failAt:pin.failAt, passAt:grader.threshold,
+    ...(pin.provider === "local" && {protocol:pin.protocol ?? "systemone",...(pin.fallbackModel && {fallbackModel:pin.fallbackModel})})};
+}
+function gradeDecision(grader:DecisionGrader, a:RecordedAssessment):Omit<z.infer<typeof scoreValue>,"candidateId"> {
+  const pin = grader.decision;
+  const policy=decisionPolicyFor(grader);
+  const request = a.decisionRequest, observed = a.decision;
+  const missing = (reason:string) => ({score:null,pass:null,reason,decision:{...policy,status:"unscored" as const}});
+  const protocolMatches = pin.provider === "local"
+    ? (request?.protocol ?? "systemone") === policy.protocol : !request?.protocol;
+  if (!request || !protocolMatches || request.provider !== pin.provider || request.requestedModel !== pin.model ||
+      request.endpoint !== pin.endpoint || request.fallbackModel !== pin.fallbackModel ||
+      request.failAt !== pin.failAt || request.passAt !== grader.threshold ||
+      a.threshold !== grader.threshold) return missing("The decision request does not match the pinned grader.");
+  if (!observed) {
+    const unscored=missing(a.reason || "No decision-model response was recorded."), attempt=a.decisionAttempt;
+    if (attempt && pin.provider === "local" && attempt.requestedModel === pin.model &&
+        attempt.protocol === (pin.protocol ?? "systemone") && attempt.dispatchedModel === pin.fallbackModel)
+      return {...unscored,decision:{...unscored.decision,dispatchedModel:attempt.dispatchedModel,fallbackReason:attempt.fallbackReason}};
+    return unscored;
+  }
+  const dispatched=observed.dispatchedModel ?? pin.model;
+  const usedFallback=dispatched !== pin.model;
+  const identityMatches=pin.provider === "local"
+    ? observed.identityVerification !== "openrouter-catalog" && observed.actualModel === dispatched && (observed.protocol ?? "systemone") === (pin.protocol ?? "systemone") &&
+      (usedFallback ? dispatched === pin.fallbackModel && !!observed.fallbackReason : !observed.fallbackReason)
+    : !observed.protocol && !usedFallback && !observed.fallbackReason &&
+      (observed.actualModel === pin.model || observed.identityVerification === "openrouter-catalog");
+  if (!identityMatches || observed.provider !== pin.provider || observed.requestedModel !== pin.model ||
+      observed.failAt !== pin.failAt || observed.passAt !== grader.threshold || !observed.actualModel.trim() ||
+      !Number.isFinite(observed.probabilityYes) || observed.probabilityYes < 0 || observed.probabilityYes > 1)
+    return missing("The decision response could not be verified against the pinned grader.");
+  const evidence = {...policy,dispatchedModel:dispatched,actualModel:observed.actualModel,probabilityYes:observed.probabilityYes,
+    ...(observed.fallbackReason && {fallbackReason:observed.fallbackReason}),
+    ...(observed.identityVerification && {identityVerification:observed.identityVerification}),...(observed.usage && {usage:observed.usage})};
+  const expected = observed.probabilityYes >= policy.passAt ? true : observed.probabilityYes <= policy.failAt ? false : null;
+  if (expected === null && a.pass === null && a.value === null)
+    return {score:null,pass:null,reason:a.reason,decision:{...evidence,status:"review"}};
+  if (expected === null || a.pass !== expected || a.value !== Number(expected))
+    return {score:null,pass:null,reason:a.pass === null && a.value === null ? a.reason : "The recorded grade does not agree with the raw probability and pinned cutoffs.",
+      decision:{...evidence,status:"unscored"}};
+  return {score:a.value,pass:expected,reason:a.reason,decision:{...evidence,status:expected?"passed":"failed"}};
+}
+function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undefined, builtIn:boolean, grader:GraderSpec|undefined):Omit<z.infer<typeof scoreValue>,"candidateId"> {
   const missing = (reason:string) => ({ score: null, pass: null, reason });
   if (!result) return missing("No response was recorded.");
   if (result.error) return missing(String(result.error));
@@ -68,20 +128,24 @@ function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undef
       : score.reasons?.join(" · ") || "The response failed the pinned scenario check." };
   }
   if (!assessment) return missing("The selected grader has no assessment for this case.");
+  if (grader?.type === "decision") return gradeDecision(grader, assessment);
   if (assessment.value===null || !Number.isFinite(assessment.value) || assessment.value < 0 || assessment.value > 1 || typeof assessment.pass !== "boolean")
     return missing(assessment.reason || "The grader did not return a valid score.");
   return { score: assessment.value, pass: assessment.pass, reason: assessment.reason || "" };
 }
 
-function analyzeMetric(spec:MetricSpec, cases:string[], candidates:Candidate[], byCase:Results, judgments:Judgments|undefined):Metric {
+function analyzeMetric(spec:MetricSpec, cases:string[], candidates:Candidate[], byCase:Results, judgments:Judgments|undefined, grader:GraderSpec|undefined):Metric {
   const caseScores = cases.map(caseId => ({
     caseId,
     values: candidates.map(c => {
       const key = coordinate(c.id, caseId);
-      return { candidateId: c.id, ...gradeAt(byCase.get(key), judgments?.get(key), spec.builtIn) };
+      return { candidateId: c.id, ...gradeAt(byCase.get(key), judgments?.get(key), spec.builtIn, grader) };
     }),
   }));
-  const paired = caseScores.filter(row => row.values.length && row.values.every(v => v.score !== null));
+  // Model aliases can resolve to different served revisions during a run.
+  const servedModels = new Set(caseScores.flatMap(row=>row.values.flatMap(v=>v.decision?.actualModel ? [v.decision.actualModel] : [])));
+  const comparisonIssue = servedModels.size > 1 ? "The decision grader served multiple model revisions. Each case keeps its recorded grade, but the rubric has no comparable mean." : undefined;
+  const paired = comparisonIssue ? [] : caseScores.filter(row => row.values.length && row.values.every(v => v.score !== null));
   const values = candidates.map((c, index) => {
     const scores = paired.map(row => row.values[index]);
     return {
@@ -92,7 +156,7 @@ function analyzeMetric(spec:MetricSpec, cases:string[], candidates:Candidate[], 
       availableCases: caseScores.filter(row => row.values[index].score !== null).length,
     };
   });
-  return { ...spec, pairedCases: paired.length, totalCases: cases.length, values, caseScores };
+  return { ...spec, ...(comparisonIssue && {comparisonIssue}), pairedCases: paired.length, totalCases: cases.length, values, caseScores };
 }
 
 function domainOutcomes(pack:ScenarioPack|null, cases:string[], candidates:Candidate[], byCase:Results) {
@@ -120,7 +184,8 @@ export function analyzeOutputs({ manifest, results, assessments }:Pick<RunData,"
   const byCase = new Map(results.map(r => [coordinate(r.candidateId, r.caseId), r]));
   const specs:MetricSpec[] = (manifest.graders || []).map(g => ({
     id: g.id, label: g.name, version: g.version, method: methodFor(g.type), threshold: g.threshold,
-    judge: g.judge?.id || null, builtIn: false,
+    judge: pinnedJudge(g), builtIn: false,
+    ...(g.type === "decision" && {decisionPolicy:decisionPolicyFor(g)}),
   }));
   if (manifest.pack && manifest.datasetScorer !== "selected-graders") {
     const pack = manifest.pack;
@@ -132,13 +197,13 @@ export function analyzeOutputs({ manifest, results, assessments }:Pick<RunData,"
   const judgments = new Map<string,Judgments>();
   for (const a of assessments) {
     const grader = pinned.get(a.graderId);
-    if (!grader || a.version !== grader.version || a.engine !== grader.type || (a.judge || null) !== (grader.judge?.id || null)) continue;
+    if (!matchesGrader(grader, a)) continue;
     if (!judgments.has(a.graderId)) judgments.set(a.graderId, new Map());
     const map = judgments.get(a.graderId), key = coordinate(a.candidate, a.caseId);
     // A later manual re-grade has a separate identity and never replaces the original verdict.
     if (map && !map.has(key)) map.set(key, a);
   }
-  const metrics = specs.map(spec => analyzeMetric(spec, cases, candidates, byCase, judgments.get(spec.id)));
+  const metrics = specs.map(spec => analyzeMetric(spec, cases, candidates, byCase, judgments.get(spec.id), pinned.get(spec.id)));
   return {
     analyzer: { name: "Output Analyzer", method: "deterministic" },
     caseCount: cases.length, candidates, metrics, targets: manifest.approvedPrompt?.metrics || [],
@@ -184,7 +249,7 @@ export class RunReports {
     const ids = new Map();
     for (const a of run.assessments) {
       const grader = selected.get(a.graderId);
-      if (!grader || a.version !== grader.version || a.engine !== grader.type || (a.judge || null) !== (grader.judge?.id || null)) continue;
+      if (!matchesGrader(grader, a)) continue;
       const key = JSON.stringify([a.graderId, a.candidate, a.caseId]);
       if (!ids.has(key)) ids.set(key, a.id);
     }

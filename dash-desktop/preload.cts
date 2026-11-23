@@ -40,6 +40,7 @@ const bridge:DashBridge = {
   saveEndpoint: (request) => invoke("saveEndpoint", request),
   designGraders: (request) => invoke("designGraders", request),
   confirmGraders: (definitions) => invoke("confirmGraders", definitions),
+  listDecisionModels: (baseUrl,protocol) => invoke("listDecisionModels",baseUrl,protocol),
   saveGrader: (definition) => invoke("saveGrader", definition),
   graderSamples: () => invoke("graderSamples"),
   quickGraderOptions: (id) => invoke("quickGraderOptions", id),

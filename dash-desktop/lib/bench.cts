@@ -226,6 +226,7 @@ export class Bench {
     caseId,
     parentId,
     graderIds = [],
+    allowHostedDecision = false,
     outcomeRubric,
     animation = true,
   }:StartRun) {
@@ -293,6 +294,9 @@ export class Bench {
       rows = [{ case_id: "prompt", input: { text: prompt } }];
     }
     const pinnedGraders = original?.graders ?? this.graders.select(graderIds);
+    const hostedDecision = pinnedGraders.some(g => g.type === "decision" && g.decision.provider === "openrouter");
+    if (hostedDecision && allowHostedDecision !== true)
+      throw Error("Confirm the OpenRouter decision grader and the evidence it will receive for this run.");
     if (pack?.kind === "reference") {
       datasetScorer = original?.datasetScorer ?? datasetScorer ?? "selected-graders";
       if (!["selected-graders","exact-reference"].includes(datasetScorer)) throw Error("Choose a reference scoring method.");
@@ -306,8 +310,8 @@ export class Bench {
         selected.push(caseJudgeSpec(judge));
       }
       if (datasetScorer === "selected-graders" && !selected.length) throw Error("Choose a grader to evaluate the saved case responses.");
-      if (rows.some(r=>r.rubric) && !selected.some(g=>["judge","opik"].includes(g.type)))
-        throw Error("Choose a local LLM or Opik judge to evaluate the case-level rubrics.");
+      if (rows.some(r=>r.rubric) && !selected.some(g=>["judge","opik","decision"].includes(g.type)))
+        throw Error("Choose a local LLM or Opik judge, or a decision grader, to evaluate the case-level rubrics.");
     } else datasetScorer = pack ? "scenario" : null;
     const caps = original?.tokenBudget ?? (approved || {inputCap,outputCap});
     for (const cap of [caps.inputCap, caps.outputCap]) {
@@ -366,6 +370,7 @@ export class Bench {
         release: os.release(),
       },
       animation: !!animation,
+      ...(hostedDecision && {hostedDecisionApproved: true}),
       replayHash: fixture ? hash(replay) : null,
       parentId: parentId || null,
     };
@@ -535,12 +540,8 @@ export class Bench {
             for (const scorer of m.graders || []) {
               if (signal.aborted) break;
               const evidence = graderEvidence(m,row,rec);
-              if (m.mode === "quick" && m.approvedPrompt) {
-                const { objective, metrics, requirements } = m.approvedPrompt;
-                evidence.evaluationBrief = { objective, metrics, criteria:requirements };
-              }
               await this.graders.record(scorer,evidence,
-                {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal);
+                {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
             }
           }
         }

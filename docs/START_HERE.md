@@ -20,6 +20,6 @@ These seven Library artifacts were verified on November 22, 2026. Revisions refe
 
 ## Design and architecture
 
-The [design assets](design/README.md) include screenshots of the running app and the source of the circuit artwork. Accepted decisions cover the [domain hierarchy](adr/0001-domain-workbench.md) and [Opik integration](adr/0002-opik-and-offline-runs.md).
+The [design assets](design/README.md) include screenshots of the running app and the source of the circuit artwork. Accepted decisions cover the [domain hierarchy](adr/0001-domain-workbench.md) and [Opik integration](adr/0002-opik-and-offline-runs.md). The [decision grader ADR](adr/0005-decision-model-graders.md) explains model selection, missing evidence and abstention.
 
 The product reviews explain the [domain workbench](reviews/domain-workbench.md), the [outcome-to-run workflow](reviews/outcome-workflow.md), [feasibility of live agent runs](reviews/agent-runs-feasibility.md), and [local decision models for domain grading](reviews/decision-model-graders.md). For changes to the implementation, follow the [contributor guide](../.github/CONTRIBUTING.md).

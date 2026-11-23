@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "opik";
 import { buildReport, RunReports, reportSchema } from "../lib/run-report.cjs";
+import { assistReport } from "../lib/report-agents.cjs";
 import { Bench } from "../lib/bench.cjs";
 import { loadPacks } from "../lib/packs.cjs";
 import { referencePack } from "../lib/evaluation-cases.cjs";
@@ -79,6 +80,108 @@ test("a missing or differently versioned judgment is never averaged as zero or c
   input.assessments[3].value = null;
   input.assessments[3].reason = "Judge unavailable";
   assert.equal(present(buildReport(input)).metrics[1].caseScores[1].values[1].reason, "Judge unavailable");
+});
+
+test("decision rubrics compare recorded categorical grades from a consistent served revision and preserve raw probabilities", () => {
+  const input=run();
+  const g={...judge,type:"decision",judge:null,threshold:.8,decision:{provider:"openrouter",model:"test/model",failAt:.2}} satisfies GraderSpec;
+  input.manifest.graders=[g];
+  input.manifest.datasetScorer="selected-graders";
+  const pin={provider:g.decision.provider,requestedModel:g.decision.model,failAt:g.decision.failAt,passAt:g.threshold};
+  const actualModel="test/model-rev1";
+  input.assessments=input.assessments.map(a=>{
+    const pass=a.candidate==="a";
+    return {...a,engine:g.type,judge:g.decision.model,threshold:g.threshold,pass,value:Number(pass),
+      decisionRequest:pin,decision:{...pin,actualModel,identityVerification:"openrouter-catalog",probabilityYes:pass ? .8 : .2,usage:{inputTokens:3}}};
+  });
+  const db=new DatabaseSync(":memory:");
+  try {
+    const store=new RunReports(db), report=present(store.get(input)), metric=report.metrics[0];
+    assert.equal(metric.method,"decision-model");
+    assert.equal(metric.judge,"test/model");
+    assert.deepEqual(metric.decisionPolicy,pin);
+    assert.deepEqual(metric.values.map(v=>v.score),[1,0]);
+    assert.deepEqual(metric.caseScores[0].values[0].decision,{...pin,status:"passed",actualModel,identityVerification:"openrouter-catalog",dispatchedModel:pin.requestedModel,probabilityYes:.8,usage:{inputTokens:3}});
+    assert.equal(report.winnerId,"a");
+    assert.deepEqual(new RunReports(db).get(input),report);
+  } finally { db.close(); }
+  const last=input.assessments[3], original=structuredClone(last);
+  const checkMissing = (status:"review"|"unscored"|undefined) => {
+    const report=present(buildReport(input));
+    assert.equal(report.winnerId,null);
+    assert.equal(report.verdict,"incomplete");
+    const metric=report.metrics[0];
+    assert.equal(metric.pairedCases,1);
+    assert.equal(metric.caseScores[1].values[1].score,null);
+    assert.equal(metric.caseScores[1].values[1].decision?.status,status);
+  };
+  last.pass=null;last.value=null;present(last.decision).probabilityYes=.5;
+  checkMissing("review");
+  last.decision=undefined;last.reason="Decision grader unavailable.";
+  checkMissing("unscored");
+  assert.equal(present(buildReport(input)).metrics[0].caseScores[1].values[1].reason,last.reason);
+  Object.assign(last,structuredClone(original));
+  last.value=.2;
+  checkMissing("unscored");
+  Object.assign(last,structuredClone(original));
+  present(last.decisionRequest).requestedModel="test/other";
+  checkMissing("unscored");
+  Object.assign(last,structuredClone(original));
+  last.judge="test/other";
+  checkMissing(undefined);
+  Object.assign(last,structuredClone(original));
+  last.decision={...present(original.decision),identityVerification:"exact"};
+  checkMissing("unscored");
+  last.decision={...present(original.decision),actualModel:"test/model-rev2"};
+  const mixed=present(buildReport(input));
+  assert.equal(mixed.winnerId,null);assert.equal(mixed.metrics[0].pairedCases,0);
+  assert.deepEqual(mixed.metrics[0].values.map(v=>v.score),[null,null]);
+  assert.deepEqual(mixed.metrics[0].values.map(v=>v.availableCases),[2,2]);
+  assert.match(present(mixed.metrics[0].comparisonIssue),/multiple model revisions/);
+});
+
+test("a local fallback grade requires the pinned alternate and transport; mixed judges or a failed switch cannot declare a winner", async ()=>{
+  const input=run();
+  const primary="/synthetic/models/primary", alternate="/synthetic/models/alternate";
+  const g={...judge,type:"decision",judge:null,threshold:.8,decision:{provider:"local",protocol:"mlx-vlm",model:primary,fallbackModel:alternate,failAt:.2}} satisfies GraderSpec;
+  const request={provider:g.decision.provider,requestedModel:g.decision.model,failAt:g.decision.failAt,passAt:g.threshold,
+    protocol:g.decision.protocol,fallbackModel:g.decision.fallbackModel};
+  input.manifest.graders=[g];input.manifest.datasetScorer="selected-graders";
+  input.assessments=input.assessments.map(a=>{
+    const pass=a.candidate==="a";
+    return {...a,engine:g.type,judge:g.decision.model,threshold:g.threshold,value:Number(pass),pass,decisionRequest:request,
+      decision:{provider:request.provider,requestedModel:request.requestedModel,protocol:request.protocol,
+        failAt:request.failAt,passAt:request.passAt,dispatchedModel:alternate,actualModel:alternate,identityVerification:"exact",
+        fallbackReason:"primary-unavailable",probabilityYes:pass ? .91 : .08}};
+  });
+  const grades=()=>present(buildReport(input));
+  assert.equal(grades().winnerId,"a");
+  const grade=present(grades().metrics[0].caseScores[0].values[0].decision);
+  assert.deepEqual([grade.protocol,grade.requestedModel,grade.dispatchedModel,grade.actualModel,grade.fallbackReason],
+    ["mlx-vlm",primary,alternate,alternate,"primary-unavailable"]);
+  const last=input.assessments[3],fallback=present(last.decision);
+  last.decision={...fallback,actualModel:primary,dispatchedModel:primary,fallbackReason:undefined};
+  assert.equal(grades().winnerId,null);assert.equal(grades().metrics[0].pairedCases,0);
+  const reviewed=await assistReport(grades(),{
+    discover:async()=>assert.fail("No comparable rubric was available to review"),
+    invoke:async()=>assert.fail("No inference should run"),
+  },new AbortController().signal);
+  assert.equal(reviewed.verdict,"incomplete");
+  assert.deepEqual(reviewed.assistance?.citations,[]);
+  assert.equal(reviewed.assistance?.analyzer.status,"skipped");
+  assert.equal(reviewed.assistance?.reporter.status,"skipped");
+  for (const invalid of [{...fallback,protocol:"systemone" as const},
+      {...fallback,actualModel:"unexpected",dispatchedModel:"unexpected"},{...fallback,fallbackReason:undefined}]) {
+    last.decision=invalid;
+    assert.equal(grades().metrics[0].caseScores[1].values[1].score,null);
+    assert.equal(grades().metrics[0].pairedCases,1);
+  }
+  last.pass=null;last.value=null;last.decision=undefined;
+  last.decisionAttempt={requestedModel:primary,dispatchedModel:alternate,protocol:"mlx-vlm",fallbackReason:"primary-unavailable"};
+  const failed=present(grades().metrics[0].caseScores[1].values[1].decision);
+  assert.equal(failed.status,"unscored");assert.equal(failed.dispatchedModel,alternate);
+  assert.equal(failed.actualModel,undefined);assert.equal(failed.probabilityYes,undefined);
+  assert.equal(grades().winnerId,null);
 });
 
 test("ties, mixed leads, ungraded comparisons and nonterminal or incomplete runs never declare a winner", () => {
