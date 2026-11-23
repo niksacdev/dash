@@ -1,0 +1,14 @@
+{
+  "duplicate-charge": {
+    "team": "billing",
+    "action": "route"
+  },
+  "login-error": {
+    "team": "billing",
+    "action": "route"
+  },
+  "unclear-request": {
+    "team": null,
+    "action": "clarify"
+  }
+}

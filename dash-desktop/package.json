@@ -1,0 +1,23 @@
+{
+  "name": "dash-eval-bench",
+  "productName": "DASH",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "test:desktop": "electron test/desktop-smoke.cjs",
+    "test:workflow": "electron test/workflow-smoke.cjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0"
+  },
+  "dependencies": {
+    "@lmstudio/sdk": "2.1.0",
+    "opik": "2.2.144"
+  }
+}

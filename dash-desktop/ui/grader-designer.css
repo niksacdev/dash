@@ -1,0 +1,19 @@
+.gd-panel {padding:14px 16px;margin:12px 0;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--ink)}
+.gd-panel>summary {font-weight:650;cursor:pointer}
+.gd-content {padding-top:14px}
+.gd-panel .gd-fields,.gd-panel .gd-check-body {margin:0;padding:0;border:0;min-width:0}
+.gd-panel .field {margin:0 0 10px}
+.gd-panel .field input,.gd-panel .field textarea,.gd-panel .field select {width:100%;min-width:0}
+.gd-panel .field textarea {min-height:64px;max-height:240px;field-sizing:content;resize:vertical}
+.gd-panel .gd-generate {display:block;margin:12px 0}
+.gd-panel .gd-brief {margin:0 0 10px}
+.gd-brief small,.gd-check small,.gd-proposals>small {display:block;color:var(--muted);overflow-wrap:anywhere}
+.gd-check {padding:12px;border:1px solid var(--border);border-radius:5px;margin:12px 0}
+.gd-inclusion {display:flex;align-items:center;gap:9px;min-height:32px;font-weight:650;cursor:pointer;overflow-wrap:anywhere}
+.gd-check small {margin:3px 0 12px}
+.gd-check-body:disabled {display:none}
+.gd-proposals h3,.gd-saved ul {margin:8px 0}
+.gd-proposals p {margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.gd-saved {border-inline-start:2px solid var(--border);padding-left:12px;margin:12px 0}
+.gd-actions {display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:680px){.gd-panel {padding:12px}.gd-panel button,.gd-inclusion {min-height:44px}}

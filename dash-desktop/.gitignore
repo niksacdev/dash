@@ -1,0 +1,4 @@
+node_modules/
+.DS_Store
+.opik-venv/
+__pycache__/
