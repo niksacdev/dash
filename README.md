@@ -40,7 +40,7 @@ The desktop workbench can run offline. To record a finished run as native Opik e
 DASH_OPIK_API_URL=http://localhost:5173/api OPIK_PROJECT_NAME=DASH npm start
 ```
 
-For a hosted deployment, set the API URL and `OPIK_WORKSPACE` for your account, and supply `OPIK_API_KEY` through your environment. `DASH_OPIK_UI_URL` can point to your dashboard. **Run history** shows the destination and lets you sync saved inputs, outputs, and scores. Each candidate gets its own experiment against the shared dataset. Sync uses recorded responses without repeating inference. [Opik experiment logging](https://www.comet.com/docs/opik/evaluation/advanced/log_experiments_with_rest_api)
+For a hosted deployment, set the API URL and `OPIK_WORKSPACE` for your account, and supply `OPIK_API_KEY` through your environment. `DASH_OPIK_UI_URL` can point to your dashboard. **Run history** shows the destination and lets you sync saved inputs, outputs, and scores. Each candidate gets an experiment pinned to the same Opik dataset version. Revisions of an industry/scenario dataset family stay together, including case additions, edits and removals. Syncing a single-case rerun sends the full authored dataset snapshot and the recorded results for the cases actually run. Sync does not repeat inference. [Opik experiment logging](https://www.comet.com/docs/opik/evaluation/advanced/log_experiments_with_rest_api)
 
 ## What the Overview measures
 
