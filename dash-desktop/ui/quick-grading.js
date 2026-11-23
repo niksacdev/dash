@@ -1,11 +1,16 @@
 "use strict";
 const quickGradingPlans = new Map();
-function newQuickGradingPlan() {
-  return {options:null, saved:new Set(), enabled:false, criteria:"", judgeId:"", threshold:1, type:"judge", error:"", sequence:0};
+function newQuickGradingPlan(id) {
+  const attachment=id && readGraderAttachment("prompt:"+id);
+  return {options:null, saved:new Set(attachment?.ids), enabled:!!attachment?.generic, designed:!!attachment,
+    criteria:"", judgeId:"", threshold:1, error:"", sequence:0};
+}
+function rememberQuickGraders(plan) {
+  if (plan.designed && workflows.quick.approved) writeGraderAttachment("prompt:"+workflows.quick.approved.id,plan.saved,plan.enabled);
 }
 async function loadQuickGrading(approved) {
   if (!approved) return;
-  const plan = quickGradingPlans.get(approved.id) || newQuickGradingPlan();
+  const plan = quickGradingPlans.get(approved.id) || newQuickGradingPlan(approved.id);
   quickGradingPlans.set(approved.id, plan);
   const sequence = ++plan.sequence;
   try {
@@ -17,8 +22,8 @@ async function loadQuickGrading(approved) {
       plan.criteria = options.generated?.criteria || "";
       plan.judgeId = options.generated?.judgeId || "";
       plan.threshold = options.generated?.threshold ?? 1;
-      plan.enabled = !!plan.judgeId && options.judges.some(j=>j.id===plan.judgeId) && !!plan.criteria;
-      if (!plan.enabled) {
+      if (!plan.designed) plan.enabled = !!plan.judgeId && options.judges.some(j=>j.id===plan.judgeId) && !!plan.criteria;
+      if (!plan.designed && !plan.enabled) {
         const reusable = options.recommended.find(g=>!["judge","opik"].includes(g.type));
         if (reusable) plan.saved.add(reusable.id);
       }
@@ -36,7 +41,7 @@ function quickGradePayload(plan) {
   if (!plan) return {graderIds:[]};
   const graderIds=[...plan.saved];
   if (!plan.enabled) return {graderIds};
-  return {graderIds, outcomeRubric:{criteria:plan.criteria.trim(),judgeId:plan.judgeId,threshold:Number(plan.threshold),type:plan.type}};
+  return {graderIds, outcomeRubric:{criteria:plan.criteria.trim(),judgeId:plan.judgeId,threshold:Number(plan.threshold),type:"opik"}};
 }
 function quickGradeIssue(plan) {
   if (!plan) return "";
@@ -78,7 +83,7 @@ function quickGradePicker() {
   const unavailable=[...plan.saved].filter(id=>!options.available.some(g=>g.id===id));
   return '<section id="qc-grading" class="qc-grading"><div class="qc-section-title"><h2>Score the responses</h2>'+
     link("Grader library →","graders","link")+'</div>'+
-    (generated?'<div class="qc-outcome"><div class="qc-section-title"><div><strong>Outcome rubric</strong><small>'+
+    (generated?'<div class="qc-outcome"><div class="qc-section-title"><div><strong>Opik G-Eval outcome rubric</strong><small>'+
       esc(generated.industry)+' · '+(plan.enabled && judge ? esc(judge.model)+' scores both responses':'evaluate the approved measures')+'</small></div><button id="qc-rubric-toggle" type="button" title="'+(plan.enabled?"Disable the suggested judge":"Enable the suggested judge")+'" aria-pressed="'+plan.enabled+'" '+
       'aria-controls="qc-rubric-settings">'+(plan.enabled?"✓ Judge enabled":"Add outcome judge")+'</button></div>'+
       '<details class="qc-rubric-options"><summary>'+(plan.enabled?'Review rubric, judge and threshold':'Preview suggested rubric')+'</summary>'+
@@ -86,8 +91,6 @@ function quickGradePicker() {
       (plan.enabled ? '<label class="field"><span>Rubric criteria</span><textarea id="qc-criteria" maxlength="6000" required>'+esc(plan.criteria)+'</textarea></label>'+
         '<div class="qc-judge-fields"><label class="field"><span>Judge model</span><select required id="qc-judge">'+opt("","Choose a local judge",plan.judgeId)+judges.map(j=>
         opt(j.id, j.model+" · "+j.provider+(j.loaded?" · loaded":""),plan.judgeId)).join("")+'</select></label>'+
-        '<label class="field"><span>Scoring method</span><select id="qc-engine">'+opt("judge","Local LLM judge",plan.type)+
-        (state.opikReady?opt("opik","Opik G-Eval",plan.type):'')+'</select></label>'+
         '<label class="field"><span>Pass threshold (0–1)</span><input id="qc-threshold" type="number" min="0" max="1" step="any" required value="'+esc(plan.threshold)+'"></label></div>'+
         '<small>DASH saves this rubric in the grader library when the run starts.</small>':
         '<p class="qc-rubric-preview">'+esc(plan.criteria)+'</p>')+'</div></details></div>':'')+
@@ -107,6 +110,7 @@ document.addEventListener("click", async e=>{
     if (!p) return;
     if (e.target.closest("[data-qc-clear]")) {p.saved.clear();p.enabled=false;}
     else for (const id of p.saved) if (!p.options.available.some(g=>g.id===id)) p.saved.delete(id);
+    rememberQuickGraders(p);
     document.getElementById("qc-grading").outerHTML=quickGradePicker(); updateQuickGradingControls(); return;
   }
   const button=e.target.closest("#qc-rubric-toggle");
@@ -114,6 +118,7 @@ document.addEventListener("click", async e=>{
   const plan=quickGradePlan();
   if (!plan || workflows.quick.busy) return;
   plan.enabled=!plan.enabled;
+  rememberQuickGraders(plan);
   document.getElementById("qc-grading").outerHTML=quickGradePicker();
   document.getElementById("qc-rubric-toggle")?.focus({preventScroll:true});
   updateQuickGradingControls();
@@ -123,8 +128,9 @@ function handleQuickGradingField(target) {
   if (!plan || !target.closest("#qc-grading")) return;
   if (target.name==="qc-saved-grader") {
     if (target.checked) plan.saved.add(target.value); else plan.saved.delete(target.value);
+    rememberQuickGraders(plan);
   } else {
-    const key={"qc-criteria":"criteria","qc-threshold":"threshold","qc-judge":"judgeId","qc-engine":"type"}[target.id];
+    const key={"qc-criteria":"criteria","qc-threshold":"threshold","qc-judge":"judgeId"}[target.id];
     if (key) plan[key]=target.value;
   }
   updateQuickGradingControls();

@@ -22,15 +22,16 @@ function datasetImportHelp(packId) {
 function caseJudgePicker(w) {
   const modelsForJudge=models().filter(m=>m.loaded);
   const preferred=modelsForJudge.find(m=>m.id===w.caseJudgeId) || modelsForJudge.find(m=>/lfm3/i.test(m.model)) || modelsForJudge[0];
-  return '<label class="field"><span>Local judge for SME references and case rubrics</span><select name="caseJudgeId" required>'+
+  return '<label class="field"><span>Opik G-Eval judge for SME references and case rubrics</span><select name="caseJudgeId" required>'+
     (preferred ? modelsForJudge.map(m=>opt(m.id,m.model,preferred.id)).join("") : '<option value="">Load a local model first</option>')+
     '</select></label><small>The judge scores the answer against each case and explains its decision. A score of 0.80 passes.</small>';
 }
 
+const datasetScorerChoices=new Map();
 function datasetRunPage(w) {
   const d=dataset(), scenario=pack(), reference=scenario?.kind==="reference";
   if (!d) return '<section class="wf-page"><h1>Dataset run</h1>'+link("Import a dataset →","datasets")+'</section>';
-  const method=w.scorer || (d.casesWithoutReference ? "selected-graders" : "case-judge");
+  const method=datasetScorerChoices.get(d.id) || (d.casesWithoutReference || readGraderAttachment("dataset:"+d.id)?.ids.length ? "selected-graders" : "case-judge");
   const error=w.error?'<p class="wf-error" role="alert">'+esc(w.error)+'</p>':'';
   return '<section class="wf-page"><div class="wf-title"><h1>Dataset run</h1></div>'+error+
     '<form id="dataset-run-form" class="wf-panel"><h2>Evaluate saved cases</h2>'+pickers()+
@@ -39,7 +40,7 @@ function datasetRunPage(w) {
     '<p>'+esc(reference ? "Each model receives the prompt or conversation saved with each case." : "Each model receives the scenario instructions and the input saved with each case.")+
     (d.casesWithoutReference ? " This snapshot includes input-only cases. Choose a saved grader with its own success criteria.</p>" : " The grader can use the held-out evidence after the model answers.</p>")+
     (reference ? '<label class="field"><span>Scoring method</span><select name="datasetScorer">'+
-      opt("case-judge","Judge against case references and rubrics",method)+
+      opt("case-judge","Use Opik G-Eval on case references and rubrics",method)+
       opt("selected-graders","Use saved graders",method)+opt("exact-reference","Match the reference exactly",method)+'</select></label>'+
       (method==="case-judge" ? caseJudgePicker(w) : '') :
       '<div class="wf-options"><strong>Scenario grader</strong><p>'+esc(scenario.scorer)+' · '+esc(scenario.metrics.join(" · "))+'</p></div>')+
@@ -81,7 +82,7 @@ document.addEventListener("input",e=>{
 });
 document.addEventListener("change",e=>{
   if (e.target.form?.id!=="dataset-run-form") return;
-  if (e.target.name==="datasetScorer") { workflows.dataset.scorer=e.target.value; render(); }
+  if (e.target.name==="datasetScorer") { datasetScorerChoices.set(dataset().id,e.target.value); render(); }
   if (e.target.name==="caseJudgeId") workflows.dataset.caseJudgeId=e.target.value;
 });
 document.addEventListener("submit",async e=>{

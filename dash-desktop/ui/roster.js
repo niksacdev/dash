@@ -113,7 +113,7 @@ function scheduleBudgetPreview() {
 }
 function canStartQuick() {
   const approved=workflows.quick.approved;
-  if (!approved || state.active || workflows.quick.busy || selectedModels().length!==2 || quickGradeIssue(quickGradePlan())) return false;
+  if (!approved || state.active || workflows.quick.busy || graderDesignDrafts.get("prompt:"+approved.id)?.busy || selectedModels().length!==2 || quickGradeIssue(quickGradePlan())) return false;
   return !rosterModels().some(c=>selectedModels().includes(c.id) && laneBudgetState(c,approved).status==="blocked");
 }
 function lineSlots(mode){
@@ -144,7 +144,7 @@ function rosterGroups(mode){
   }).join("");
 }
 function canStartDataset() {
-  return !state.active && !workflows.dataset.busy && selectedModels("dataset").length > 0;
+  return !state.active && !workflows.dataset.busy && !graderDesignDrafts.get(activeDatasetGraderScope())?.busy && selectedModels("dataset").length > 0;
 }
 function modelPicker(mode, caseCount) {
   const quick = mode === "quick";
@@ -164,7 +164,7 @@ function modelPicker(mode, caseCount) {
     '<div id="roster-groups">'+rosterGroups(mode)+'</div></section></section>';
 }
 function setupQuick() {
-  return '<form id="setup" class="compare-console">'+modelPicker("quick")+quickGradePicker()+'</form>'+endpointForm()+hostingLegend();
+  return '<form id="setup" class="compare-console">'+modelPicker("quick")+gradeDesignerView("prompt:"+workflows.quick.approved.id)+quickGradePicker()+'</form>'+endpointForm()+hostingLegend();
 }
 function updateGrid(picker) {
   const mode = picker.dataset.pickerMode;
