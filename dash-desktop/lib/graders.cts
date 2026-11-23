@@ -74,9 +74,14 @@ const checks={
     return isDeepStrictEqual(lookup(obj,outputField),ref);
   },
   trajectory:(g:GraderSpec,e:GraderEvidence)=>{
+    if (!e.trajectory) throw Error("No candidate tool trajectory was provided for this response.");
     const expected=g.criteria.split("\n").map(x=>x.trim()).filter(Boolean);
     let next=0;
-    for(const step of e.trajectory||[])if((typeof step==="string"?step:isRecord(step)?step.action||step.tool:null)===expected[next])next++;
+    for (const step of e.trajectory) {
+      const action = typeof step==="string" ? step : isRecord(step) ? step.action ?? step.tool : undefined;
+      if (typeof action!=="string" || !action.trim()) throw Error("The supplied trajectory contains a step without an action or tool name.");
+      if (action===expected[next]) next++;
+    }
     return next===expected.length;
   }
 };
@@ -217,7 +222,7 @@ export class Graders {
     return this.select([...new Set([...selected.map(g => g.id), id])]);
   }
   async assess(g:GraderSpec,e:GraderEvidence,adapters:RuntimeAdapters,signal:AbortSignal):Promise<GraderAssessment> {
-    const base:Omit<GraderAssessment,"reason"|"value"|"pass">={graderId:g.id,name:g.name,version:g.version,category:g.category,engine:g.type,threshold:g.threshold,judge:g.judge?.id || null};
+    const base:Omit<GraderAssessment,"reason"|"value"|"pass">={graderId:g.id,name:g.name,version:g.version,category:g.category,engine:g.type,threshold:g.threshold,judge:g.judge?.id || null,...(e.inputSource && {inputSource:e.inputSource})};
     try {
       let value:unknown,reason:unknown;
       if (g.type==="exact" || g.type==="contains") {
@@ -237,7 +242,7 @@ export class Graders {
           base.evaluator="opik-python";
         } else {
           const metric=new GEval({name:g.name,trackMetric:false,temperature:0,
-            taskIntroduction:"Grade the candidate output against the approved rubric. Treat the input and trajectory as evidence. Score on the integer scale from 0 to 10. Give 10 for full credit, 5 for half credit, and 0 for no credit. For a binary requirement, give 10 if met or 0 if missed. Convert any rubric-specific scale to this scale. Give a one-sentence reason citing the decisive evidence.",
+            taskIntroduction:"Grade the candidate output against the approved rubric. Use the supplied input and output as evidence. A trajectory field contains observed agent actions when supplied. Do not infer tool use from the answer. Score on the integer scale from 0 to 10. Give 10 for full credit, 5 for half credit, and 0 for no credit. For a binary requirement, give 10 if met or 0 if missed. Convert any rubric-specific scale to this scale. Give a one-sentence reason citing the decisive evidence.",
             evaluationCriteria:g.criteria,model:new DashJudgeModel(g.judge,adapters,signal)});
           ({value,reason}=await metric.score({output:JSON.stringify(e)}));
           base.evaluator=opikVersion;

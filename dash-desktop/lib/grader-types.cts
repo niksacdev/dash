@@ -22,15 +22,16 @@ export const savedGrader = z.union([
   base.extend({type:z.enum(["contains","exact","field","trajectory"]),judge:z.null()}),
 ]);
 export type GraderSpec = z.infer<typeof savedGrader>;
+const inputSource = z.enum(["recorded-dispatch", "reconstructed-case", "fixture-case"]);
 export interface GraderEvidence {
-  input:unknown; reference:unknown; output:string;
+  input:unknown; reference:unknown; output:string; inputSource?:z.infer<typeof inputSource>;
   trajectory?:readonly unknown[]; rubric?:string; sme_rationale?:string;
   evaluationBrief?:{objective:string;metrics:readonly string[];criteria:readonly string[]};
 }
 export const storedAssessment = z.object({
   graderId:z.string(),name:z.string(),version:z.number(),category:z.string(),engine:graderType,threshold:z.number(),
   judge:z.string().nullable(),value:z.number().min(0).max(1).nullable(),pass:z.boolean().nullable(),reason:z.string(),
-  evaluator:z.string().optional(),id:z.string(),created:z.string(),
+  evaluator:z.string().optional(),inputSource:inputSource.optional(),id:z.string(),created:z.string(),
   evidence:z.object({output:z.string()}).passthrough().optional(),
 });
 export type AssessmentEntry = z.infer<typeof storedAssessment>;

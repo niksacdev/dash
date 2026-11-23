@@ -52,13 +52,14 @@ export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:
   ];
 }
 
-export function graderEvidence(manifest:Parameters<typeof caseMessages>[0], row:CaseRow, result:RunResult):GraderEvidence {
+export function graderEvidence(manifest:Parameters<typeof caseMessages>[0] & {fixture?:boolean}, row:CaseRow, result:RunResult):GraderEvidence {
   return {
-    input: manifest.pack ? caseMessages(manifest,row) : manifest.prompt,
+    input: result.dispatchedMessages ?? caseMessages(manifest,row),
+    inputSource: result.dispatchedMessages ? "recorded-dispatch" : manifest.fixture ? "fixture-case" : "reconstructed-case",
     reference: row.reference ?? row.gold ?? null,
     ...(row.sme_rationale && {sme_rationale:row.sme_rationale}),
     ...(row.rubric && {rubric:row.rubric}),
-    output:result.output ?? "", trajectory:result.trace.steps,
+    output:result.output ?? "",
   };
 }
 
