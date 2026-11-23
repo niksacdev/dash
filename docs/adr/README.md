@@ -12,6 +12,7 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-23 | [0005 · Decision-model graders](0005-decision-model-graders.md) | Proposed | Extend 0002 with bounded decisions, abstention and switchable judges. The original ADR records this status. Its implementation merged into the test branch after that branch had merged into main. | [#9](https://github.com/niksacdev/dash/pull/9) · [main integration #10](https://github.com/niksacdev/dash/pull/10) |
 | 2026-11-23 | [0006 · Grader library](0006-grader-library.md) | Proposed | Extend 0001, 0002 and 0005 with general, industry and customer revisions shared across runs. | [#10](https://github.com/niksacdev/dash/pull/10) |
 | 2026-11-23 | [0008 · Opik dataset ownership](0008-opik-dataset-identity.md) | Proposed | Extend 0002 and 0004 after a cross-project name collision. Reuse a dataset only when the native project and family can be verified. | [#10](https://github.com/niksacdev/dash/pull/10) |
+| 2026-11-23 | [0009 · Pull request destination](0009-main-pr-target.md) | Accepted | Nik chose `main` for every PR after the decision-grader change merged into an already integrated feature branch. Replaces the earlier dependent-branch review workflow. | [#10](https://github.com/niksacdev/dash/pull/10) |
 
 ## Maintaining the history
 
