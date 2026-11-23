@@ -56,21 +56,23 @@ function graderEvidence(manifest, row, result) {
   };
 }
 
-function exactReference(row, text) {
-  let actual = text.trim();
-  if (typeof row.reference !== "string") {
-    try { actual = JSON.parse(actual); } catch { return {pass:false,reasons:["Expected a JSON value matching the reference"]}; }
+async function exactReference(row, text) {
+  if (typeof row.reference === "string") {
+    const {exactTextScore, opikVersion} = require("./graders.cjs");
+    const score = await exactTextScore(text, row.reference);
+    return {pass:score.value === 1, reasons:score.value === 1 ? [] : [score.reason], evaluator:opikVersion};
   }
-  const expected = typeof row.reference === "string" ? row.reference.trim() : row.reference;
-  const pass = isDeepStrictEqual(actual, expected);
+  let actual;
+  try { actual = JSON.parse(text); } catch { return {pass:false,reasons:["Expected a JSON value matching the reference"]}; }
+  const pass = isDeepStrictEqual(actual, row.reference);
   return {pass, reasons:pass ? [] : ["Answer differs from the case reference"]};
 }
 
 function caseJudgeSpec(judge) {
   if (!judge || !["lmstudio","ollama"].includes(judge.provider)) throw Error("Choose a connected local judge for the case references and rubrics.");
-  const criteria = "Apply the case rubric to the candidate response. Use the SME reference and rationale as grading evidence. Accept equivalent wording unless the case explicitly calls for an exact format. Give 1 for complete fulfillment, partial credit for partially meeting the criteria, or 0 for a materially wrong answer. Cite the decisive case evidence.";
+  const criteria = "Apply the case rubric to the candidate response. Use the SME reference and rationale as grading evidence. Accept equivalent wording unless the case explicitly calls for an exact format. On the 0 to 10 scale, award 10 for complete fulfillment, partial credit for partially meeting the criteria, or 0 for a materially wrong answer. Cite the decisive case evidence.";
   const identity = {id:judge.id,model:judge.model,provider:judge.provider,revision:judge.revision ?? null, nativeChat:!!judge.nativeChat, reasoningOff:!!judge.reasoningOff};
-  const spec = {name:"Case reference and rubric",type:"judge",category:"Dataset evaluation",version:1,criteria,threshold:0.8,judge:identity};
+  const spec = {name:"Case reference and rubric",type:"opik",opikEngine:require("./graders.cjs").opikVersion,category:"Dataset evaluation",version:2,criteria,threshold:0.8,judge:identity};
   return {...spec,id:"case-judge/"+require("./packs.cjs").hash(spec)};
 }
 

@@ -430,6 +430,7 @@ class Bench {
               const finishPower = await this.powerSampler();
               let response;
               try {
+                rec.dispatchedMessages = messages;
                 response = await this.adapters.invoke(c, messages, {
                   signal,
                   apiKey: this.endpoints.keys.get(c.id),
@@ -456,7 +457,7 @@ class Bench {
             }
             if (signal.aborted) break;
             if (m.pack && m.datasetScorer !== "selected-graders") {
-              rec.score = m.datasetScorer === "exact-reference" ? exactReference(row,rec.output) : grade(m.pack, row, rec.output);
+              rec.score = m.datasetScorer === "exact-reference" ? await exactReference(row,rec.output) : grade(m.pack, row, rec.output);
               trace.steps.push({
                 at: now(),
                 action: "Grade with " + m.pack.scorer,

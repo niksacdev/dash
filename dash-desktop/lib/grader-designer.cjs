@@ -19,8 +19,7 @@ function gradingBrief(bench, request) {
   const referenceFields = Object.keys(references[0] && typeof references[0]==="object" && !Array.isArray(references[0]) ? references[0] : {})
     .filter(k=>references.every(item=>item && Object.hasOwn(item,k)));
   return { objective, metrics, industry, target, criteria:approved?.requirements || [], referenceFields,
-    outputFields:Object.keys(pack?.outputSchema?.properties || {}), existingScorer:pack?.kind==="reference"?null:pack?.scorer,
-    domainGuidance:bench.workflow.roles().find(r=>r.role==="expert" && r.domain===industry)?.instructions };
+    outputFields:Object.keys(pack?.outputSchema?.properties || {}), existingScorer:pack?.kind==="reference"?null:pack?.scorer };
 }
 
 // A literal metric scores the same string on every case. Conditional instructions need a judge
@@ -31,7 +30,7 @@ function literalRules(brief) {
     if (/\b(if|when|whenever|unless|otherwise|depending|except|only for)\b/i.test(instruction)) continue;
     const clauses = instruction.split(/[.\n;]/);
     for (const clause of clauses) {
-      const match = /\b(?:(?:respond|reply|answer|output|return)\s+(?:only with|with exactly|exactly|only)|(?:must\s+)?(?:include|contain|append|begin with|start with|say))\s+(?:(?:the\s+)?(?:exact\s+)?(?:word|phrase|literal|string)\s+)?(?:["“]([^"”]+)["”]|['‘]([^'’]+)['’]|([A-Z][A-Z0-9_-]+)\b)/i.exec(clause);
+      const match = /\b(?:(?:respond|reply|answer|output|return)\s+(?:only with|with exactly|exactly|only)|(?:must\s+)?(?:include|contain|say))\s+(?:(?:the\s+)?(?:exact\s+)?(?:word|phrase|literal|string)\s+)?(?:["“]([^"”]+)["”]|['‘]([^'’]+)['’]|([A-Z][A-Z0-9_-]+)\b)/i.exec(clause);
       if (!match) continue;
       const literal = match[1] || match[2] || match[3];
       if (match[3] && literal !== literal.toUpperCase()) continue;
@@ -61,7 +60,7 @@ async function designGraderPlan(bench, request) {
       summary:{type:"string"},checks:{type:"array",maxItems:8,items:grade}
     }};
     const route = await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),()=>{});
-    const prompt = "You design inference graders. Read the objective, success measures, domain guidance and available evidence. Select the smallest set of independent checks needed. Explain coverage and unmeasurable business outcomes in summary. A rate or aggregate KPI is not an individual response score. Do not duplicate the existing scenario scorer. Zero checks is valid when evidence is insufficient. A judge rubric needs observable full, partial and zero-credit anchors. For exact or contains, criteria is only a literal explicitly required by the objective. For field, criteria is a JSON string with outputField and referenceField using the supplied field names. For trajectory, list only explicitly required tool names in order, one per line. Use only measures listed in metrics. Give each observable measure one focused check unless two independent checks are essential. Domain guidance is background: never add requirements from it. Ignore domain topics outside the objective. Use judge for conditional instructions and for evidence expressed in natural language. For contains or exact select one of the allowed literals for that method. Use no invented reference values, policy thresholds, or tool names.";
+    const prompt = "You design inference graders. Read the objective, success measures, approved criteria and available evidence. Select the smallest set of independent checks needed. Explain coverage and unmeasurable business outcomes in summary. A rate or aggregate KPI is not an individual response score. Do not duplicate the existing scenario scorer. Zero checks is valid when evidence is insufficient. A judge rubric needs observable full, partial and zero-credit anchors. For exact or contains, criteria is only a literal explicitly required by the objective. For field, criteria is a JSON string with outputField and referenceField using the supplied field names. For trajectory, list only explicitly required tool names in order, one per line. Use only measures listed in metrics. Give each observable measure one focused check unless two independent checks are essential. Approved criteria describe the domain expert guidance the operator accepted. Never introduce additional industry policies or requirements. Use judge for conditional instructions and for evidence expressed in natural language. For contains or exact select one of the allowed literals for that method. Use no invented reference values, policy thresholds, or tool names.";
     const result = await route.ask("Grader designer",prompt,{...brief,allowedLiterals:literals},schema,1600,output=>{
       const summary = bounded(output.summary,1500,"a coverage explanation");
       if (!Array.isArray(output.checks) || output.checks.length>8) throw Error("Propose up to eight graders.");

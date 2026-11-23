@@ -3,8 +3,9 @@ const assert = require("node:assert/strict");
 const { DatabaseSync } = require("node:sqlite");
 const { Bench } = require("../lib/bench.cjs");
 const { PlannerSettings } = require("../lib/planner-settings.cjs");
-const { referencePack } = require("../lib/evaluation-cases.cjs");
+const { referencePack, exactReference } = require("../lib/evaluation-cases.cjs");
 const { parseDataset } = require("../lib/packs.cjs");
+const { opikJudgeRequest } = require("./opik-judge-fixture.cjs");
 const turns = [{role:"user",content:"Inspect lot K7."},{role:"assistant",content:"Which limits apply?"},{role:"user",content:"10.00 to 10.03 mm. The sample measures 10.04 mm."}];
 const record = {case_id:"qa-1",dataset_version:"1.0",split:"holdout",messages:turns,rubric:"Hold for review with units.",sme_rationale:"Private reason from the SME."};
 
@@ -14,12 +15,15 @@ test("a chat dataset can run against its own case rubric with an empty grader li
   const b=new Bench(":memory:",{
     discover:async()=>[{models:[model]}],
     invoke:async(c,m,o)=>{
-      if (o.structured?.properties?.score) {
-        const evidence=JSON.parse(m.at(-1).content);
+      const evaluation=opikJudgeRequest(m);
+      if (evaluation?.stage==="geval-steps") return {output:"Compare the reading and units against the case limits."};
+      if (evaluation?.stage==="geval-score") {
+        assert.equal(o.structured.properties.score.maximum,10);
+        const evidence=evaluation.evidence;
         assert.deepEqual(evidence.input,turns);
         assert.equal(evidence.sme_rationale,record.sme_rationale);
         assert.equal(evidence.rubric,record.rubric);
-        judgeCalls++; return {output:'{"score":1,"reason":"Identified the out-of-tolerance sample."}'};
+        judgeCalls++; return {output:'{"score":10,"reason":"Identified the out-of-tolerance sample."}'};
       }
       assert.deepEqual(m,turns); candidateCalls++; return {output:"Hold the lot for review."};
     }
@@ -32,8 +36,15 @@ test("a chat dataset can run against its own case rubric with an empty grader li
   await b.active.done;
   const saved=b.exportRun(id);
   assert.equal(saved.status,"completed",saved.manifest.error);
+  assert.deepEqual(saved.results[0].dispatchedMessages,turns);
   assert.equal(saved.manifest.approvedPromptId,null);
   assert.equal(saved.assessments[0].value,1,saved.assessments[0].reason);
+  const [rubric]=saved.manifest.graders;
+  assert.equal(rubric.type,"opik");
+  assert.equal(rubric.version,2);
+  assert.match(rubric.opikEngine,/^opik-js@/);
+  assert.equal(saved.assessments[0].evaluator,rubric.opikEngine);
+  assert.ok(saved.report.metrics.some(m=>m.method==="opik-judge"));
   assert.equal(saved.report.verdict,"single");
   const rerun=b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],parentId:id,caseId:record.case_id});
   await b.active.done;
@@ -70,4 +81,12 @@ test("planner fallback saves the model preference without persisting the session
     assert.equal(new PlannerSettings(db,endpoints,{}).fallback(),null);
     settings.save({model:"gpt-test",enabled:false});assert.equal(settings.fallback(),null);
   } finally {db.close();}
+});
+test("exact reference strings use Opik and structured references preserve JSON semantics",async()=>{
+  const score=await exactReference({reference:"  HOLD "},"HOLD");
+  assert.equal(score.pass,true);
+  assert.match(score.evaluator,/^opik-js@/);
+  assert.equal((await exactReference({reference:"HOLD"},"hold")).pass,false);
+  assert.equal((await exactReference({reference:{a:1,b:2}},'{"b":2,"a":1}')).pass,true);
+  assert.equal((await exactReference({reference:[1,2]},"[2,1]")).pass,false);
 });

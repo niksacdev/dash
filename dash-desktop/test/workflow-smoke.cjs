@@ -6,6 +6,8 @@ const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 const { app } = require("electron");
 
+const { opikJudgeRequest } = require("./opik-judge-fixture.cjs");
+
 const profile = mkdtempSync(path.join(os.tmpdir(), "dash-workflow-smoke-"));
 app.setPath("userData", profile);
 app.dock?.hide();
@@ -41,9 +43,9 @@ function modelOutput(stage, brief, model) {
       observation = scores[0] === scores[1] ? "equal" : scores[0] > scores[1] ? "first_higher" : "second_higher";
     return { ...brief.auditedVerdict, highlights: [{ evidence: id, observation }] };
   }
-  if (stage === "judge") {
+  if (stage === "geval-score") {
     const cited = brief.output.includes("QA inspection record");
-    return { score: cited ? 1 : 0, reason: cited ? "The response cites the inspection record." : "The response lacks the required evidence." };
+    return { score: cited ? 10 : 0, reason: cited ? "The response cites the inspection record." : "The response lacks the required evidence." };
   }
   return { decision: "review", evidence: model === models.ollama ? "QA inspection record" : "QA response" };
 }
@@ -71,12 +73,12 @@ globalThis.fetch = async (url, options = {}) => {
   const body = JSON.parse(options.body);
   const schema = body.format ?? body.response_format?.json_schema?.schema;
   const props = schema?.properties ?? {};
-  const judging = body.messages?.[0]?.content?.startsWith("Evaluate the supplied evidence against this rubric:");
-  const stage = props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
-    judging ? "judge" : props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate";
-  const brief = stage === "candidate" ? null : JSON.parse(body.messages.at(-1).content);
+  const evaluation = opikJudgeRequest(body.messages);
+  const stage = evaluation?.stage ?? (props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
+    props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
+  const brief = evaluation ? evaluation.evidence : stage === "candidate" ? null : JSON.parse(body.messages.at(-1).content);
   calls.push({ stage, body, brief });
-  const content = JSON.stringify(modelOutput(stage, brief, body.model));
+  const content = stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
   if (target.pathname === "/api/chat") {
     return new Response(JSON.stringify({ message: { content }, done: true, done_reason: "stop", prompt_eval_count: 21, eval_count: 12 }) + "\n");
   }
@@ -253,6 +255,10 @@ async function smoke() {
   const quickRecords = await js("window.dash.detail(" + q(quick.id) + ")");
   assert.equal(quick.graders.length, 1);
   assert.equal(quick.graders[0].threshold, .8);
+  assert.equal(quick.graders[0].type,"opik");
+  assert.match(quick.graders[0].opikEngine,/^opik-js@/);
+  assert.equal(calls.filter(c=>c.stage==="geval-score").length,2);
+  assert.ok(quickRecords.assessments.every(a=>a.evaluator===quick.graders[0].opikEngine));
   assert.equal(quickRecords.assessments.length, 2);
   assert.deepEqual(quickRecords.assessments.map(a=>a.value).sort(), [0,1]);
   assert.ok(quickRecords.results.every(r=>r.guardrail.status==="unverified" && r.guardrail.outputReserve===180));
@@ -261,7 +267,7 @@ async function smoke() {
   assert.equal(quickRecords.report.assistance.reporter.status,"verified");
   assert.equal(quickRecords.report.verdict,"winner");
   assert.equal(quickRecords.report.winnerId,"ollama/"+models.ollama);
-  assert.ok(quickRecords.report.metrics.some(m=>m.method==="llm-judge"));
+  assert.ok(quickRecords.report.metrics.some(m=>m.method==="opik-judge"));
   await wait(() => exists('.er-report[data-verdict="winner"]'), "Terminal winner report");
   await click(".er-evidence summary");
   await wait(() => js("document.querySelector('.er-evidence[open]').innerText.includes('lacks the required evidence')"), "Saved judge rationale");

@@ -1,11 +1,13 @@
 const { createHash } = require("node:crypto");
 
 let client;
-async function loadedModels() {
+function lmClient() {
   const { LMStudioClient } = require("@lmstudio/sdk");
   client ??= new LMStudioClient({ baseUrl: "ws://127.0.0.1:1234" });
-  return client.llm.listLoaded();
+  return client;
 }
+
+const loadedModels = () => lmClient().llm.listLoaded();
 
 // In SDK 2.1.0 applyPromptTemplate() has no prediction-options argument.
 // Its formatter reads the instance's config stack. Scope a copy to this one
@@ -169,4 +171,37 @@ function createTokenBudget(listLoaded) {
   return { checkInputBudget, invokeBudgeted, invokePlanner };
 }
 
-module.exports = { ...createTokenBudget(loadedModels), createTokenBudget };
+// Opik supplies its own chat turns for both G-Eval stages. Measure and dispatch those exact
+// turns through the chosen model's template, including a one-turn scoring request.
+async function invokeJudge(candidate, messages, { maxTokens, signal, structured }) {
+  const model = await lmClient().llm.model(candidate.model, { signal });
+  const active = { ...candidate, model:model.identifier };
+  const scoped = createTokenBudget(async () => [model]);
+  const checklist = !structured;
+  if (checklist) {
+    // The SDK's first G-Eval stage asks for a reusable evaluation checklist.
+    // Bound its representation for small models, then return plain steps to Opik.
+    structured = {type:"object", additionalProperties:false, required:["steps"], properties:{
+      steps:{type:"array", minItems:1, maxItems:4, items:{type:"string", minLength:1, maxLength:160}},
+    }};
+    messages = messages.map((turn, i) => i === messages.length - 1
+      ? {...turn, content:turn.content + "\nReturn a JSON object with a steps array. Write one brief, observable check per step."} : turn);
+  }
+  const inputBudget = await scoped.checkInputBudget({
+    candidate:active, messages, measureContext:true, disableThinking:!!candidate.reasoningOff, signal,
+  });
+  const room = inputBudget.contextTokens - inputBudget.tokens;
+  if (room < 1) throw Error("The judge input fills the active model context. Choose a judge with a larger context.");
+  const response = await scoped.invokeBudgeted(active, messages, {
+    inputBudget, maxTokens:Math.min(room, maxTokens, candidate.maxOutputTokens || maxTokens), signal, structured,
+  });
+  if (checklist && response.finishReason !== "length") {
+    const {steps} = JSON.parse(response.output);
+    if (!Array.isArray(steps) || !steps.length || steps.some(step=>typeof step!=="string" || !step.trim()))
+      throw Error("The local Opik judge returned an invalid evaluation checklist.");
+    response.output = steps.join("\n");
+  }
+  return response;
+}
+
+module.exports = { ...createTokenBudget(loadedModels), createTokenBudget, invokeJudge };

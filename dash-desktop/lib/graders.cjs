@@ -12,6 +12,10 @@ const sdkEnabled = () => typeof GEval === "function";
 const containsMetric = new Contains("Contains", false, true);
 const exactMetric = new ExactMatch("Exact match", false);
 
+function exactTextScore(output, expected) {
+  return exactMetric.score({output:output.trim(), expected:expected.trim()});
+}
+
 class DashJudgeModel extends OpikBaseModel {
   constructor(judge,adapters,signal) {
     super([judge.id,judge.revision || "unversioned"].join("@"));
@@ -20,10 +24,10 @@ class DashJudgeModel extends OpikBaseModel {
   async request(messages,structured) {
     this.signal.throwIfAborted();
     const response=await this.adapters.invoke(this.judge,messages,{
-      signal:this.signal,maxTokens:768,
-      ...(structured ? {structured:{type:"object",properties:{score:{type:"integer",minimum:0,maximum:10},reason:{type:"string"}},required:["score","reason"],additionalProperties:false}} : {})
+      signal:this.signal,judging:true,maxTokens:structured ? 1024 : 1536,
+      ...(structured ? {structured:{type:"object",properties:{score:{type:"integer",minimum:0,maximum:10},reason:{type:"string",minLength:1,maxLength:420}},required:["score","reason"],additionalProperties:false}} : {})
     });
-    if (!response.output?.trim() || response.finishReason==="length") throw Error("The Opik judge returned an empty or truncated response.");
+    if (!response.output?.trim() || response.finishReason==="length") throw Error("The Opik judge returned an empty or truncated " + (structured ? "verdict" : "evaluation checklist") + (Number.isFinite(response.telemetry?.output_tokens) ? " after " + response.telemetry.output_tokens + " generated tokens." : "."));
     return response.output;
   }
   generateString(prompt, format) {
@@ -96,7 +100,7 @@ function quickCompatible(grader, judges) {
   const current = judges.find(m => m.id === grader.judge?.id);
   return !!current && (!grader.judge.revision || grader.judge.revision === current.revision);
 }
-function outcomeRubric(approved, judges) {
+function outcomeRubric(approved, judges, type = "opik") {
   const sameDesigner = m => m.provider === approved.designer?.provider && m.model === approved.designer?.model;
   const loaded = judges.filter(m => m.loaded);
   const preferred = loaded.find(sameDesigner) || loaded[0] || judges.find(sameDesigner) || judges[0];
@@ -113,9 +117,10 @@ function outcomeRubric(approved, judges) {
   }
   if (!requirements.length) criteria.push("Credit an answer that completes the requested task using the available information and identifies material gaps.");
   criteria.push("Use the approved measures to interpret the objective. A population rate, saving or real-world impact requires separate observations. Credit only what this response demonstrates.",
+    type === "opik" ? "On the 0 to 10 scale, award 10 when every applicable check is satisfied, 5 for partial fulfillment, or 0 when the response misses the objective or conflicts with decisive evidence. Explain any criterion the evidence cannot establish." :
     "Award 1 when every applicable check is satisfied, 0.5 for partial fulfillment, or 0 when the response misses the objective or conflicts with decisive evidence. Explain any criterion the evidence cannot establish.");
   return { name:title.slice(0,78) + " · outcome rubric", industry:approved.domain, category:"Business outcome",
-    type:"judge", criteria:criteria.join("\n"), threshold:1, judgeId:preferred?.id ?? null };
+    type, criteria:criteria.join("\n"), threshold:1, judgeId:preferred?.id ?? null };
 }
 function localJudges(models) { return models.filter(m => ["lmstudio","ollama"].includes(m.provider)); }
 function pinnedJudge(model) {
@@ -183,9 +188,9 @@ class Graders {
     if (selected.some(g => !quickCompatible(g, judges)))
       throw Error("A selected grader needs a labeled dataset, an agent trace, or an unavailable judge. Refresh the Quick compare grader choices.");
     if (requested == null) return selected;
-    if (typeof requested !== "object" || !judgeTypes.has(requested.type || "judge"))
+    if (typeof requested !== "object" || !judgeTypes.has(requested.type || "opik"))
       throw Error("Choose a local LLM or Opik outcome rubric.");
-    const defaults = outcomeRubric(approved, judges);
+    const defaults = outcomeRubric(approved, judges, requested.type || "opik");
     const judge = judges.find(m => m.id === requested.judgeId);
     if (!judge) throw Error("Select an available local model to judge the outcome rubric.");
     const input = { ...defaults, type:requested.type || defaults.type, judgeId:judge.id,
@@ -200,7 +205,7 @@ class Graders {
       let value,reason;
       if (g.type==="exact" || g.type==="contains") {
         const score = g.type==="exact"
-          ? await exactMetric.score({output:e.output.trim(),expected:g.criteria.trim()})
+          ? await exactTextScore(e.output,g.criteria)
           : await containsMetric.score({output:e.output,substring:g.criteria});
         ({value,reason}=score);
         base.evaluator=opikVersion;
@@ -240,4 +245,4 @@ class Graders {
   recorded(id) {return this.db.prepare("SELECT candidate,case_id,record FROM assessments WHERE run=? ORDER BY rowid").all(id).map(r=>({...JSON.parse(r.record),candidate:r.candidate,caseId:r.case_id}));}
   recent() {return this.db.prepare("SELECT record FROM assessments WHERE run IS NULL ORDER BY rowid DESC LIMIT 15").all().map(r=>JSON.parse(r.record));}
 }
-module.exports={Graders, sdkEnabled};
+module.exports={Graders, sdkEnabled, opikVersion, exactTextScore};

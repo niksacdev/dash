@@ -221,9 +221,11 @@ async function nativeDataset(candidate, messages, signal, maxTokens) {
     },
   };
 }
-async function invoke(candidate, messages, { signal, structured, onText, apiKey, inputBudget, planning, maxTokens = settings.maxTokens }) {
+async function invoke(candidate, messages, { signal, structured, onText, apiKey, inputBudget, planning, judging, maxTokens = settings.maxTokens }) {
   if (inputBudget != null)
     return require("./token-budget.cjs").invokeBudgeted(candidate, messages, { inputBudget, maxTokens, signal, structured, onText });
+  if (judging && candidate.provider === "lmstudio")
+    return require("./token-budget.cjs").invokeJudge(candidate, messages, { maxTokens, signal, structured });
   if (planning && candidate.provider === "lmstudio")
     return require("./token-budget.cjs").invokePlanner(candidate, messages, { maxTokens, signal, structured });
   if (structured && candidate.provider === "lmstudio" && candidate.nativeChat)
