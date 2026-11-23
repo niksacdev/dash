@@ -30,6 +30,8 @@ Configure Opik answer relevance, usefulness, hallucination or moderation from th
 
 For example, choose the earnings grader that checks the requested financial fact and run the **eps-gaap** case. The recorded candidate answer reports adjusted EPS of 0.85 instead of reported GAAP EPS of 0.74. Reuse that exact grader version on another earnings dataset with the same contract. The version’s run history shows where it was used. A customer can fork the shipped criterion and choose an editable rubric or another grading method to implement a different policy.
 
+The grader designer makes one proposal per success measure. For example, “Active drawing revision accuracy” can reuse the shipped active-drawing check. If you also want a separate score for routing the lot to review, put “Disposition routing accuracy” on a second line. A compound measure can use one rubric covering all its conditions. Measures that need unavailable evidence, such as actual hold duration, are marked unscored. When two measures use the same pinned rule, both appear in the review and the rule runs once.
+
 A catalog version number identifies a revision within its family. Revisions with the same display name can belong to different families. An old case rerun always retains its original manifest. A newly created run resolves the current workspace defaults and the specific grader revisions selected for it.
 
 ## Use a decision model as a grader

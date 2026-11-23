@@ -26,7 +26,7 @@ When local LFM3 is unavailable or a planning stage cannot produce a valid result
 
 - **Metric suggestions and prompt preparation** send success measures, criteria, token budgets, and the public scenario instructions, output schema and metric definitions. The implementer also receives the expert’s findings.
 - **Prompt revisions** can include the preceding approved prompt, its metrics and aggregate results from a selected run, including truncation and token-budget observations.
-- **Grader design** sends the objective, measures, requirements, evaluation target, available output and reference field names, existing scorer name and any permitted literal checks derived from the brief.
+- **Grader design** sends the objective, measures, requirements, evaluation target, available output and reference field names, existing scorer name and any permitted literal checks derived from the brief. The hosted planner can see the published catalog criteria supplied with DASH. Customer rubric names and definitions stay in local planning. An operator can still include customer text explicitly in the task objective or success measures.
 
 Planning fallback, a hosted candidate selected for inference, and uploading a completed run to Opik are separate destinations. Review each where you enable it.
 

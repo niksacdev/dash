@@ -7,16 +7,19 @@ import { inventory,reply,present } from "./runtime-fixtures.cjs";
 import type { LocalCandidate,RuntimeAdapters } from "../lib/runtime-types.cjs";
 import {z} from "zod";
 
-const constraints=z.object({properties:z.object({checks:z.object({items:z.object({properties:z.object({
-  method:z.object({enum:z.array(z.string())}),metric:z.object({enum:z.array(z.string())})
-})})})})});
+const constraints=z.object({properties:z.record(z.string(),z.object({anyOf:z.array(z.object({
+  properties:z.object({choice:z.object({enum:z.array(z.string())})})
+}))}))});
+function allowedChoices(schema:unknown,goal:string) {
+  return constraints.parse(schema).properties[goal].anyOf.flatMap(branch=>branch.properties.choice.enum);
+}
 
 test("the designer proposes a minimal plan, then confirmation saves reusable versions atomically", async t => {
   const judge:LocalCandidate = {kind:"model",id:"ollama/lfm3-test",provider:"ollama",model:"lfm3-test",loaded:true,revision:"test-r1"};
   const servers = [inventory([judge])];
   const proposed = [
-    {name:"Hold wording",metric:"Exact disposition",method:"contains",criteria:"The response must contain the exact word HOLD",reason:"The contract specifies this literal.",threshold:1},
-    {name:"Evidence quality",metric:"Evidence quality",method:"judge",criteria:"Full credit requires the measured diameter and the tolerance. Partial credit for one; zero if both are absent.",reason:"Equivalent explanations are acceptable.",threshold:0.8},
+    {name:"Hold wording",choice:"NEW:contains",criteria:"The response must contain the exact word HOLD",reason:"The contract specifies this literal.",threshold:1},
+    {name:"Evidence quality",choice:"NEW:judge",criteria:"Full credit requires the measured diameter and the tolerance. Partial credit for one; zero if both are absent.",reason:"Equivalent explanations are acceptable.",threshold:0.8},
   ];
   const judged:string[] = [];
   const adapters:RuntimeAdapters = {
@@ -28,8 +31,8 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
         assert.equal(brief.industry,"Manufacturing");
         assert.match(brief.objective,/HOLD/);
         assert.deepEqual(brief.metrics,["Exact disposition","Evidence quality"]);
-        assert.deepEqual(constraints.parse(options.structured).properties.checks.items.properties.method.enum,["contains","judge"]);
-        return reply(JSON.stringify({summary:"Check the disposition separately from its supporting measurement.",checks:proposed}));
+        assert.deepEqual(allowedChoices(options.structured,"M1").filter(c=>c.startsWith("NEW:")),["NEW:contains","NEW:judge"]);
+        return reply(JSON.stringify({M1:proposed[0],M2:proposed[1]}));
       }
       judged.push(candidate.id);
       return reply(options.structured ? '{"score":8,"reason":"The response cites the diameter and tolerance."}' : "Inspect the measurement and its tolerance.");
@@ -64,7 +67,7 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
 test("an input-only objective can leave a business metric unscored", async t=>{
   const m:LocalCandidate={kind:"model",id:"ollama/lfm3-mock",model:"lfm3-mock",provider:"ollama",loaded:true};
   const b=new Bench(":memory:",{discover:async()=>[inventory([m])],invoke:async()=>reply(JSON.stringify({
-    summary:"Actual customer renewals require subsequent outcome observations.",checks:[]
+    M1:{choice:"SKIP",reason:"Actual customer renewals require subsequent outcome observations."}
   }))});
   t.after(()=>b.db.close());
   const p=await designGraderPlan(b,{objective:"Increase customer renewals",metrics:"Renewal rate"});
@@ -75,12 +78,11 @@ test("an input-only objective can leave a business metric unscored", async t=>{
 test("conditional disposition checks score evidence and stay anchored to the requested measures", async t => {
   const m:LocalCandidate={kind:"model",id:"ollama/lfm3-mock",model:"lfm3-mock",provider:"ollama",loaded:true};
   const b=new Bench(":memory:",{discover:async()=>[inventory([m])],invoke:async(c,msg,opt)=>{
-    const fields=constraints.parse(opt.structured).properties.checks.items.properties;
-    assert.deepEqual(fields.method.enum,["judge"]);
-    assert.deepEqual(fields.metric.enum,["Disposition accuracy","Measurement citation"]);
-    return reply(JSON.stringify({summary:"Assess the applicable disposition for the supplied measurement.",checks:[{
-      name:"Disposition",metric:"Disposition accuracy",method:"judge",criteria:"Credit HOLD when the measurement exceeds tolerance, or an in-range disposition otherwise.",reason:"Both branches are valid.",threshold:1
-    }]}));
+    assert.deepEqual(allowedChoices(opt.structured,"M1").filter(c=>c.startsWith("NEW:")),["NEW:judge"]);
+    assert.deepEqual(Object.keys(constraints.parse(opt.structured).properties),["M1","M2"]);
+    return reply(JSON.stringify({M1:{
+      name:"Disposition",choice:"NEW:judge",criteria:"Credit HOLD when the measurement exceeds tolerance or an in-range disposition otherwise.",reason:"Both branches are valid.",threshold:1
+    },M2:{choice:"NEW:judge",name:"Measurement citation",criteria:"Credit the stated measurement when it appears in the input.",reason:"Check the candidate citation.",threshold:1}}));
   }});
   t.after(()=>b.db.close());
   const plan=await designGraderPlan(b,{objective:"Say HOLD when the measurement exceeds tolerance and cite the value.",metrics:"Disposition accuracy\nMeasurement citation"});
@@ -100,9 +102,9 @@ test("the designer reuses a matching industry revision, protects references and 
     assert.ok(!payload.catalog.some(g=>g.name==="Response present" || /drawing/i.test(g.name)));
     assert.doesNotMatch(text,/FY26 Q2|0\.74|0\.85|eps-gaap/);
     const source=present(payload.catalog.find(g=>g.name==="Requested financial fact"));
-    return reply(JSON.stringify({summary:"The selected fact check covers the requested accounting basis.",checks:[],
-      catalogChoices:[{option:invented?"G9999":source.option,action,metric:"Basis accuracy",criteria:action==="derive"?"Check whether the answer distinguishes diluted GAAP EPS from adjusted EPS.":"",
-        reason:"The approved outcome requires the reported accounting basis."}]}));
+    return reply(JSON.stringify({M1:{choice:invented?"G9999":action==="derive"?"ADAPT:"+source.option:source.option,
+      reason:"The approved outcome requires the reported accounting basis.",
+      ...(action==="derive" && {name:"Our EPS basis",criteria:"Check whether the answer distinguishes diluted GAAP EPS from adjusted EPS.",threshold:1})}}));
   }});
   t.after(()=>bench.db.close());bench.servers=[inv];
   const dataset=present(bench.list().datasets.find(d=>d.pack==="earnings"));
@@ -119,7 +121,7 @@ test("the designer reuses a matching industry revision, protects references and 
   const fork=bench.graders.get(id);assert.notEqual(id,s.id);assert.equal(fork.type,"opik");
   assert.equal(fork.library?.parentRevisionId,s.id);assert.equal(fork.library?.scope,"customer");
   assert.equal(bench.graders.get(s.id).criteria,s.criteria);
-  invented=true;await assert.rejects(designGraderPlan(bench,request),/catalog options/i);
+  action="reuse";invented=true;await assert.rejects(designGraderPlan(bench,request),/catalog option/i);
   assert.throws(()=>confirmGraderPlan(bench,{draftId:second.draftId,choices:[{index:0,action:"reuse"}]}),/approved/);
 });
 
@@ -131,7 +133,7 @@ test("an input-only dataset never offers a judge requiring a held-out reference 
       .parse(JSON.parse(present(messages.at(-1)).content));
     assert.equal(payload.referenceCoverage,"none");
     assert.ok(!payload.catalog.some(check=>["Has inspector reference","Followed inspection tool order","Grounded in the reference"].includes(check.name)));
-    checked=true;return reply(JSON.stringify({summary:"No reference or tool events support the requested accuracy check.",checks:[]}));
+    checked=true;return reply(JSON.stringify({M1:{choice:"SKIP",reason:"No reference or tool events support the requested accuracy check."}}));
   }});
   t.after(()=>b.db.close());b.servers=[inventory([m])];
   const ds=b.importRows("reference","Unlabeled inspection",[{case_id:"unknown",dataset_version:"1",split:"development",prompt:"Read the inspection note."}],
@@ -159,8 +161,34 @@ test("hosted planning sees shipped criteria exclusively and cannot select a conc
     assert.doesNotMatch(serialized,/Internal CFO exception|HIDDEN CFO RULE|PRIVATE BOARD MARKER|0\.74|eps-gaap/);
     const payload=z.object({catalog:z.array(z.object({option:z.string(),name:z.string()}))}).parse(JSON.parse(present(envelope.messages.at(-1)).content));
     assert.ok(payload.catalog.some(g=>g.name==="Requested financial fact"));
-    const fake={summary:"A customer source was guessed.",checks:[],catalogChoices:[{option:"G9999",metric:"Basis accuracy",action:"reuse",criteria:"",reason:"Check basis."}]};
+    const fake={M1:{choice:"G9999",reason:"Check basis."}};
     return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(fake)}}]}),{headers:{"content-type":"application/json"}});
   });
-  await assert.rejects(designGraderPlan(b,request),/catalog options/);assert.equal(calls,2);
+  await assert.rejects(designGraderPlan(b,request),/catalog option/);assert.equal(calls,2);
+});
+
+test("superseded-drawing plans select a pinned rule once, preserve every measure and reject the former conflicting dual lists",async t=>{
+  const local:LocalCandidate={kind:"model",id:"lmstudio/lfm3-1.7b",model:"lfm3-1.7b",provider:"lmstudio",loaded:true};
+  let calls=0;
+  const b=new Bench(":memory:",{discover:async()=>[inventory([local])],invoke:async(_model,messages,options)=>{
+    const input=z.object({goals:z.array(z.object({key:z.string(),metric:z.string()})),catalog:z.array(z.object({name:z.string(),option:z.string()}))})
+      .parse(JSON.parse(present(messages.at(-1)).content));
+    const drawing=present(input.catalog.find(rule=>rule.name==="Active drawing and sample identity"));
+    assert.deepEqual(Object.keys(constraints.parse(options.structured).properties),input.goals.map(g=>g.key));
+    if(++calls===1){
+      return reply(JSON.stringify({summary:"One measure",catalogChoices:[{option:drawing.option,action:"reuse",metric:input.goals[0].metric,criteria:"",reason:"Revision identity"}],
+        checks:[{name:drawing.name,method:"judge",metric:input.goals[0].metric,criteria:"Holding the lot is optional when its measurement looks good.",threshold:.5,reason:"Changed criterion"}]}));
+    }
+    return reply(JSON.stringify(Object.fromEntries(input.goals.map(({key})=>[key,key==="M3"?{choice:"SKIP",reason:"No production hold duration was observed."}:
+      {choice:drawing.option,reason:"Compare the requested identity with the labeled active drawing."}]))));
+  }});
+  t.after(()=>b.db.close());b.servers=[inventory([local])];
+  const ds=present(b.list().datasets.find(d=>d.pack==="manufacturing"));
+  const request={datasetId:ds.id,objective:"Hold any inspected lot evaluated against a superseded drawing revision.",metrics:"Active drawing revision accuracy"};
+  const one=await designGraderPlan(b,request);assert.equal(calls,2);assert.equal(one.checks.length,1);
+  assert.equal(one.checks[0].action,"reuse");assert.equal(one.checks[0].source?.name,"Active drawing and sample identity");
+  assert.deepEqual(confirmGraderPlan(b,{draftId:one.draftId,choices:[{index:0,action:"reuse"}]}),[one.checks[0].source?.id]);
+  const multi=await designGraderPlan(b,{...request,metrics:request.metrics+"\nPart and lot identity accuracy\nReduction in hold duration"});
+  assert.equal(multi.checks.length,1);assert.match(multi.summary,/Active drawing revision accuracy/);assert.match(multi.summary,/Part and lot identity accuracy/);
+  assert.match(multi.summary,/Reduction in hold duration — unscored/);assert.match(multi.checks[0].reason,/Part and lot identity accuracy/);
 });

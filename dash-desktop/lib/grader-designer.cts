@@ -23,8 +23,11 @@ const designRequest=z.strictObject({promptId:textId.optional(),datasetId:textId.
   target:z.enum(["response","agent"]).optional()}).refine(r=>[r.promptId,r.datasetId,r.domainId].filter(Boolean).length<=1,"Choose a single prompt, dataset, or domain.");
 const methodSchema=z.enum(["contains","exact","judge","field","trajectory"]);
 type Method=z.infer<typeof methodSchema>;
-const checkSchema=z.strictObject({name:z.string(),method:methodSchema,metric:z.string(),criteria:z.string(),
-  reason:z.string(),threshold:z.number().gt(0).lte(1)});
+const baseAssignment={choice:z.string(),reason:z.string()};
+const assignmentSchema=z.union([
+  z.strictObject(baseAssignment),
+  z.strictObject({...baseAssignment,name:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1)}),
+]);
 const sourceSchema=z.object({id:textId,name:z.string(),version:z.number().int().positive(),scope:z.enum(["general","industry","customer"]),
   criteria:z.string(),hosted:z.boolean(),model:z.string().nullable()});
 const proposedSchema=z.object({name:z.string(),category:z.string(),industry:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),
@@ -151,59 +154,88 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
     const automatic=options.automatic.map(g=>({name:g.name,criteria:g.criteria}));
     const methods:Method[]=(["exact","contains"] as const).filter(m=>literals[m].length);
     methods.push("judge");if(brief.referenceFields.length) methods.push("field");if(brief.target==="agent") methods.push("trajectory");
-    const metric={type:"string",enum:brief.metrics};
-    const grade={type:"object",additionalProperties:false,required:["name","metric","method","criteria","reason","threshold"],
-      properties:{name:{type:"string"},metric,method:{type:"string",enum:methods},criteria:{type:"string"},reason:{type:"string"},threshold:{type:"number",minimum:.001,maximum:1}}};
-    function proposalSchema(visible:typeof choices){
-    const catalogChoice={type:"object",additionalProperties:false,required:["option","action","metric","reason","criteria"],
-      properties:{option:{type:"string",enum:visible.map(x=>x.option)},action:{type:"string",enum:["reuse","derive"]},metric,
-        reason:{type:"string"},criteria:{type:"string"}}};
-    return {type:"object",additionalProperties:false,required:["summary","checks",...(visible.length?["catalogChoices"]:[])],
-      properties:{summary:{type:"string"},checks:{type:"array",maxItems:8,items:grade},
-        ...(visible.length && {catalogChoices:{type:"array",maxItems:8,items:catalogChoice}})}};
-    }
+    const goals=[...new Set(brief.metrics)].map((metric,i)=>({key:"M"+(i+1),metric}));
+    if(!goals.length)throw Error("Enter at least one success measure.");
+    const numberedAutomatic=(rows:typeof automatic)=>rows.map((g,i)=>({...g,option:"A"+(i+1)}));
     const route=await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),()=>{});
     const agent=loadAgent("grader-designer");
-    function parsePlan(output:Record<string,unknown>,visible:typeof choices){
-      const parsed=z.strictObject({summary:z.string(),checks:z.array(checkSchema).max(8),catalogChoices:z.array(z.strictObject({
-        option:z.string(),action:z.enum(["reuse","derive"]),metric:z.string(),reason:z.string(),criteria:z.string()})).max(8).optional()}).parse(output);
-      const summary=bounded(parsed.summary,1500,"a coverage explanation");
+    type Visible=typeof choices;
+    type Defaults=ReturnType<typeof numberedAutomatic>;
+    function proposalSchema(visible:Visible,defaults:Defaults){
+      const simple=["SKIP",...visible.map(x=>x.option),...defaults.map(x=>x.option)];
+      const write=[...methods.map(m=>"NEW:"+m),...visible.map(x=>"ADAPT:"+x.option)];
+      const comment={type:"string",minLength:1,maxLength:400};
+      const resolution={anyOf:[
+        {type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:simple},reason:comment}},
+        {type:"object",additionalProperties:false,required:["choice","reason","name","criteria","threshold"],properties:{
+          choice:{type:"string",enum:write},reason:comment,name:{type:"string",minLength:1,maxLength:100},
+          criteria:{type:"string",minLength:1,maxLength:6000},threshold:{type:"number",exclusiveMinimum:0,maximum:1}}},
+      ]};
+      return {type:"object",additionalProperties:false,required:goals.map(g=>g.key),
+        properties:Object.fromEntries(goals.map(g=>[g.key,resolution]))};
+    }
+    function parsePlan(output:Record<string,unknown>,visible:Visible,defaults:Defaults){
+      if(Object.keys(output).length!==goals.length || goals.some(g=>!Object.hasOwn(output,g.key)))
+        throw Error("Return one assignment per measure key. Do not return lists of new checks and catalog choices.");
       const checks:Proposed[]=[];
-      const used=new Set<string>();
-      for(const item of parsed.catalogChoices || []){
-        const pos=choices.findIndex(c=>c.option===item.option), source=candidates[pos];
-        if(!source || !visible.some(v=>v.option===item.option) || used.has(source.id))throw Error("Choose distinct catalog options from the supplied list.");
-        used.add(source.id);
-        if(!brief.metrics.includes(item.metric))throw Error("Choose an approved success measure.");
-        const exact=item.action==="reuse";
-        checks.push({action:item.action,source:reviewedSource(source),name:source.name,category:exact?source.category:item.metric.slice(0,100),
-          industry:brief.industry,type:exact?source.type:"opik",criteria:exact?source.criteria:bounded(item.criteria,6000,"the customized criterion"),
-          threshold:source.threshold,reason:bounded(item.reason,1200,"the link to the approved measure")});
+      const summaries:string[]=[];
+      const byDefinition=new Map<string,Proposed>();
+      const sameText=(a:string,b:string)=>a.trim().toLowerCase()===b.trim().toLowerCase();
+      for(const {key,metric} of goals){
+        const pick=assignmentSchema.parse(output[key]);
+        const rationale=bounded(pick.reason,400,"a short reason for this measure");
+        const auto=defaults.find(d=>d.option===pick.choice);
+        const editing=pick.choice.startsWith("ADAPT:"), creating=pick.choice.startsWith("NEW:");
+        if(!editing && !creating && "criteria" in pick)throw Error("An exact reuse or skip cannot contain modified criteria. Choose ADAPT for a changed rubric.");
+        if(pick.choice==="SKIP"){summaries.push(metric+" — unscored. "+rationale);continue;}
+        if(auto){summaries.push(metric+" — already checked by "+auto.name+".");continue;}
+        const handle=editing?pick.choice.slice(6):pick.choice;
+        const existing=visible.find(v=>v.option===handle);
+        const source=existing?candidates[choices.indexOf(existing)]:undefined;
+        if(!creating && !source)throw Error("Choose only a catalog option offered for this measure.");
+        let check:Proposed;
+        if(source && !editing){
+          check={action:"reuse",source:reviewedSource(source),name:source.name,category:source.category,industry:brief.industry,
+            type:source.type,criteria:source.criteria,threshold:source.threshold,reason:rationale};
+        }else{
+          if(!("criteria" in pick))throw Error("A new or adapted check needs its name, criteria and pass threshold.");
+          const method=editing?"judge":methodSchema.parse(pick.choice.slice(4));
+          if(!methods.includes(method))throw Error("Choose a method supported by the supplied evidence.");
+          let criteria=bounded(pick.criteria,6000,"grading criteria");
+          if((method==="contains" || method==="exact") && literals[method].length===1)criteria=literals[method][0];
+          checkCriteria(method,criteria,brief,literals);
+          const name=bounded(pick.name,100,"a grader name");
+          if(creating && defaults.some(d=>sameText(d.name,name) || sameText(d.criteria,criteria)))
+            throw Error("Choose the existing automatic check for this measure.");
+          if(creating && visible.some(v=>sameText(v.name,name) || sameText(v.criterion,criteria)))
+            throw Error("Choose the offered catalog option for exact reuse or ADAPT its criterion explicitly.");
+          check={action:editing?"derive":"create",source:source?reviewedSource(source):null,name,category:metric.slice(0,100),
+            industry:brief.industry,type:method==="judge"?"opik":method,criteria,threshold:pick.threshold,reason:rationale};
+        }
+        const identity=check.action==="reuse"?JSON.stringify(["reuse",check.source?.id]):
+          JSON.stringify([check.action,check.source?.id,check.name,check.type,check.criteria,check.threshold,check.industry,check.category]);
+        const duplicate=byDefinition.get(identity);
+        if(duplicate){
+          duplicate.reason+="\n"+metric+" — "+rationale;
+        }else{
+          check.reason=metric+" — "+rationale;
+          checks.push(check);byDefinition.set(identity,check);
+        }
+        summaries.push(metric+" — "+(check.action==="reuse"?"reuse ":check.action==="derive"?"customize ":"create ")+check.name+
+          (check.action==="reuse"?" v"+check.source?.version:"")+".");
       }
-      for(const item of parsed.checks){
-        const method=item.method,name=bounded(item.name,100,"a grader name");
-        if(!methods.includes(method) || !brief.metrics.includes(item.metric)) throw Error("Choose an allowed method and approved measure.");
-        let criteria=bounded(item.criteria,6000,"grading criteria");
-        if((method==="contains" || method==="exact") && literals[method].length===1)criteria=literals[method][0];
-        checkCriteria(method,criteria,brief,literals);
-        // Attaching an automatic rule again gives it double weight in result summaries.
-        const equal=(a:string,b:string)=>a.trim().toLowerCase()===b.trim().toLowerCase();
-        if(automatic.some(g=>equal(g.name,name)||equal(g.criteria,criteria)))continue;
-        if(choices.some(g=>equal(g.name,name) && equal(g.criterion,criteria)))throw Error("Reuse the matching pinned catalog option.");
-        checks.push({action:"create",source:null,name,category:item.metric.slice(0,100),industry:brief.industry,
-          type:method==="judge"?"opik":method,criteria,threshold:item.threshold,reason:bounded(item.reason,1200,"a rationale")});
-      }
-      if(checks.length>8 || new Set(checks.map(c=>c.name.toLowerCase())).size!==checks.length)throw Error("Choose up to eight distinct checks.");
-      return {summary,checks};
+      if(checks.length>8)throw Error("These measures require more than eight distinct graders. Group related measures or use separate runs.");
+      return {summary:summaries.join("\n"),checks};
     }
     const publicChoices=choices.filter(c=>c.scope!=="customer");
-    const publicAutomatic=options.automatic.filter(g=>g.library?.scope==="general").map(g=>({name:g.name,criteria:g.criteria}));
-    const publicDefaults=options.automatic.flatMap(g=>g.type==="opik-metric" ? [getOpikTemplate(g.metricKey)] : []);
-    const payload={...brief,allowedLiterals:literals,automatic,catalog:choices};
-    const result=await route.ask("Grader designer",agent.instructions,payload,proposalSchema(choices),2000,
-      output=>parsePlan(output,choices),{
-        payload:{...payload,automatic:[...publicAutomatic,...publicDefaults.map(g=>({name:g.name,criteria:g.criteria}))],catalog:publicChoices},
-        schema:proposalSchema(publicChoices),validate:output=>parsePlan(output,publicChoices),
+    const publicDefaults=numberedAutomatic(options.automatic.flatMap(g=>g.library?.scope==="general"?[{name:g.name,criteria:g.criteria}]:
+      g.type==="opik-metric"?[getOpikTemplate(g.metricKey)]:[]));
+    const localDefaults=numberedAutomatic(automatic);
+    const payload={...brief,goals,allowedLiterals:literals,automatic:localDefaults,catalog:choices};
+    const result=await route.ask("Grader designer",agent.instructions,payload,proposalSchema(choices,localDefaults),
+      Math.min(2400,500*goals.length+200),output=>parsePlan(output,choices,localDefaults),{
+        payload:{...payload,automatic:publicDefaults,catalog:publicChoices},schema:proposalSchema(publicChoices,publicDefaults),
+        validate:output=>parsePlan(output,publicChoices,publicDefaults),
       });
     const draftId=randomUUID();draftTable(bench.db);
     bench.db.prepare("DELETE FROM grader_design_drafts WHERE created < ?").run(Date.now()-7*24*60*60*1000);
