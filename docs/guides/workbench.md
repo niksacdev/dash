@@ -1,6 +1,4 @@
-# DASH desktop
-
-Open [Open DASH.command](Open%20DASH.command) on this Mac. The launcher opens the project-local Electron app. From this directory, `npm start` opens the same workbench. To restore the dependencies on another Apple Silicon Mac with Node 22.13 or later, run `npm ci`.
+# Using the workbench
 
 ## Evaluate a business outcome
 
@@ -16,10 +14,8 @@ Quick compare previews the approved prompt’s measured input and available outp
 
 **Earnings release capture** has eight synthetic cases, **Incoming inspection triage** has five and **Support ticket routing** exercises a different schema. The optional recorded replay runs saved answers through the scenario grader without asking a model. One earnings replay substitutes adjusted EPS for GAAP EPS. One manufacturing replay accepts a part using a superseded drawing revision. Select a case to inspect the source, reference, output, grade and trace. Exporting a run includes its manifest and completed case records.
 
-For a structured scenario, import JSONL with the scenario’s input and gold fields. For authored cases choose **Prompt and reference evaluation**. Each JSONL row has a unique `case_id`, a shared `dataset_version` and `split`, either `prompt` or `messages` ending in a user turn, and an optional `reference` or `rubric`. Input-only cases require a saved grader that defines success independently. An optional `sme_rationale` explains the expected behavior. Use exact matching for fixed answers, the built-in local judge for case rubrics, or a saved grader. The import screen includes an example. DASH stores versioned snapshots and dataset family metadata in local SQLite. Scenario contracts, deterministic scoring rules and recorded responses live in [packs](packs/).
+For a structured scenario, import JSONL with the scenario’s input and gold fields. For authored cases choose **Prompt and reference evaluation**. Each JSONL row has a unique `case_id`, a shared `dataset_version` and `split`, either `prompt` or `messages` ending in a user turn, and an optional `reference` or `rubric`. Input-only cases require a saved grader that defines success independently. An optional `sme_rationale` explains the expected behavior. Use exact matching for fixed answers, Opik G-Eval with a local judge for case rubrics, or a saved grader. The import screen includes an example. DASH stores versioned snapshots and dataset family metadata in local SQLite. Scenario contracts, deterministic scoring rules and recorded responses live in [packs](../../dash-desktop/packs/).
 
 ## Developer view
 
-Open **Workspace → Developer** to inspect LM Studio's loaded instances, model adapter, trace, runtime errors and case-level measurements. Time to first visible output, provider-reported time to first token, token usage and hardware readings appear when available. Device power is measured across the whole host when the sensor is supported. Fixture runs have no model telemetry. The **Graders** workspace includes a grader-design agent and native Opik SDK metrics. See the [project setup guide](../README.md) for grader confirmation, local judge configuration and Opik experiment sync.
-
-Run `npm test` for the offline suite. Run `./node_modules/.bin/electron test/workflow-smoke.cjs` to exercise the guided desktop flow using deterministic model responses. Run `./node_modules/.bin/electron test/desktop-smoke.cjs` for the recorded replay, case rerun and history flow. Both desktop tests use a fresh temporary profile.
+Open **Workspace → Developer** to inspect LM Studio's loaded instances, model adapter, trace, runtime errors and case-level measurements. Time to first visible output, provider-reported time to first token, token usage and hardware readings appear when available. Device power is measured across the whole host when the sensor is supported. Fixture runs have no model telemetry. The **Graders** workspace includes a grader-design agent and native Opik SDK metrics. See the [project setup guide](../../README.md) for grader confirmation, local judge configuration and Opik experiment sync.

@@ -2,7 +2,7 @@
 
 **Domain Assessment & Scoring Harness** is a local-first Electron workbench for evaluating model and agent outputs against a business objective. Start with a domain scenario, agree on what a good answer looks like, then compare candidates on the same evidence. The first domain packs cover financial earnings extraction and manufacturing inspection triage.
 
-![DASH workbench in dark mode](docs/images/overview-dark.png)
+![DASH workbench in dark mode](docs/design/overview-dark.png)
 
 ## Run it locally
 
@@ -15,7 +15,7 @@ npm ci
 npm start
 ```
 
-On macOS, you can also open `Open DASH.command` after installing dependencies. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/images/overview-light.png)
+On macOS, you can also open `Open DASH.command` after installing dependencies. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
 
 ### First evaluation in five minutes
 
@@ -28,7 +28,7 @@ On macOS, you can also open `Open DASH.command` after installing dependencies. S
 
 Open **Workspace → Graders**, or design graders from a run setup. Give the grader agent an objective and observable metrics. It proposes a set of distinct checks and explains what each measures. Edit the criteria, threshold, and judge, then confirm the checks you want. Confirmation saves reusable versions in the grader library. Confirming from a run attaches those versions to that run.
 
-DASH uses Opik’s TypeScript SDK in Electron for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](DASH_Agent_Runs_Feasibility.md)
+The Electron application is written in JavaScript. It uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
 
 Inspect per-case scores and explanations in **Run history**. A winner needs complete scores on the same cases and a lead on at least one rubric with no losses on the others. Ties, mixed results and missing evidence are shown explicitly. [Opik evaluator documentation](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)
 
@@ -51,7 +51,7 @@ For a hosted deployment, set the API URL and `OPIK_WORKSPACE` for your account, 
 | Dataset snapshots | Versioned entries in the workspace’s SQLite dataset catalog. |
 | Total runs | All saved runs in the workspace, including failed runs and recorded-response tests. |
 
-Run history preserves prompt versions, selected models, grader versions and measured telemetry in the Electron user-data directory. For dataset import, add a family, industry, snapshot version and split. A case can contain a prompt or conversation, an optional reference, an SME rationale and a rubric. Model-visible inputs and held-out evidence are stored separately. [Dataset and runtime guide](dash-desktop/README.md)
+Run history preserves prompt versions, selected models, grader versions and measured telemetry in the Electron user-data directory. For dataset import, add a family, industry, snapshot version and split. A case can contain a prompt or conversation, an optional reference, an SME rationale and a rubric. Model-visible inputs and held-out evidence are stored separately. [Dataset and runtime guide](docs/guides/workbench.md)
 
 ## Development
 
@@ -69,7 +69,7 @@ The desktop tests run Electron against isolated temporary profiles. The workflow
 | --- | --- |
 | [dash-desktop/](dash-desktop/) | Electron app, local orchestration, SQLite storage, scenario packs, and tests |
 | [docs/adr/](docs/adr/) | Architecture decisions, trade-offs and ownership boundaries |
-| [START_HERE.md](START_HERE.md) | Historical handoff and index of the original seven specification, prototype and synthetic data artifacts |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch, commit, verification and pull request workflow |
+| [Documentation index](docs/START_HERE.md) | Workbench guide, specifications, design references, product reviews and original artifacts |
+| [CONTRIBUTING.md](.github/CONTRIBUTING.md) | Branch, commit, verification and pull request workflow |
 
 DASH is distributed under the repository’s [MIT license](LICENSE). Included model marks have their own [attribution](dash-desktop/ui/assets/model-logos/LICENSE.txt).

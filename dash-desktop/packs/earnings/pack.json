@@ -3,6 +3,7 @@
   "title": "Earnings release capture",
   "version": "1.0",
   "dataset": "Earnings development seed",
+  "casesFile": "financial_eval_dev_seed.jsonl",
   "datasetVersion": "0.1-dev",
   "description": "Extract evidence-backed financial facts and route uncertain records to an analyst.",
   "scorer": "earnings-record-v1",
