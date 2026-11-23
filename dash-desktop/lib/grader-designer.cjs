@@ -1,5 +1,4 @@
 const { PlanningRoute } = require("./planner-routing.cjs");
-const { sdkEnabled } = require("./graders.cjs");
 
 function bounded(value, limit, label) {
   if (typeof value !== "string" || !value.trim() || value.length > limit)
@@ -24,25 +23,46 @@ function gradingBrief(bench, request) {
     domainGuidance:bench.workflow.roles().find(r=>r.role==="expert" && r.domain===industry)?.instructions };
 }
 
+// A literal metric scores the same string on every case. Conditional instructions need a judge
+// or a labeled reference so a response taking another valid branch can earn full credit.
+function literalRules(brief) {
+  const rules = {exact:[], contains:[]};
+  for (const instruction of [brief.objective, ...brief.criteria, ...brief.metrics]) {
+    if (/\b(if|when|whenever|unless|otherwise|depending|except|only for)\b/i.test(instruction)) continue;
+    const clauses = instruction.split(/[.\n;]/);
+    for (const clause of clauses) {
+      const match = /\b(?:(?:respond|reply|answer|output|return)\s+(?:only with|with exactly|exactly|only)|(?:must\s+)?(?:include|contain|append|begin with|start with|say))\s+(?:(?:the\s+)?(?:exact\s+)?(?:word|phrase|literal|string)\s+)?(?:["“]([^"”]+)["”]|['‘]([^'’]+)['’]|([A-Z][A-Z0-9_-]+)\b)/i.exec(clause);
+      if (!match) continue;
+      const literal = match[1] || match[2] || match[3];
+      if (match[3] && literal !== literal.toUpperCase()) continue;
+      const method = /^(?:respond|reply|answer|output|return)\b/i.test(match[0]) ? "exact" : "contains";
+      if (!rules[method].includes(literal)) rules[method].push(literal);
+    }
+  }
+  return rules;
+}
+
 async function designGraderPlan(bench, request) {
   if (bench.active || bench.designing) throw Error("Wait for the current run or planning request to finish.");
   bench.designing = true;
   try {
     const brief = gradingBrief(bench, request);
-    const methods = ["exact","contains","judge"];
+    const literals = literalRules(brief);
+    const methods = Object.keys(literals).filter(method => literals[method].length > 0);
+    methods.push("judge");
     if (brief.referenceFields.length) methods.push("field");
     if (brief.target==="agent") methods.push("trajectory");
     const grade = {type:"object",additionalProperties:false,
       required:["name","metric","method","criteria","reason","threshold"],properties:{
-        name:{type:"string"},metric:{type:"string"},method:{type:"string",enum:methods},
+        name:{type:"string"},metric:{type:"string",enum:brief.metrics},method:{type:"string",enum:methods},
         criteria:{type:"string"},reason:{type:"string"},threshold:{type:"number",minimum:0.001,maximum:1}
       }};
     const schema = {type:"object",additionalProperties:false,required:["summary","checks"],properties:{
       summary:{type:"string"},checks:{type:"array",maxItems:8,items:grade}
     }};
     const route = await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),()=>{});
-    const prompt = "You design inference graders. Read the objective, success measures, domain guidance and available evidence. Select the smallest set of independent checks needed. Explain coverage and unmeasurable business outcomes in summary. A rate or aggregate KPI is not an individual response score. Do not duplicate the existing scenario scorer. Zero checks is valid when evidence is insufficient. A judge rubric needs observable full, partial and zero-credit anchors. For exact or contains, criteria is only a literal explicitly required by the objective. For field, criteria is a JSON string with outputField and referenceField using the supplied field names. For trajectory, list only explicitly required tool names in order, one per line. Use no invented reference values, thresholds claimed as policy, or tool names. Each metric field names the measure that check supports.";
-    const result = await route.ask("Grader designer",prompt,brief,schema,1600,output=>{
+    const prompt = "You design inference graders. Read the objective, success measures, domain guidance and available evidence. Select the smallest set of independent checks needed. Explain coverage and unmeasurable business outcomes in summary. A rate or aggregate KPI is not an individual response score. Do not duplicate the existing scenario scorer. Zero checks is valid when evidence is insufficient. A judge rubric needs observable full, partial and zero-credit anchors. For exact or contains, criteria is only a literal explicitly required by the objective. For field, criteria is a JSON string with outputField and referenceField using the supplied field names. For trajectory, list only explicitly required tool names in order, one per line. Use only measures listed in metrics. Give each observable measure one focused check unless two independent checks are essential. Domain guidance is background: never add requirements from it. Ignore domain topics outside the objective. Use judge for conditional instructions and for evidence expressed in natural language. For contains or exact select one of the allowed literals for that method. Use no invented reference values, policy thresholds, or tool names.";
+    const result = await route.ask("Grader designer",prompt,{...brief,allowedLiterals:literals},schema,1600,output=>{
       const summary = bounded(output.summary,1500,"a coverage explanation");
       if (!Array.isArray(output.checks) || output.checks.length>8) throw Error("Propose up to eight graders.");
       const names = new Set();
@@ -50,14 +70,20 @@ async function designGraderPlan(bench, request) {
         const name = bounded(item.name,100,"a grader name"), method=item.method;
         if (names.has(name.toLowerCase()) || !methods.includes(method)) throw Error("Choose distinct names and compatible methods.");
         names.add(name.toLowerCase());
-        const criteria=bounded(item.criteria,6000,"grading criteria");
+        if (!brief.metrics.includes(item.metric)) throw Error("Choose one of the approved success measures.");
+        let criteria=bounded(item.criteria,6000,"grading criteria");
+        if (method==="exact" || method==="contains") {
+          const allowed=literals[method];
+          if (allowed.length===1) criteria=allowed[0];
+          else if (!allowed.includes(criteria)) throw Error("Choose the literal specified in the objective.");
+        }
         if (!Number.isFinite(item.threshold) || item.threshold<=0 || item.threshold>1) throw Error("Choose a pass threshold between zero and one.");
         if (method==="field") {
           const rule=JSON.parse(criteria);
           if (!brief.referenceFields.includes(rule.referenceField) || (brief.outputFields.length && !brief.outputFields.includes(rule.outputField))) throw Error("Use a field present in the dataset schema and reference.");
         }
-        return {name,category:bounded(item.metric,100,"a metric"),industry:brief.industry,
-          type:method==="judge" && sdkEnabled() ? "opik" : method,criteria,threshold:item.threshold,
+        return {name,category:item.metric.slice(0,100),industry:brief.industry,
+          type:method==="judge" ? "opik" : method,criteria,threshold:item.threshold,
           reason:bounded(item.reason,1200,"a rationale")};
       });
       return {summary,checks};

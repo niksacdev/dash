@@ -7,8 +7,8 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
   const judge = {id:"ollama/lfm3-test",provider:"ollama",model:"lfm3-test",loaded:true,revision:"test-r1"};
   const inventory = [{provider:"ollama",online:true,models:[judge]}];
   const proposed = [
-    {name:"Hold wording",metric:"Required disposition",method:"contains",criteria:"HOLD",reason:"The contract specifies this literal.",threshold:1},
-    {name:"Evidence quality",metric:"Evidence citation",method:"judge",criteria:"Full credit requires the measured diameter and the tolerance. Partial credit for one; zero if both are absent.",reason:"Equivalent explanations are acceptable.",threshold:0.8},
+    {name:"Hold wording",metric:"Exact disposition",method:"contains",criteria:"The response must contain the exact word HOLD",reason:"The contract specifies this literal.",threshold:1},
+    {name:"Evidence quality",metric:"Evidence quality",method:"judge",criteria:"Full credit requires the measured diameter and the tolerance. Partial credit for one; zero if both are absent.",reason:"Equivalent explanations are acceptable.",threshold:0.8},
   ];
   const judged = [];
   const adapters = {
@@ -19,7 +19,7 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
         assert.equal(brief.industry,"Manufacturing");
         assert.match(brief.objective,/HOLD/);
         assert.deepEqual(brief.metrics,["Exact disposition","Evidence quality"]);
-        assert.deepEqual(options.structured.properties.checks.items.properties.method.enum,["exact","contains","judge"]);
+        assert.deepEqual(options.structured.properties.checks.items.properties.method.enum,["contains","judge"]);
         return {output:JSON.stringify({summary:"Check the disposition separately from its supporting measurement.",checks:proposed})};
       }
       judged.push({candidate,messages,options});
@@ -29,7 +29,7 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
   const b=new Bench(":memory:",adapters);
   t.after(()=>b.db.close());
   b.servers=inventory;
-  const proposal=await designGraderPlan(b,{objective:"Say HOLD if a measurement is out of tolerance.",metrics:"Exact disposition\nEvidence quality",industry:"Manufacturing"});
+  const proposal=await designGraderPlan(b,{objective:'Every response must include the literal "HOLD" and cite the measurement.',metrics:"Exact disposition\nEvidence quality",industry:"Manufacturing"});
   assert.equal(proposal.designer.model,judge.model);
   assert.deepEqual(proposal.checks.map(g=>g.type),["contains","opik"]);
   assert.equal(b.graders.list().length,0);
@@ -57,4 +57,19 @@ test("an input-only objective can leave a business metric unscored", async t=>{
   const p=await designGraderPlan(b,{objective:"Increase customer renewals",metrics:"Renewal rate"});
   assert.equal(p.checks.length,0);
   assert.throws(()=>confirmGraderPlan(b,[]),/one to eight/);
+});
+
+test("conditional disposition checks score evidence and stay anchored to the requested measures", async t => {
+  const m={id:"ollama/lfm3-mock",model:"lfm3-mock",provider:"ollama",loaded:true};
+  const b=new Bench(":memory:",{discover:async()=>[{models:[m]}],invoke:async(c,msg,opt)=>{
+    const fields=opt.structured.properties.checks.items.properties;
+    assert.deepEqual(fields.method.enum,["judge"]);
+    assert.deepEqual(fields.metric.enum,["Disposition accuracy","Measurement citation"]);
+    return {output:JSON.stringify({summary:"Assess the applicable disposition for the supplied measurement.",checks:[{
+      name:"Disposition",metric:"Disposition accuracy",method:"judge",criteria:"Credit HOLD when the measurement exceeds tolerance, or an in-range disposition otherwise.",reason:"Both branches are valid.",threshold:1
+    }]})};
+  }});
+  t.after(()=>b.db.close());
+  const plan=await designGraderPlan(b,{objective:"Say HOLD when the measurement exceeds tolerance and cite the value.",metrics:"Disposition accuracy\nMeasurement citation"});
+  assert.equal(plan.checks[0].type,"opik");
 });
