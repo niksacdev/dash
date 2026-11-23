@@ -16,7 +16,8 @@
     "opik:start": "node --experimental-strip-types scripts/local-opik.mts start",
     "opik:status": "node --experimental-strip-types scripts/local-opik.mts status",
     "opik:stop": "node --experimental-strip-types scripts/local-opik.mts stop",
-    "build:test": "npm run build && node dist/scripts/assets.mjs --tests-only"
+    "build:test": "npm run build && node dist/scripts/assets.mjs --tests-only",
+    "docs:check": "node --experimental-strip-types scripts/check-docs.mts"
   },
   "engines": {
     "node": ">=22.13"
