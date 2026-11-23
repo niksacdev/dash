@@ -32,7 +32,7 @@ const manifest=z.object({format:num,id:str,created:str,title:str,mode:z.enum(["q
   policyHash:nullable,promptHash:str,caseSetHash:str,invocations:z.array(z.object({candidateId:str,adapter:str,template:nullable.optional(),reasoning:str.optional()}).passthrough()).optional(),
   outputPolicy:z.object({mode:str,automaticTarget:num,providerFallback:num}).passthrough().nullable().optional(),
   parameters:z.object({maxTokens:num.optional(),temperature:num.optional()}).passthrough(),device:z.object({platform:str,arch:str,release:str}).passthrough(),
-  parentId:nullable.optional(),replayHash:nullable.optional(),animation:z.boolean(),error:str.optional(),
+  hostedDecisionApproved:z.boolean().optional(), parentId:nullable.optional(),replayHash:nullable.optional(),animation:z.boolean(),error:str.optional(),
   guardrailFailure:z.object({...guardrailShape,candidateId:str,caseId:str}).passthrough().optional(),
 }).passthrough();
 const power=z.object({source:nullable,scope:str,interval_ms:num.optional(),samples:z.union([num,z.array(z.object({ms:num,watts:n}))]),

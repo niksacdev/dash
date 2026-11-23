@@ -15,6 +15,7 @@ import { performance } from "./lib/performance.cjs";
 import { createDeviceSampler } from "./lib/device-stats.cjs";
 import { readPower } from "./lib/power.cjs";
 import type { DatasetCase, StartRun } from "./lib/run-types.cjs";
+import { listLocalDecisionModels } from "./lib/decision-model.cjs";
 import type { GraderEvidence } from "./lib/grader-types.cjs";
 
 const page = path.join(__dirname, "ui", "index.html");
@@ -41,13 +42,13 @@ const startRequest=z.object({
   mode:z.enum(["quick","dataset"]), candidateIds:z.array(modelId).min(1).max(2),
   datasetId:idSchema.nullish(),caseId:idSchema.optional(),parentId:idSchema.optional(),
   approvedPromptId:idSchema.nullish(),caseJudgeId:modelId.optional(),graderIds:z.array(idSchema).max(8).optional(),
-  animation:z.boolean().optional(),inputCap:tokenCap,outputCap:tokenCap,
+  allowHostedDecision:z.boolean().optional(),animation:z.boolean().optional(),inputCap:tokenCap,outputCap:tokenCap,
   datasetScorer:z.enum(["scenario","selected-graders","exact-reference"]).nullish(),
   outcomeRubric:z.object({type:z.enum(["opik","judge"]).optional(),judgeId:modelId,
     criteria:z.string().min(1).max(6000).optional(),threshold:z.number().positive().max(1).optional()}).nullish(),
 });
-const caseAssessment=z.strictObject({grader:idSchema,run:idSchema,index:z.number().int().nonnegative()});
-const sampleAssessment=z.strictObject({grader:idSchema,evidence:z.object({
+const caseAssessment=z.strictObject({allowHostedDecision:z.boolean().optional(),grader:idSchema,run:idSchema,index:z.number().int().nonnegative()});
+const sampleAssessment=z.strictObject({allowHostedDecision:z.boolean().optional(),grader:idSchema,evidence:z.object({
   output:z.string().min(1).max(100000),input:z.unknown().optional(),reference:z.unknown().optional(),trajectory:z.array(z.unknown()).optional(),
   rubric:z.string().optional(),sme_rationale:z.string().optional()
 })});
@@ -86,6 +87,9 @@ function initialize():void {
   bind("saveEndpoint",value=>bench.endpoints.save(value));
   bind("designGraders",value=>designGraderPlan(bench,value));
   bind("confirmGraders",value=>confirmGraderPlan(bench,value));
+  bind("listDecisionModels", (raw, protocol) => listLocalDecisionModels(
+    z.string().min(1).max(240).parse(raw), AbortSignal.timeout(5000),
+    z.enum(["systemone","mlx-vlm"]).optional().parse(protocol)),1);
   bind("saveGrader",value=>bench.graders.save(value,bench.servers.flatMap(s=>s.models)));
   bind("quickGraderOptions",value=>bench.quickGraderOptions(identifier(value)));
   bind("previewQuickBudget",(value,candidates)=>bench.previewQuickBudget(identifier(value),z.array(modelId).max(2).parse(candidates)));
@@ -93,9 +97,11 @@ function initialize():void {
   bind("assess",async value=>{
     const saved=caseAssessment.safeParse(value);
     let evidence:GraderEvidence, graderId:string;
+    let allowHostedDecision = false;
     let where:{run?:string;candidate?:string;caseId?:string}={};
     if (saved.success) {
       const {grader,run,index}=saved.data;
+      allowHostedDecision = saved.data.allowHostedDecision === true;
       const {manifest,results}=bench.detail(run), result=results[index];
       if (!result || result.error) throw Error("Choose a completed response.");
       const row=manifest.datasetId ? bench.dataset(manifest.datasetId).rows.find(x=>x.case_id===result.caseId) : undefined;
@@ -104,12 +110,13 @@ function initialize():void {
     } else {
       const sample=sampleAssessment.safeParse(value);
       if (!sample.success) throw Error("Provide an output and an optional JSON array of agent steps.");
+      allowHostedDecision = sample.data.allowHostedDecision === true;
       const data=sample.data.evidence;
       if (JSON.stringify(data).length>240000) throw Error("Grading evidence exceeds the size limit.");
       graderId=sample.data.grader;
       evidence={...data,input:data.input??null,reference:data.reference??null};
     }
-    return bench.graders.record(bench.graders.get(graderId),evidence,where,bench.adapters,AbortSignal.timeout(190000));
+    return bench.graders.record(bench.graders.get(graderId),evidence,where,bench.adapters,AbortSignal.timeout(190000),allowHostedDecision);
   });
   const host={platform:process.platform,os:os.version(),arch:os.arch(),cpu:os.cpus()[0]?.model?.trim() ?? "",memoryGiB:Math.round(os.totalmem()/2**30)};
   const sampleDevice=createDeviceSampler({userData:app.getPath("userData"),getAppMetrics:()=>app.getAppMetrics()});
