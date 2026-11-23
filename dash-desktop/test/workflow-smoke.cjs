@@ -156,7 +156,7 @@ async function smoke() {
   const domainExamples = await js("document.querySelector('.capability-frame .capability-detail').textContent");
   assert.match(domainExamples, /earnings per share/);
   assert.match(domainExamples, /drawing’s tolerances/);
-  assert.match(await lanes(), /Evidence agent v2/);
+  assert.match(await lanes(), /Financial implementer/);
   await js("document.querySelector('[data-carousel=next]').focus()");
   wc.sendInputEvent({type:"keyDown", keyCode:"Right"});
   wc.sendInputEvent({type:"keyUp", keyCode:"Right"});

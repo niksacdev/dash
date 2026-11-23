@@ -272,6 +272,14 @@ body:has(.overview) .desk > header .button {
   color: var(--ink); background: var(--panel); border: 1px solid var(--control-border);
   border-radius: 9px; box-shadow: 0 8px 28px #0b142426; font-size: 13px; line-height: 1.5;
 }
+#device-details { max-height: min(76dvh, 32rem); overflow: auto; }
+@media (max-width: 600px) {
+  #device-details {
+    inset: auto 12px max(12px, env(safe-area-inset-bottom));
+    width: auto;
+    max-height: min(50dvh, 28rem);
+  }
+}
 #device-details dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 8px 0; font-size: 12px; }
 #device-details dt { color: var(--muted); }
 #device-details dd { margin: 0; overflow-wrap: anywhere; }

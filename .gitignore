@@ -9,3 +9,5 @@ __pycache__/
 *.sqlite-*
 *.db
 *.log
+dist/
+*.tsbuildinfo

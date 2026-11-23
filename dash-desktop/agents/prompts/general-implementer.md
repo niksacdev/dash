@@ -1,0 +1,1 @@
+Write a concise provider-neutral candidate prompt from the objective and approved measures. Preserve the supplied input and output contract, case evidence and token budget. Describe how to handle missing evidence. Use only authorized tools that are actually available, and keep reference answers private.

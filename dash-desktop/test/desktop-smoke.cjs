@@ -1,4 +1,4 @@
-const { app } = require("electron");
+const { app, BrowserWindow } = require("electron");
 const { once } = require("node:events");
 const { mkdtempSync, writeFileSync } = require("node:fs");
 const os = require("node:os"),
@@ -10,6 +10,38 @@ app.dock?.hide();
 app.on("browser-window-created", (_event, win) => { win.show = () => {}; });
 globalThis.fetch = async () => { throw Error("Offline replay test"); };
 require("../lib/power.cjs").readPower = async () => ({ watts: null });
+
+const device = require("../lib/device-stats.cjs");
+const actualSampler = device.createDeviceSampler;
+let detailedSamples = 0;
+device.createDeviceSampler = options => {
+  const sample = actualSampler(options);
+  return () => { detailedSamples++; return sample(); };
+};
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function checkIpc(window) {
+  const contents = window.webContents;
+  assert.equal(await contents.executeJavaScript("typeof window.dash.invoke"), "undefined");
+  assert.equal(await contents.executeJavaScript("typeof window.require"), "undefined");
+  await assert.rejects(contents.executeJavaScript("window.dash.start({mode:'quick',candidateIds:[0,'other']})"), /Invalid run configuration/);
+  await assert.rejects(contents.executeJavaScript("window.dash.power('all')"), /measurement scope/);
+  const foreign = new BrowserWindow({show:false,webPreferences:{
+    preload:path.join(__dirname,"../preload.cjs"),sandbox:true,contextIsolation:true,nodeIntegration:false
+  }});
+  try {
+    await foreign.loadURL("about:blank");
+    await assert.rejects(foreign.webContents.executeJavaScript("window.dash.list()"),/Invalid sender/);
+  } finally { foreign.destroy(); }
+}
+
+async function waitForSamples(minimum) {
+  for (let i=0;i<100;i++) {
+    if (detailedSamples>=minimum) return;
+    await delay(100);
+  }
+  assert.fail("Device details did not request a new measurement.");
+}
 
 async function checkOverview(window, js, wait) {
   const client = window.webContents.debugger;
@@ -70,16 +102,20 @@ async function checkOverview(window, js, wait) {
     ],"Appearance choices and checked label must survive a restart");
     await screenshot("overview-dark.png");
 
+    assert.equal(detailedSamples,0,"Idle Overview must only request the lightweight power reading");
     const device = await point(".device-stat");
     await send("Input.dispatchMouseEvent", {type:"mouseMoved", ...device});
     await wait(open);
-    assert.ok(await js("document.querySelector('#device-details').innerText.includes('Platform')"));
+    await waitForSamples(1);
+    await wait("Array.from(document.querySelectorAll('#device-details dt')).some(n=>n.textContent==='Data volume' && n.nextElementSibling.textContent.includes('GiB'))");
     await send("Input.dispatchMouseEvent", {type:"mouseMoved",x:5,y:5});
     await wait("!" + open);
     await send("Emulation.setFocusEmulationEnabled", {enabled:true});
     await js("document.querySelector('[data-carousel=next]').focus()");
+    const beforeFocus=detailedSamples;
     await key("Tab",9);
     await wait("document.activeElement.matches('.device-stat') && " + open);
+    await waitForSamples(beforeFocus+1);
     await key("Escape",27);
     await wait("!" + open);
 
@@ -99,12 +135,19 @@ async function checkOverview(window, js, wait) {
       await send("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[position]});
       await send("Input.dispatchTouchEvent",{type:"touchEnd",touchPoints:[]});
     };
+    const beforeTap=detailedSamples;
     await tap(await point(".device-stat"));
     await wait(open);
-    assert.ok(await js(`(() => {const r=document.querySelector('#device-details').getBoundingClientRect();
-      return r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;})()`));
+    const popup = await js("document.querySelector('#device-details').getBoundingClientRect().toJSON()");
+    const viewport = await js("({width:innerWidth,height:innerHeight})");
+    assert.ok(popup.width > 0 && popup.left >= 0 && popup.right <= viewport.width &&
+      popup.top >= 0 && popup.bottom <= viewport.height, "Device popover outside viewport: "+JSON.stringify({popup,viewport}));
+    await waitForSamples(beforeTap+2);
     await tap(await point(".hero h1"));
     await wait("!" + open);
+    const closedSamples=detailedSamples;
+    await delay(3700);
+    assert.equal(detailedSamples,closedSamples,"Detailed sampling must stop when the popover closes");
     await selectTheme("light");
     await wait(themeIs("light"));
   } finally {
@@ -133,6 +176,7 @@ app
     };
     await wait("document.querySelector('.hero h1')?.textContent==='DASH'");
     await wait("document.querySelector('#overview-total-runs')?.textContent === '0'");
+    await checkIpc(window);
     await js("document.fonts.ready.then(()=>true)");
     const capture = await window.webContents.capturePage();
     writeFileSync(path.join(temporary, "home.png"), capture.toPNG());
