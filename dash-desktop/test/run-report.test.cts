@@ -62,6 +62,65 @@ test("two-stage report uses paired case scores, transparent rubric means and dis
   assert.equal(report.observedOutcomes[1].values[1].count, 2);
 });
 
+const diagnostic = { id:"diag/completion",name:"Generation completed",industry:"General",category:"Response",criteria:"Check the runtime stop reason.",
+  threshold:1,version:1,type:"catalog",ruleKey:"completion",ruleVersion:1,judge:null,
+  library:{scope:"general",familyId:"diagnostics-completion",automatic:true} } satisfies GraderSpec;
+
+test("response diagnostics retain case evidence without choosing a winner or blocking a business grade",async ()=>{
+  const input=run();
+  input.manifest.graders=[judge,diagnostic];
+  let report=present(buildReport(input));
+  assert.equal(report.winnerId,"a");
+  const metric=present(report.metrics.find(m=>m.id===diagnostic.id));
+  assert.equal(metric.informational,true);assert.equal(metric.pairedCases,0);
+  const derived={...diagnostic,id:"customer-diagnostic-v1",library:{scope:"customer",familyId:"derived",parentRevisionId:diagnostic.id}} satisfies GraderSpec;
+  input.manifest.graders=[derived];input.manifest.pack=null;
+  input.assessments=input.assessments.map(a=>({...a,graderId:derived.id,version:1,threshold:1,engine:"catalog",judge:null,
+    pass:a.candidate==="a",value:a.candidate==="a"?1:0,reason:"Recorded completion evidence."}));
+  input.results[2].output="";input.results[2].error="Candidate returned an empty response.";
+  report=present(buildReport(input));assert.equal(report.verdict,"ungraded");assert.equal(report.winnerId,null);
+  assert.deepEqual(report.metrics[0].values.map(v=>v.score),[1,0]);
+  assert.deepEqual(report.metrics[0].lineage,derived.library);
+  const assisted=await assistReport(report,{discover:async()=>assert.fail("A diagnostic cannot warrant a quality review"),
+    invoke:async()=>assert.fail("Diagnostic-only review cannot call inference")},new AbortController().signal);
+  assert.deepEqual(assisted.assistance?.citations,[]);
+});
+
+test("an unsafe leading candidate retains its case outcomes without a quality winner; prior policies keep their verdicts", ()=>{
+  const historical=run();
+  const first=present(historical.results[0].score);first.falseAccept=true;first.pass=false;
+  assert.equal(present(buildReport(historical)).winnerId,"a");
+  const current=structuredClone(historical);
+  current.manifest.graders=[judge,diagnostic];
+  let report=present(buildReport(current));
+  assert.equal(report.verdict,"unsafe");assert.equal(report.winnerId,null);assert.match(report.summary,/falsely accepted 1 of 2/);
+  present(current.results[0].score).falseAccept=false;
+  delete present(current.results[1].score).falseAccept;
+  report=present(buildReport(current));
+  assert.equal(report.verdict,"incomplete");assert.equal(report.winnerId,null);
+  present(current.results[0].score).falseAccept=true;
+  current.results[2].error="Other candidate failed";current.results[2].score=null;
+  report=present(buildReport(current));
+  assert.deepEqual(report.observedOutcomes.find(o=>o.field==="falseAccept")?.values,
+    [{candidateId:"a",count:1,total:1,caseIds:["lot-1"]},{candidateId:"b",count:1,total:1,caseIds:["lot-2"]}]);
+});
+
+test("Opik risk metrics compare the pinned normalized score and preserve original risk evidence",()=>{
+  const data=run(),g={...judge,type:"opik-metric",metricKey:"moderation"} satisfies GraderSpec;
+  data.manifest.graders=[g];data.manifest.pack=null;
+  data.assessments=data.assessments.map(a=>{
+    const pass=a.candidate==="a",raw=pass ? .1 : .8;
+    return {...a,engine:g.type,metricKey:g.metricKey,opikMetric:{metricKey:g.metricKey,nativeScore:raw,direction:"higher-is-risk"},
+      pass,value:1-raw};
+  });
+  let report=present(buildReport(data));assert.equal(report.winnerId,"a");
+  const metric=report.metrics[0];assert.equal(metric.method,"opik-metric");
+  assert.deepEqual(metric.caseScores[0].values[0].opikMetric,{metricKey:"moderation",nativeScore:.1,direction:"higher-is-risk"});
+  data.assessments[0].value=.1;
+  report=present(buildReport(data));assert.equal(report.winnerId,null);
+  assert.equal(report.metrics[0].caseScores[0].values[0].score,null);
+});
+
 test("a missing or differently versioned judgment is never averaged as zero or compared on different cases", () => {
   const input = run();
   input.assessments[3].version++;
@@ -278,14 +337,15 @@ test("a two-model run compares actual persisted judge and deterministic assessme
   await present(bench.active).done;
   const detail = bench.detail(runId);
   assert.equal(detail.status, "completed");
-  assert.equal(detail.assessments.length, 4);
+  assert.equal(detail.assessments.filter(a=>a.graderId===judgeId || a.graderId===ruleId).length,4);
+  assert.ok(detail.assessments.some(a=>a.engine==="catalog"));
   assert.ok(detail.report?.assistance);
   assert.equal(detail.report.winnerId, "a");
   assert.equal(detail.report.assistance.analyzer.status, "verified");
   assert.equal(detail.report.assistance.reporter.status, "verified");
   assert.equal(detail.report.assistance.citations[0].metricId, judgeId);
   assert.deepEqual(present(bench.exportRun(runId).report).assistance, detail.report.assistance);
-  assert.deepEqual(detail.report.metrics.map(m => m.values.map(v => v.score)), [[.9, .2], [1, 0]]);
+  assert.deepEqual(detail.report.metrics.filter(m=>!m.informational).map(m => m.values.map(v => v.score)), [[.9, .2], [1, 0]]);
   assert.equal(requests.length, 2);
   assert.doesNotMatch(JSON.stringify(requests), /PRIVATE_RUBRIC_MARKER/);
 });
@@ -311,7 +371,7 @@ test("a reference dataset compares the original case prompts using only the oper
   const graderId = bench.graders.save({ name: "SME disposition", category: "Quality", industry: "Manufacturing", criteria: "Compare the output to the SME disposition.", type: "judge", threshold: .8, judgeId: "a" }, local);
   for (const mode of ["exact-reference", "selected-graders"] as const) {
     const item = mode === "exact-reference" ? row : { ...row, dataset_version: "2", rubric: "PRIVATE_RUBRIC: check the disposition." };
-    const datasetId = bench.import("reference", "Reference " + mode, JSON.stringify(item));
+    const datasetId = bench.import("reference", "Reference " + mode, JSON.stringify(item),{industry:"Manufacturing",family:"Reference inspection "+mode,category:"Lot disposition"});
     const id = bench.start({ mode: "dataset", datasetId, candidateIds: ["a","b"], datasetScorer: mode, graderIds: mode === "selected-graders" ? [graderId] : [] });
     await present(bench.active).done;
     const { report, status, manifest, results } = bench.detail(id);
@@ -319,9 +379,10 @@ test("a reference dataset compares the original case prompts using only the oper
     assert.ok(report);
     assert.equal(report.verdict, "winner");
     assert.equal(report.winnerId, "a");
-    assert.equal(report.metrics.length, 1);
-    assert.equal(report.metrics[0].method, mode === "exact-reference" ? "deterministic" : "llm-judge");
-    assert.equal(report.metrics[0].label, mode === "exact-reference" ? "Exact reference match" : "SME disposition");
+    const quality=report.metrics.filter(m=>!m.informational);
+    assert.equal(quality.length,1);assert.ok(report.metrics.some(m=>m.informational));
+    assert.equal(quality[0].method, mode === "exact-reference" ? "deterministic" : "llm-judge");
+    assert.equal(quality[0].label, mode === "exact-reference" ? "Exact reference match" : "SME disposition");
     assert.deepEqual(report.observedOutcomes, []);
     if (mode === "selected-graders") assert.ok(results.every(r => r.score === null));
   }

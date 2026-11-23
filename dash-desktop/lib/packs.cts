@@ -29,6 +29,7 @@ function decimal(value:unknown) {
     (fraction ? "." + fraction : "")
   );
 }
+export { field as packField, decimal as packDecimal };
 function equal(pack:ScoredPack, key:string, actual:unknown, expected:unknown):boolean {
   if (pack.decimalFields.includes(key) && expected !== null) {
     const target = decimal(expected);

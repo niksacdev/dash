@@ -53,9 +53,11 @@ export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:
 }
 
 type GradingManifest = Parameters<typeof caseMessages>[0] & Partial<Pick<RunManifest,"mode"|"fixture"|"approvedPrompt">>;
-export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:RunResult):GraderEvidence {
+export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:RunResult, catalogContext=false):GraderEvidence {
   const approved = manifest.mode === "quick" ? manifest.approvedPrompt : null;
   return {
+    ...(catalogContext && {finishReason:result.reportedFinishReason ?? null}),
+    ...(catalogContext && manifest.pack && manifest.pack.kind !== "reference" && {caseContext:{pack:manifest.pack,row}}),
     ...(approved && {evaluationBrief:{objective:approved.objective, metrics:approved.metrics, criteria:approved.requirements}}),
     input: result.dispatchedMessages ?? caseMessages(manifest,row),
     inputSource: result.dispatchedMessages ? "recorded-dispatch" : manifest.fixture ? "fixture-case" : "reconstructed-case",

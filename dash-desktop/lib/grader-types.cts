@@ -1,8 +1,10 @@
 import { z } from "opik";
 import { decisionConfig, observationSchema, protocolSchema, fallbackAttemptSchema, type DecisionConfig } from "./decision-model.cjs";
+import type { ScoredPack, CaseRow } from "./run-types.cjs";
+import {opikMetricKey,opikMetricResult, type OpikMetricKey} from "./opik-library.cjs";
 import type { LocalCandidate } from "./runtime-types.cjs";
 
-export const graderType = z.enum(["contains", "exact", "field", "trajectory", "judge", "opik", "decision"]);
+export const graderType = z.enum(["contains", "exact", "field", "trajectory", "judge", "opik", "decision", "catalog", "opik-metric"]);
 export type GraderMethod = z.infer<typeof graderType>;
 export type JudgeMethod = "judge" | "opik";
 export const rubricOrigin = z.object({
@@ -14,9 +16,14 @@ const judgeModel = z.object({
   revision: z.string().nullable().optional(), quantization: z.string().nullable().optional(),
   nativeChat:z.boolean().optional(), reasoningOff:z.boolean().optional(),
 }).passthrough();
+export const graderLibrary = z.object({
+  scope:z.enum(["general","industry","customer"]), familyId:z.string().min(1),
+  parentRevisionId:z.string().min(1).optional(), automatic:z.boolean().optional(), scenario:z.string().min(1).optional(),
+});
+export type GraderLibrary = z.infer<typeof graderLibrary>;
 const base = z.object({
   id:z.string(),name:z.string(),category:z.string(),industry:z.string().default("Unclassified"),criteria:z.string(),version:z.number().int(),
-  threshold:z.number().min(0).max(1),opikEngine:z.string().optional(),origin:rubricOrigin.optional(),
+  threshold:z.number().min(0).max(1),opikEngine:z.string().optional(),origin:rubricOrigin.optional(),library:graderLibrary.optional(),
 });
 const evidenceRequirement = z.enum(["reference","trajectory"]);
 const requiredEvidence = z.array(evidenceRequirement).max(2)
@@ -25,6 +32,8 @@ export const decisionSettings = z.object({
   decision:decisionConfig, threshold:z.number().gt(0).max(1), requiredEvidence:requiredEvidence.optional(),
 }).refine(g => g.decision.failAt < g.threshold, "The fail cutoff must be below the pass cutoff.");
 export const savedGrader = z.union([
+  base.extend({type:z.literal("catalog"),ruleKey:z.string().min(1),ruleVersion:z.number().int().positive(),judge:z.null()}),
+  base.extend({type:z.literal("opik-metric"),metricKey:opikMetricKey,judge:judgeModel}),
   base.extend({type:z.literal("decision"),judge:z.null(),decision:decisionConfig,requiredEvidence:requiredEvidence.optional()})
     .refine(g => g.decision.failAt < g.threshold, "Invalid decision cutoffs."),
   base.extend({type:z.enum(["judge","opik"]),judge:judgeModel}),
@@ -34,6 +43,7 @@ export type GraderSpec = z.infer<typeof savedGrader>;
 const inputSource = z.enum(["recorded-dispatch", "reconstructed-case", "fixture-case"]);
 export interface GraderEvidence {
   input:unknown; reference:unknown; output:string; inputSource?:z.infer<typeof inputSource>;
+  finishReason?:string|null; caseContext?:{pack:ScoredPack;row:CaseRow};
   trajectory?:readonly unknown[]; rubric?:string; sme_rationale?:string;
   evaluationBrief?:{objective:string;metrics:readonly string[];criteria:readonly string[]};
 }
@@ -46,7 +56,7 @@ export const storedAssessment = z.object({
     failAt:z.number().min(0).lt(1), passAt:z.number().gt(0).max(1),
   }).optional(),
   decision:observationSchema.optional(), decisionAttempt:fallbackAttemptSchema.optional(),
-  evaluator:z.string().optional(),inputSource:inputSource.optional(),id:z.string(),created:z.string(),
+  evaluator:z.string().optional(),opikMetric:opikMetricResult.optional(),inputSource:inputSource.optional(),id:z.string(),created:z.string(),
   evidence:z.object({output:z.string()}).passthrough().optional(),
 });
 export type AssessmentEntry = z.infer<typeof storedAssessment>;
@@ -54,11 +64,14 @@ export type GraderAssessment = Omit<AssessmentEntry,"id"|"created"|"evidence">;
 export type RecordedAssessment = AssessmentEntry & {candidate:string;caseId:string};
 interface DefinitionFields {
   name:string;category:string;industry:string;criteria:string;threshold:number;
+  intent?:"create"|"derive"|"revise";sourceGraderId?:string;
 }
 export type GraderDefinition = DefinitionFields & (
   | {type:"decision"; judgeId?:null; decision:DecisionConfig; requiredEvidence?:z.infer<typeof evidenceRequirement>[]}
-  | {type:Exclude<GraderMethod,"decision">; judgeId?:string|null}
+  | {type:"catalog";ruleKey?:string;ruleVersion?:number;judgeId?:null}
+  | {type:"opik-metric";metricKey:OpikMetricKey;judgeId?:string|null}
+  | {type:Exclude<GraderMethod,"decision"|"catalog"|"opik-metric">; judgeId?:string|null}
 );
 export interface QuickGraderChoices {
-  recommended:(GraderSpec & {reason:string})[];available:GraderSpec[];generated:GraderDefinition;judges:LocalCandidate[];
+  automatic:GraderSpec[];recommended:(GraderSpec & {reason:string})[];available:GraderSpec[];generated:GraderDefinition;judges:LocalCandidate[];
 }

@@ -1,13 +1,13 @@
 // Run the compiled test with npm run test:workflow.
 import assert from "node:assert/strict";
-import {mkdtempSync, rmSync} from "node:fs";
+import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {DatabaseSync} from "node:sqlite";
 import {mock} from "node:test";
 import {createServer} from "node:http";
 import {once} from "node:events";
-import {app} from "electron";
+import {app,dialog} from "electron";
 import {z} from "zod";
 import {opikJudgeRequest} from "./opik-judge-fixture.cjs";
 import {decodeApprovedPrompt} from "../lib/outcome-contracts.cjs";
@@ -23,7 +23,7 @@ app.on("browser-window-created", (_event, window) => {
 });
 
 const schema = z.looseObject({
-  properties: z.record(z.string(), z.looseObject({type:z.unknown()})).optional(),
+  properties: z.record(z.string(), z.looseObject({type:z.unknown().optional()})).optional(),
 });
 const request = z.looseObject({
   model: z.string(),
@@ -33,7 +33,7 @@ const request = z.looseObject({
   options: z.looseObject({num_predict:z.number().optional()}).optional(),
   max_tokens: z.number().optional(),
 });
-type Stage = "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
+type Stage = "native-relevance" | "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
 interface TransportCall {stage:Stage; body:z.infer<typeof request>; brief:unknown}
 const calls:TransportCall[] = [];
 const expertBrief = z.object({requirements:z.array(z.string())});
@@ -41,7 +41,7 @@ const datasetBrief = z.looseObject({dataset:z.looseObject({outputSchema:z.unknow
 const priorRunBrief = z.looseObject({priorRun:z.looseObject({id:z.string(),candidates:z.array(z.looseObject({scored:z.number()}))})});
 const stageStatus = z.object({status:z.string()});
 const gradedDetail = z.object({
-  assessments:z.array(z.object({value:z.number().nullable(),evaluator:z.string()})),
+  assessments:z.array(z.object({graderId:z.string(),value:z.number().nullable(),evaluator:z.string().optional()})),
   results:z.array(z.object({guardrail:z.object({status:z.string(),outputReserve:z.number()})})),
   report:z.object({verdict:z.string(),winnerId:z.string().nullable(),metrics:z.array(z.object({method:z.string()})),
     assistance:z.object({analyzer:stageStatus,reporter:stageStatus})}),
@@ -53,6 +53,7 @@ const guidance = "Cite the inspection record and identify the next review step."
 const roleEdit = "Trace the inspection record to the incoming lot.";
 
 function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
+  if(stage==="native-relevance")return {answer_relevance_score:.9,reason:"The synthetic response addresses the supplied task."};
   if (stage === "route") return { domain: "Manufacturing" };
   if (stage === "expert") return {
     title: "Review incoming evidence",
@@ -129,9 +130,9 @@ globalThis.fetch = async (url, options = {}) => {
   const schema = body.format ?? body.response_format?.json_schema?.schema;
   const props = schema?.properties ?? {};
   const evaluation = opikJudgeRequest(body.messages);
-  const stage = evaluation?.stage ?? (props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
+  const stage = evaluation?.stage ?? (props.answer_relevance_score ? "native-relevance" : props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
     props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
-  const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
+  const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" || stage === "native-relevance" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
   calls.push({ stage, body, brief });
   const content = stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
   if (target.pathname === "/api/chat") {
@@ -313,14 +314,20 @@ async function smoke() {
   assert.deepEqual(quick.approvedPrompt, first, "Persist the exact reviewed prompt, agents, and revisions with the run");
 
   const quickRecords = gradedDetail.parse(await js("window.dash.detail(" + q(quick.id) + ")"));
-  assert.equal(quick.graders.length, 1);
-  assert.equal(quick.graders[0].threshold, .8);
-  assert.equal(quick.graders[0].type,"opik");
-  assert.match(quick.graders[0].opikEngine ?? "",/^opik-js@/);
+  const business=quick.graders.filter(g=>!g.library?.automatic);
+  assert.equal(business.length,1);
+  assert.equal(business[0].threshold,.8);
+  assert.equal(business[0].type,"opik");
+  assert.match(business[0].opikEngine ?? "",/^opik-js@/);
+  const baselines=quick.graders.filter(g=>g.type==="catalog");
+  assert.deepEqual(baselines.map(g=>g.ruleKey).sort(),["completion","response-present"]);
+  assert.ok(baselines.every(g=>g.library?.automatic));
   assert.equal(calls.filter(c=>c.stage==="geval-score").length,2);
-  assert.ok(quickRecords.assessments.every(a=>a.evaluator===quick.graders[0].opikEngine));
-  assert.equal(quickRecords.assessments.length, 2);
-  assert.deepEqual(quickRecords.assessments.map(a=>a.value).sort(), [0,1]);
+  const businessScores=quickRecords.assessments.filter(a=>a.graderId===business[0].id);
+  assert.ok(businessScores.every(a=>a.evaluator===business[0].opikEngine));
+  assert.equal(businessScores.length,2);
+  assert.deepEqual(businessScores.map(a=>a.value).sort(),[0,1]);
+  for(const baseline of baselines)assert.equal(quickRecords.assessments.filter(a=>a.graderId===baseline.id).length,2);
   assert.ok(quickRecords.results.every(r=>r.guardrail.status==="unverified" && r.guardrail.outputReserve===180));
   assert.deepEqual(calls.filter(c => ["analyzer","reporter"].includes(c.stage)).map(c=>c.stage), ["analyzer","reporter"]);
   assert.equal(quickRecords.report.assistance.analyzer.status,"verified");
@@ -329,9 +336,11 @@ async function smoke() {
   assert.equal(quickRecords.report.winnerId,"ollama/"+models.ollama);
   assert.ok(quickRecords.report.metrics.some(m=>m.method==="opik-judge"));
   await wait(() => exists('.er-report[data-verdict="winner"]'), "Terminal winner report");
-  await click(".er-evidence summary");
+  const businessMetric=quickRecords.report.metrics.findIndex(m=>m.method==="opik-judge");
+  const evidenceSelector='.er-evidence[data-metric-index="'+businessMetric+'"]';
+  await click(evidenceSelector+" summary");
   await wait(() => js("document.querySelector('.er-evidence[open]').innerText.includes('lacks the required evidence')"), "Saved judge rationale");
-  await click(".er-evidence a");
+  await click(evidenceSelector+" a");
   await wait(() => exists('[data-guardrail="unverified"]'), "Per-response capacity evidence");
   await route("roles");
   const role = 'form[data-wf-role][data-domain="Manufacturing"][data-role="expert"]';
@@ -498,6 +507,11 @@ async function smoke() {
     decisionOrigin="http://127.0.0.1:"+address.port;
     await route("graders");
     await wait(()=>exists("#grade-create"),"Grader editor");
+    win.setContentSize(390,720);
+    await wait(()=>js("innerWidth<=400"),"Phone-width catalog");
+    assert.ok(await js("document.documentElement.scrollWidth<=innerWidth+1"),"Catalog fits a phone viewport");
+    assert.ok(await js("document.querySelector('[data-customize]').getBoundingClientRect().height>=44"),"Touch-size catalog action");
+    win.setContentSize(1280,850);
     await js("document.querySelector('#grade-create').closest('details').open=true");
     await fill("#grade-type","decision");
     await click("[data-decision-starter=earnings]");
@@ -517,7 +531,7 @@ async function smoke() {
     await fill("[name=decision-model]",primaryAlias);
     await reveal("[name=decision-fallback]");await fill("[name=decision-fallback]",localAlias);
     await click("#grade-create button.yellow");
-    const versionId=(n:number)=>db.prepare("SELECT id FROM graders WHERE family=? AND version=?").get("inspection disposition evidence",n)?.id;
+    const versionId=(n:number)=>db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.name')=? AND version=?").get("Inspection disposition evidence",n)?.id;
     await wait(()=>versionId(1),"Saved local decision grader");
     const localId=z.string().parse(versionId(1));
     const manualCount=()=>Number(db.prepare("SELECT count(*) n FROM assessments WHERE run IS NULL").get()?.n);
@@ -578,7 +592,9 @@ async function smoke() {
     assert.match(await text("window.consentPrompts.at(-1)"),/Quick comparison/);
     assert.equal(runCount(),beforeHostedRun);
     await route("new");
-    await fill("#pack","earnings");await fill("#ds",scenario);
+    await fill("#pack","manufacturing");
+    const inspectionId=z.string().parse(db.prepare("SELECT id FROM datasets WHERE pack='manufacturing' ORDER BY rowid LIMIT 1").get()?.id);
+    await fill("#ds",inspectionId);
     await reveal('[name=custom-grader][value="'+hostedId+'"]');
     await click('[name=custom-grader][value="'+hostedId+'"]');
     const localCandidate='#dataset-models [data-model="ollama/'+models.ollama+'"]';
@@ -616,6 +632,115 @@ async function smoke() {
     await provideSample(mlxId,"Hold lot B.","Current drawing calls for a hold.");
     await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('P(yes) 0.94')"),"Native MLX decision score");
     assert.equal(mlxGrades,1);
+    // Customize a shipped check, change its scoring method in a new revision,
+    // and find two saved runs from the exact grader version.
+    for(const section of ["general","industry","customer"])assert.ok(await exists('[data-catalog-scope="'+section+'"]'));
+    const shippedId=(key:string)=>z.string().parse(db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.ruleKey')=? AND json_extract(spec,'$.library.scope')!='customer'").get(key)?.id);
+    const original=shippedId("response-present");
+    await click('[data-customize="'+original+'"]');
+    await wait(()=>js("document.querySelector('#grade-create [name=criteria]').readOnly"),"Deterministic catalog criterion pinned");
+    const alias="QA lot tag", loadVersion=(name:string,version:number)=>db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.name')=? AND version=?").get(name,version)?.id;
+    await fill("#grade-create [name=name]",alias);
+    await click("#grade-create button.yellow");
+    await wait(()=>loadVersion(alias,1),"Independent customer fork");
+    const v1=z.string().parse(loadVersion(alias,1));
+    assert.notEqual(v1,original);
+    await click('[data-revise="'+v1+'"]');
+    await wait(()=>js("document.querySelector('#grade-create [name=name]').value==="+q(alias)),"Customer version editor");
+    await fill("#grade-type","contains");
+    assert.equal(await js("document.querySelector('#grade-create [name=criteria]').readOnly"),false);
+    await fill("#grade-create [name=criteria]","QA");
+    await fill("#grade-create [name=industry]","Manufacturing");
+    await click("#grade-create button.yellow");
+    await wait(()=>loadVersion(alias,2),"Customer method revision");
+    const v2=z.string().parse(loadVersion(alias,2));
+    const lineage=()=>z.array(z.object({id:z.string(),library:z.object({scope:z.string(),familyId:z.string(),parentRevisionId:z.string().optional()})})).parse(
+      [v1,v2].map(id=>JSON.parse(z.string().parse(db.prepare("SELECT spec FROM graders WHERE id=?").get(id)?.spec))));
+    const [fork,revision]=lineage();
+    assert.equal(fork.library.scope,"customer");assert.equal(fork.library.parentRevisionId,original);
+    assert.equal(revision.library.familyId,fork.library.familyId);assert.equal(revision.library.parentRevisionId,v1);
+
+    await click('[data-grade-template="answer-relevance"]');
+    await wait(()=>js("document.querySelector('#grade-type').value==='opik-metric'"),"Native Opik rubric configured");
+    await fill("#grade-create [name=name]","QA native relevance");
+    await fill("#grade-create [name=judgeId]","ollama/"+models.ollama);
+    await click("#grade-create button.yellow");
+    await wait(()=>loadVersion("QA native relevance",1),"Saved native metric and judge");
+    const relevance=z.string().parse(loadVersion("QA native relevance",1));
+    await click('[data-grade-default="'+relevance+'"]');
+    await wait(()=>exists('[data-grade-default="'+relevance+'"][aria-pressed=true]'),"Opted into an automatic semantic metric");
+    await route("prompts");await click('[data-wf-use="'+first.id+'"]');
+    await wait(()=>js("document.querySelector('#qc-grading .gc-auto')?.innerText.includes('QA native relevance')"),"Native default in Quick preview");
+    await route("graders");await click('[data-grade-default="'+relevance+'"]');
+    await wait(()=>exists('[data-grade-default="'+relevance+'"][aria-pressed=false]'),"Disabled future semantic baseline");
+    await route("new");
+    await fill("#pack","earnings");await fill("#ds",scenario);
+    const optionFor=(id:string)=>'[name=custom-grader][value="'+id+'"]';
+    await wait(()=>exists(optionFor(shippedId("earnings-amount"))),"Compatible Financial Services rule");
+    assert.equal(await exists(optionFor(v2)),false);
+    assert.equal(await exists(optionFor(shippedId("inspection-reading"))),false);
+    await fill("#pack","manufacturing");await fill("#ds",inspectionId);
+    const inspectionRule=shippedId("inspection-reading");
+    await reveal(optionFor(inspectionRule));await click(optionFor(inspectionRule));
+    // The earlier explicitly chosen hosted grader remains attached to this snapshot.
+    if(await js("document.querySelector("+q(optionFor(hostedId))+")?.checked"))await click(optionFor(hostedId));
+    await click(optionFor(v2));
+    const uses:string[]=[];
+    for(const count of [5,6]){
+      await wait(()=>js("document.querySelector("+q(optionFor(v2))+")?.checked"),"Selected revision restored");
+      await click("#dataset-run-form button[type=submit]");
+      const run=await completedRun(count);uses.push(run.id);
+      assert.ok(run.graders.some(g=>g.id===v2));assert.ok(run.graders.some(g=>g.id===inspectionRule));
+      assert.ok(run.graders.some(g=>g.type==="catalog" && g.ruleKey==="json-valid"));
+      assert.ok(!run.graders.some(g=>g.id===v1 || g.id===relevance));
+      if(count===5){
+        await route("graders");await click('[data-revise="'+v2+'"]');
+        await wait(()=>js("document.querySelector('#grade-create [name=criteria]').value==='QA'"),"Reopen customer v2");
+        await fill("#grade-create [name=criteria]","QA version three");await click("#grade-create button.yellow");
+        await wait(()=>loadVersion(alias,3),"Published successor");
+        await route("new");
+        const v3=z.string().parse(loadVersion(alias,3));
+        await wait(()=>exists(optionFor(v3)),"Successor offered alongside earlier revision");
+        assert.equal(await js("document.querySelector("+q(optionFor(v3))+").checked"),false);
+      }
+    }
+    await route("graders");
+    const history='[data-grade-version="'+v2+'"] [data-grade-uses]';
+    await reveal('[data-grade-history="'+v2+'"]');await click('[data-grade-history="'+v2+'"]');
+    await wait(()=>js("document.querySelectorAll("+q(history+" a")+").length===2"),"Two linked runs on the exact customer revision");
+    for(const id of uses)assert.ok(await exists(history+' a[href="#run/'+id+'"]'));
+    await reveal('[data-grade-history="'+v1+'"]');await click('[data-grade-history="'+v1+'"]');
+    await wait(()=>js("document.querySelector("+q('[data-grade-version="'+v1+'"] [data-grade-uses]')+").innerText.includes('No saved runs')"),"No uses attributed to predecessor");
+
+    const importFile=path.join(profile,"catalog-inputs.jsonl");
+    const pickFile=mock.method(dialog,"showOpenDialog",async()=>({canceled:false,filePaths:[importFile]}));
+    const onlyInput={case_id:"catalog-input",dataset_version:"1",split:"development",prompt:"What is the next action for synthetic lot B?"};
+    async function referenceSnapshot(name:string,rows:readonly object[]){
+      writeFileSync(importFile,rows.map(row=>JSON.stringify(row)).join("\n")+"\n");
+      const metadata={industry:"Manufacturing",family:name,category:"QA",tags:[],source:"Synthetic smoke",changeNote:"",parentId:null};
+      return text("window.dash.import('reference').then(draft=>window.dash.commitImport(draft.token,"+q(metadata)+"))");
+    }
+    let inputOnly:string, mixed:string;
+    try{
+      inputOnly=await referenceSnapshot("Input-only catalog QA",[onlyInput]);
+      mixed=await referenceSnapshot("Mixed rubric QA",[onlyInput,{...onlyInput,case_id:"catalog-rubric",rubric:"Credit a response that cites the lot identifier."}]);
+    }finally{pickFile.mock.restore();}
+    await route("new");await fill("#pack","reference");await fill("#ds",inputOnly);
+    await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('without a reference')"),"Structural checks alone cannot grade an input-only case");
+    assert.equal(await js("document.querySelector('#dataset-run-form .go-button').disabled"),true);
+    await route("graders");await click('[data-grade-default="'+relevance+'"]');
+    await wait(()=>exists('[data-grade-default="'+relevance+'"][aria-pressed=true]'),"Enable the local semantic default");
+    await route("new");await fill("#ds",mixed);
+    await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('rubric-aware')"),"Case-specific rubric still needs its own judge");
+    assert.equal(await js("document.querySelector('#dataset-run-form .go-button').disabled"),true);
+    await fill("#ds",inputOnly);
+    await wait(()=>js("!document.querySelector('#dataset-run-form .go-button').disabled"),"Enabled native metric can grade an input-only snapshot");
+    await click("#dataset-run-form button[type=submit]");
+    const semantic=await completedRun(7);
+    assert.equal(semantic.datasetId,inputOnly);
+    assert.ok(semantic.graders.some(g=>g.type==="opik-metric" && g.id===relevance));
+    const grade=await js("window.dash.detail("+q(semantic.id)+").then(r=>r.assessments.find(a=>a.graderId==="+q(relevance)+").value)");
+    assert.equal(grade,.9);
   } finally {
     decisionOrigin="";
     server.closeAllConnections();server.close();
@@ -624,7 +749,7 @@ async function smoke() {
 }
 
 app.whenReady().then(smoke).then(() => {
-  console.log("Workflow smoke passed: mobile planning, automatic Quick judging, winner and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader versioning, abstention and per-action consent.");
+  console.log("Workflow smoke passed: mobile planning, automatic Quick judging, winner and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader consent, catalog forks, pinned prior revisions across two runs, native metric defaults and version-specific run links.");
   rmSync(profile, { recursive: true, force: true });
   app.exit(0);
 }).catch(err => {

@@ -17,3 +17,23 @@
 .gd-saved {border-inline-start:2px solid var(--border);padding-left:12px;margin:12px 0}
 .gd-actions {display:flex;gap:8px;flex-wrap:wrap}
 @media(max-width:680px){.gd-panel {padding:12px}.gd-panel button,.gd-inclusion {min-height:44px}}
+
+.gc-section {margin-block:12px}
+.gc-section h3,.gc-auto h3,.gc-templates h4 {margin:0 0 .5rem}
+.gc-family+.gc-family,.gc-template+.gc-template {border-block-start:1px solid var(--border)}
+.gc-section .grader-row {padding-block:12px;overflow-wrap:anywhere}
+.gc-revision-head,.gc-actions {display:flex;align-items:baseline;justify-content:space-between;gap:9px;flex-wrap:wrap}
+.gc-revision-head small,.gc-section .block {display:block;color:var(--muted)}
+.gc-revision-head strong small {display:inline}
+.gc-section .grader-row p {margin:5px 0 9px}
+.gc-actions {justify-content:flex-start;margin-top:8px}
+.gc-actions button {min-height:36px}
+.gc-previous {margin:0 0 12px 12px}
+.gc-auto {margin:12px 0;padding:12px 14px;border:1px solid var(--border);border-radius:6px}
+.gc-auto details {display:inline-block;vertical-align:top;margin:0 12px 4px 0}
+.gc-auto details[open] {display:block}
+.gc-auto p {margin:4px 0}
+.gc-options .choice {align-items:flex-start}
+.gc-options small {display:block;font-weight:400;color:var(--muted);overflow-wrap:anywhere}
+.gc-options strong small {display:inline}
+@media(max-width:680px){.gc-actions button {min-height:44px}}

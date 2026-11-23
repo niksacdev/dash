@@ -16,7 +16,7 @@ export const savedMetadata=z.object({industry:str,family:str,category:str,source
 const runSummary=z.object({id:str,created:str,status:z.enum(["queued","running","completed","failed","canceled","interrupted"]),title:str,mode:z.enum(["quick","dataset"]),fixture:z.union([z.literal(0),z.literal(1)]),industry:nullable,datasetId:nullable});
 export type RunSummary=z.infer<typeof runSummary>;
 export const decodeRunSummary=(row:unknown):RunSummary=>runSummary.parse(row);
-const datasetSummary=z.object({id:str,pack:str,name:str,count:num,casesWithoutReference:num,version:str,split:z.enum(["development","holdout"]),origin:z.enum(["bundled","legacy","import"]),metadata:z.unknown().transform(v=>savedMetadata.parse(jsonText(v)))});
+const datasetSummary=z.object({id:str,pack:str,name:str,count:num,casesWithoutReference:num,casesWithRubric:num,version:str,split:z.enum(["development","holdout"]),origin:z.enum(["bundled","legacy","import"]),metadata:z.unknown().transform(v=>savedMetadata.parse(jsonText(v)))});
 export type DatasetSummary=z.infer<typeof datasetSummary>;
 export const decodeDatasetSummary=(row:unknown):DatasetSummary=>datasetSummary.parse(row);
 const candidate=z.preprocess(v=>{
@@ -49,7 +49,7 @@ const result=z.object({candidateId:str,caseId:str,output:nullable,error:nullable
     steps:z.array(z.object({at:str,action:str,guardrail:guardrail.optional()}).passthrough())}).passthrough(),
   score:z.object({pass:z.boolean(),reasons:z.array(str),ready:z.boolean().optional(),falseAccept:z.boolean().optional(),review:z.boolean().optional(),evaluator:str.optional()}).passthrough().nullable(),
   dispatchState:z.enum(["pending","canceled","interrupted"]).optional(),
-  finishReason:nullable.optional(),telemetry:telemetry.nullable(),guardrail:guardrail.optional(),dispatchedMessages:z.array(turn).optional(),
+  finishReason:nullable.optional(),reportedFinishReason:nullable.optional(),telemetry:telemetry.nullable(),guardrail:guardrail.optional(),dispatchedMessages:z.array(turn).optional(),
   inputBudget:z.object({tokens:num,source:str,cap:n}).passthrough().optional(),
 }).passthrough();
 export function decodeManifest(raw:unknown):RunManifest {return manifest.parse(jsonText(raw));}

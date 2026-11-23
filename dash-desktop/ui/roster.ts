@@ -145,7 +145,7 @@ function rosterGroups(mode:UiMode){
   }).join("");
 }
 function canStartDataset() {
-  return !state.active && !workflows.dataset.busy && !graderDesignDrafts.get(activeDatasetGraderScope())?.busy && selectedModels("dataset").length > 0;
+  return !state.active && !workflows.dataset.busy && !graderDesignDrafts.get(activeDatasetGraderScope())?.busy && selectedModels("dataset").length > 0 && !referenceScoringIssue();
 }
 function modelPicker(mode:UiMode, caseCount=0) {
   const quick = mode === "quick";

@@ -18,6 +18,20 @@ For a structured scenario, import JSONL with the scenario’s input and gold fie
 
 Grading uses the chat turns saved at dispatch, including changes made to fit the token budget. For an older run without those turns, DASH marks the reconstructed case input in the new assessment. Recorded replays use fixture case inputs. In **Graders**, paste a candidate’s ordered tool calls to grade its actions. A blank trajectory leaves an action-order check unscored. An explicit empty array records that the agent took zero actions. DASH keeps its own execution steps in the developer trace.
 
+## Choose a grader for a run
+
+| Section | How to use it |
+| --- | --- |
+| General | Every new evaluation pins response presence and provider completion checks. A declared JSON contract also pins Opik JSON validation. A replay can show a valid response and an unknown provider stop reason. These checks describe the response and do not establish business success. |
+| Industry | In a matching dataset run, select Financial Services checks for an earnings release or Manufacturing checks for incoming inspection. Each check explains the fields it compares. The scenario’s full acceptance check continues to run. |
+| My graders | Create a check yourself or ask the grader designer for suggestions from an objective and measures. Review the rubric, evidence and any local judge before confirming. Choose an existing revision to reuse it across runs, customize a starter to create an independent family, or save a new revision of a customer grader. |
+
+Configure Opik answer relevance, usefulness, hallucination or moderation from the general library. Select a local judge first. You can make a saved cross-industry metric a default for future runs. Its score and the judge revision stay attached to the original run after you change the default. Hallucination grading needs source evidence. A missing source stays unscored. Opik reports higher raw values for hallucination and moderation risk, so DASH records the raw result separately from the quality score used in reports. [Official Opik metrics](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)
+
+For example, choose the earnings grader that checks the requested financial fact and run the **eps-gaap** case. The recorded candidate answer reports adjusted EPS of 0.85 instead of reported GAAP EPS of 0.74. Reuse that exact grader version on another earnings dataset with the same contract. The version’s run history shows where it was used. A customer can fork the shipped criterion and choose an editable rubric or another grading method to implement a different policy.
+
+A catalog version number identifies a revision within its family. Revisions with the same display name can belong to different families. An old case rerun always retains its original manifest. A newly created run resolves the current workspace defaults and the specific grader revisions selected for it.
+
 ## Use a decision model as a grader
 
 1. Open **Workspace → Graders** and select **Decision model · yes/no**. Choose an earnings or inspection starter, or enter one question yourself. If the answer depends on a held-out reference or an observed agent trajectory, mark that evidence as required.

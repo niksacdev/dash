@@ -8,6 +8,8 @@ import {OutcomeWorkflow,contractHash} from "./outcome-workflow.cjs";
 import {decodeRequest,type DesignContext,type PlanningPurpose,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
 import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
 import {RunReports} from "./run-report.cjs";
+import {getOpikTemplate,opikLibraryTemplates} from "./opik-library.cjs";
+import type {GraderSpec} from "./graders.cjs";
 import {Graders,sdkEnabled} from "./graders.cjs";
 import {Endpoints} from "./endpoints.cjs";
 import {PlannerSettings} from "./planner-settings.cjs";
@@ -64,6 +66,7 @@ export class Bench {
       this.saveDataset(pack.id, pack.dataset, rows);
     this.packs.push({pack:referencePack, rows:[], replay:{}});
     this.graders = new Graders(this.db);
+    this.db.exec("CREATE TABLE IF NOT EXISTS general_grader_defaults(metric TEXT PRIMARY KEY, grader_id TEXT NOT NULL REFERENCES graders(id))");
     this.endpoints = new Endpoints(this.db);
     this.catalog = new Catalog(this.db, this.packs);
     this.plannerSettings = new PlannerSettings(this.db,this.endpoints);
@@ -159,8 +162,37 @@ export class Bench {
     } : null;
     return { id, status: saved.status, candidates, graders, ...(constraint && {tokenConstraint:constraint}), ...(stopped.length && {truncatedOutputs:stopped}) };
   }
+  private configuredGeneralGraders():GraderSpec[] {
+    return this.db.prepare("SELECT grader_id FROM general_grader_defaults ORDER BY metric").all()
+      .map(row => this.graders.get(stringValue(row.grader_id)));
+  }
+  setGeneralGraderDefault(id:string, enabled:boolean):void {
+    const grader = this.graders.get(id);
+    if (grader.type !== "opik-metric" || !["General","Cross-industry"].includes(grader.industry) || grader.library?.scenario)
+      throw Error("Choose a cross-industry Opik metric with a pinned local judge.");
+    if (enabled) this.db.prepare("INSERT INTO general_grader_defaults(metric,grader_id) VALUES(?,?) ON CONFLICT(metric) DO UPDATE SET grader_id=excluded.grader_id")
+      .run(grader.metricKey,id);
+    else this.db.prepare("DELETE FROM general_grader_defaults WHERE grader_id=?").run(id);
+  }
+  private automaticGraders(structured:boolean) {
+    return [...this.graders.automatic(structured), ...this.configuredGeneralGraders()];
+  }
   quickGraderOptions(approvedPromptId:string) {
-    return this.graders.quickOptions(this.workflow.get(approvedPromptId), this.servers.flatMap(s => s.models));
+    const options = this.graders.quickOptions(this.workflow.get(approvedPromptId), this.servers.flatMap(s => s.models));
+    return {...options, automatic:this.automaticGraders(false)};
+  }
+  datasetGraderOptions(datasetId:string) {
+    const dataset = this.dataset(datasetId);
+    const pack = this.pack(dataset.pack).pack;
+    return {automatic:this.automaticGraders(pack.outputSchema !== null), available:this.graders.list().filter(g=>this.graders.appliesToDataset(g,dataset.metadata.industry,pack.id))};
+  }
+  graderRuns(id:string) {
+    this.graders.get(id);
+    return this.db.prepare(`SELECT r.id, r.created, json_extract(r.manifest,'$.title') AS title FROM runs r
+      WHERE EXISTS (SELECT 1 FROM json_each(r.manifest,'$.graders') g WHERE json_extract(g.value,'$.id')=?)
+         OR EXISTS (SELECT 1 FROM assessments a WHERE a.run=r.id AND json_extract(a.record,'$.graderId')=?)
+      ORDER BY r.created DESC, r.id`).all(id,id)
+      .map(row=>({id:stringValue(row.id),created:stringValue(row.created),title:stringValue(row.title)}));
   }
   async previewQuickBudget(approvedPromptId:string,candidateIds:string[]) {
     if (!Array.isArray(candidateIds) || candidateIds.length > 2 || new Set(candidateIds).size !== candidateIds.length)
@@ -190,7 +222,7 @@ export class Bench {
   list() {
     const datasets = this.db
       .prepare(
-        "SELECT d.id,d.pack,d.name,json_array_length(d.rows) AS count, CASE WHEN d.pack='reference' THEN (SELECT COUNT(*) FROM json_each(d.rows) item WHERE json_extract(item.value,'$.reference') IS NULL AND json_extract(item.value,'$.rubric') IS NULL) ELSE 0 END AS casesWithoutReference,c.version,c.split,c.metadata,c.origin FROM datasets d JOIN dataset_catalog c ON c.dataset_id=d.id ORDER BY d.rowid",
+        "SELECT d.id,d.pack,d.name,json_array_length(d.rows) AS count, CASE WHEN d.pack='reference' THEN (SELECT COUNT(*) FROM json_each(d.rows) item WHERE json_extract(item.value,'$.reference') IS NULL AND json_extract(item.value,'$.rubric') IS NULL) ELSE 0 END AS casesWithoutReference, CASE WHEN d.pack='reference' THEN (SELECT COUNT(*) FROM json_each(d.rows) item WHERE json_extract(item.value,'$.rubric') IS NOT NULL) ELSE 0 END AS casesWithRubric,c.version,c.split,c.metadata,c.origin FROM datasets d JOIN dataset_catalog c ON c.dataset_id=d.id ORDER BY d.rowid",
       )
       .all();
     const runs = this.db
@@ -208,6 +240,8 @@ export class Bench {
       servers: this.servers,
       endpoints: this.endpoints.list(),
       graders: this.graders.list(),
+      generalGraderDefaults:this.configuredGeneralGraders().map(g=>g.id),
+      opikLibraryTemplates,
       opikReady: sdkEnabled(),
       active: this.active?.id ?? null,
       device: os.platform() + " / " + os.arch(),
@@ -294,9 +328,15 @@ export class Bench {
       rows = [{ case_id: "prompt", input: { text: prompt } }];
     }
     const pinnedGraders = original?.graders ?? this.graders.select(graderIds);
+    if (!original && dataset && pack) {
+      const industry=dataset.metadata.industry, scenario=pack.id;
+      if (pinnedGraders.some(g=>!this.graders.appliesToDataset(g,industry,scenario)))
+        throw Error("A selected grader does not apply to this dataset’s industry or scenario.");
+    }
     const hostedDecision = pinnedGraders.some(g => g.type === "decision" && g.decision.provider === "openrouter");
     if (hostedDecision && allowHostedDecision !== true)
       throw Error("Confirm the OpenRouter decision grader and the evidence it will receive for this run.");
+    const defaults = original ? [] : this.automaticGraders(!!pack?.outputSchema);
     if (pack?.kind === "reference") {
       datasetScorer = original?.datasetScorer ?? datasetScorer ?? "selected-graders";
       if (!["selected-graders","exact-reference"].includes(datasetScorer)) throw Error("Choose a reference scoring method.");
@@ -309,7 +349,11 @@ export class Bench {
         const judge=this.servers.flatMap(s=>s.models).find(m=>m.id===caseJudgeId);
         selected.push(caseJudgeSpec(judge));
       }
-      if (datasetScorer === "selected-graders" && !selected.length) throw Error("Choose a grader to evaluate the saved case responses.");
+      const needsIndependentCriteria = rows.some(row=>row.reference == null && !row.rubric);
+      const eligibleBusinessGrader = [...selected,...defaults].some(g=>
+        !g.library?.automatic && !(needsIndependentCriteria && g.type==="opik-metric" && getOpikTemplate(g.metricKey).requiresReference));
+      if (datasetScorer === "selected-graders" && !eligibleBusinessGrader)
+        throw Error("Choose a grader that can evaluate the saved case responses with the available evidence.");
       if (rows.some(r=>r.rubric) && !selected.some(g=>["judge","opik","decision"].includes(g.type)))
         throw Error("Choose a local LLM or Opik judge, or a decision grader, to evaluate the case-level rubrics.");
     } else datasetScorer = pack ? "scenario" : null;
@@ -343,7 +387,7 @@ export class Bench {
       split: rows[0].split ?? null,
       caseIds: rows.map((r) => r.case_id),
       candidates,
-      policyHash: pack ? hash([pack, scorerDigest, datasetScorer, pinnedGraders.map(g=>g.id)]) : null,
+      policyHash: original ? original.policyHash : pack ? hash([pack, scorerDigest, datasetScorer, pinnedGraders.map(g=>g.id)]) : null,
       promptHash: hash(pack ? [effectiveSystem, rows.map(r=>candidateMessages({pack,effectiveSystem},r))] : prompt),
       caseSetHash: hash(rows),
       prompt: mode === "quick" ? prompt ?? null : null,
@@ -374,8 +418,18 @@ export class Bench {
       replayHash: fixture ? hash(replay) : null,
       parentId: parentId || null,
     };
-    const insertRun = () => this.db.prepare("INSERT INTO runs VALUES(?,?,?,?)")
-      .run(id, manifest.created, "queued", JSON.stringify(manifest));
+    const insertRun = () => {
+      if (!original) {
+        const selected = new Set(manifest.graders.map(g=>g.id));
+        manifest.graders = [...manifest.graders, ...defaults.filter(g=>!selected.has(g.id))];
+        // Structural diagnostics are pinned and exported, but do not change the business scoring policy.
+        if (pack && defaults.some(g=>g.type==="opik-metric")) {
+          const quality = manifest.graders.filter(g=>!g.library?.automatic);
+          manifest.policyHash = hash([pack, scorerDigest, datasetScorer, quality.map(g=>g.id)]);
+        }
+      }
+      this.db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(id, manifest.created, "queued", JSON.stringify(manifest));
+    };
     if (mode === "quick") {
       if(!approved)throw Error("Choose an approved Quick compare prompt.");
       this.db.exec("BEGIN IMMEDIATE");
@@ -451,6 +505,7 @@ export class Bench {
             telemetry: null,
           };
           job.partial = { candidateId: c.id, caseId: row.case_id, text: "" };
+          let observedOutput = false;
           try {
             trace.steps.push({
               at: now(),
@@ -458,7 +513,10 @@ export class Bench {
                 ? "Read recorded fixture response"
                 : "Invoke " + c.provider,
             });
-            if (m.fixture) rec.output = JSON.stringify(replay[row.case_id]);
+            if (m.fixture) {
+              rec.output = JSON.stringify(replay[row.case_id]);
+              observedOutput = typeof rec.output === "string";
+            }
             else {
               const decision=decisions.get(c.id)?.get(row.case_id);
               if(!decision || c.provider==="fixture")throw Error("Missing dispatch plan");
@@ -500,11 +558,13 @@ export class Bench {
                 rec.telemetry = { ...response?.telemetry, device_power: await finishPower() };
               }
               rec.output = response.output;
+              observedOutput = true;
+              rec.finishReason = response.finishReason ?? null;
+              rec.reportedFinishReason = response.reportedFinishReason === undefined ? rec.finishReason : response.reportedFinishReason;
               if (m.tokenBudget.inputCap != null && (response.telemetry?.input_tokens ?? 0) > m.tokenBudget.inputCap)
                 throw Error("The runtime reported input usage above the approved cap.");
               if ((response.telemetry?.output_tokens ?? 0) > guardrail.outputReserve)
                 throw Error(`The runtime reported ${response.telemetry.output_tokens} output tokens above its ${guardrail.outputReserve}-token allocation.`);
-              rec.finishReason = response.finishReason ?? null;
               if (rec.finishReason === "length")
                 throw Error(lengthFailure(guardrail, rec.telemetry));
               if (!rec.output.trim())
@@ -536,10 +596,11 @@ export class Bench {
           delete rec.dispatchState;
           trace.finished ??= now();
           saveResult(rec);
-          if (!signal.aborted && !rec.error) {
+          if (!signal.aborted && observedOutput) {
             for (const scorer of m.graders || []) {
               if (signal.aborted) break;
-              const evidence = graderEvidence(m,row,rec);
+              if (rec.error && !scorer.library?.automatic) continue;
+              const evidence = graderEvidence(m,row,rec,scorer.type === "catalog");
               await this.graders.record(scorer,evidence,
                 {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
             }

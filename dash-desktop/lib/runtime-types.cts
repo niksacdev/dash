@@ -96,6 +96,7 @@ export interface InferenceTelemetry {
 export interface InferenceResult {
   output: string;
   finishReason: string | null;
+  reportedFinishReason?: string | null;
   telemetry: InferenceTelemetry;
 }
 export interface RuntimeAdapters {

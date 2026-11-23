@@ -819,9 +819,14 @@ async function render() {
         if (seq !== token) return;
         html = workflowPage("quick");
         break;
-      case "new":
+      case "new":{
+        const selected=workflows.dataset.approved?.datasetId ?? dataset()?.id;
+        const choices=selected ? await api.datasetGraderOptions(selected) : null;
+        if(seq!==token)return;
+        datasetGradingChoices=choices;
         html = workflowPage("dataset");
         break;
+      }
       case "prompts":
         html = promptCatalogPage();
         break;
@@ -859,6 +864,7 @@ async function render() {
       (el) => el.textContent,
     );
     $("#screen").innerHTML = html;
+    if(route==="graders")applyCatalogFilter();
     if (route==="compare") scheduleBudgetPreview();
     if (editing) {
       const field=document.getElementById(editing);

@@ -13,7 +13,7 @@ import {z} from "zod";
 const turns:ChatTurn[] = [{role:"user",content:"Inspect lot K7."},{role:"assistant",content:"Which limits apply?"},{role:"user",content:"10.00 to 10.03 mm. The sample measures 10.04 mm."}];
 const record = {case_id:"qa-1",dataset_version:"1.0",split:"holdout",messages:turns,rubric:"Hold for review with units.",sme_rationale:"Private reason from the SME."};
 
-test("a chat dataset can run against its own case rubric with an empty grader library",async t=>{
+test("a chat dataset can run against its own case rubric with no saved customer grader",async t=>{
   const model:LocalCandidate = {kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
   let candidateCalls=0,judgeCalls=0;
   const b=new Bench(":memory:",{
@@ -64,7 +64,7 @@ test("input-only datasets can use a saved grader as their sole source of success
   const c:LocalCandidate={kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
   const b=new Bench(":memory:",{discover:async()=>[inventory([c])],invoke:async()=>reply("hold")},withoutPower);
   t.after(()=>b.db.close());await b.refresh();
-  const datasetId=b.import("reference","Input only",JSON.stringify({case_id:"01",dataset_version:"1",split:"development",prompt:"Reply hold."}));
+  const datasetId=b.import("reference","Input only",JSON.stringify({case_id:"01",dataset_version:"1",split:"development",prompt:"Reply hold."}),{industry:"Manufacturing",family:"Input only",category:"Routing",source:"Test"});
   assert.equal(present(b.list().datasets.find(d=>d.id===datasetId)).casesWithoutReference,1);
   assert.throws(()=>b.start({mode:"dataset",datasetId,candidateIds:[c.id],caseJudgeId:c.id}),/own success criteria/);
   const grader=b.graders.save({name:"Disposition",category:"Routing",industry:"Manufacturing",type:"exact",criteria:"hold",threshold:1},[]);
@@ -120,7 +120,7 @@ test("action graders leave missing traces unscored and score only supplied agent
   const bench=new Bench(":memory:",{discover:async()=>[inventory([candidate])],invoke:async()=>reply("hold")},withoutPower);
   t.after(()=>bench.db.close());
   await bench.refresh();
-  const datasetId=bench.import("reference","Tool evidence",JSON.stringify({case_id:"1",dataset_version:"1",split:"development",prompt:"Inspect lot K7."}));
+  const datasetId=bench.import("reference","Tool evidence",JSON.stringify({case_id:"1",dataset_version:"1",split:"development",prompt:"Inspect lot K7."}),{industry:"Manufacturing",family:"Tool evidence",category:"Inspection",source:"Test"});
   const graderId=bench.graders.save({name:"Observed lookup and hold",category:"Operations",industry:"Manufacturing",type:"trajectory",criteria:"lookup\nhold",threshold:1},[]);
   const runId=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId]});
   await present(bench.active).done;

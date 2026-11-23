@@ -164,6 +164,7 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
       throw Error(`LM Studio reported ${stats.promptTokensCount ?? "unknown"} input tokens after verifying ${expectedTokens}. The run cannot be scored. Check the model's runtime and template.`);
     return {
       output: result.nonReasoningContent,
+      reportedFinishReason: stats.stopReason,
       finishReason: ["maxPredictedTokensReached", "contextLengthReached"].includes(stats.stopReason) ? "length" : "stop",
       telemetry: {
         latency_ms: Math.round(performance.now() - start),

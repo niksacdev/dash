@@ -1,7 +1,7 @@
 "use strict";
 
 const scorePercent = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) ? (value * 100).toLocaleString(undefined,{maximumFractionDigits:2})+"%" : "Unscored";
-const scoreMethod = (method: UiReportMetric["method"]) => ({"deterministic":"Rule-based check","llm-judge":"LLM judge","opik-judge":"Opik G-Eval","decision-model":"Decision model"}[method] || method);
+const scoreMethod = (method: UiReportMetric["method"]) => ({"deterministic":"Rule-based check","llm-judge":"LLM judge","opik-judge":"Opik G-Eval","opik-metric":"Opik metric","decision-model":"Decision model"}[method] || method);
 function reportCandidateLabel(c: UiReportCandidate, candidates: UiReportCandidate[]) {
   return candidates.some(other=>other.id!==c.id && other.label===c.label)?c.id:c.label;
 }
@@ -19,7 +19,8 @@ function outcomeBenchmarks(report: UiReport) {
   return '<section class="er-outcomes"><h3>Observed outcomes</h3>'+table(["Measure",...report.candidates.map(c=>reportCandidateLabel(c,report.candidates))],rows.map(row=>
     [esc(row.label),...report.candidates.map(c=>{
       const value=row.values.find(v=>v.candidateId===c.id);
-      return value && Number.isFinite(value.count) && value.total>0 ? esc(value.count+" / "+value.total) : "Unmeasured";
+      if (!value || !Number.isFinite(value.count) || !value.total) return "Unmeasured";
+      return esc(value.count+" / "+value.total)+(value.caseIds?.length ? "<details><summary>Cases</summary>"+esc(value.caseIds.join(", "))+"</details>" : "");
     })]))+'</section>';
 }
 function reportAssistance(r: UiReport) {
@@ -53,12 +54,12 @@ function evaluationReport(run: UiRunDetail) {
   const name=winner && reportCandidateLabel(winner,r.candidates);
   const headline=({
     winner:name ? name+" wins" : "Winner recorded", tie:"The models tied", mixed:"The models lead on different measures",
-    ungraded:"No quality verdict", incomplete:"Incomplete comparison", single:"Single-candidate result"
+    unsafe:"Quality winner withheld", ungraded:"No quality verdict", incomplete:"Incomplete comparison", single:"Single-candidate result"
   })[r.verdict] || "Evaluation report";
   return '<section class="er-report" aria-labelledby="er-title" data-verdict="'+esc(r.verdict)+'">'+
     '<div class="er-intro"><small class="er-kicker">Evaluation report</small><h2 id="er-title">'+esc(headline)+'</h2><p>'+esc(r.summary)+'</p></div>'+
     (r.metrics.length?'<div class="er-metrics">'+r.metrics.map((m,i)=>
-      '<article class="er-metric"><div class="er-metric-head"><div><small>'+esc(scoreMethod(m.method))+(m.judge?' · '+esc(m.judge)+(r.candidates.some(c=>c.id===m.judge)?' · also a candidate':''):'')+'</small><h3>'+esc(m.label)+'</h3></div>'+
+      '<article class="er-metric"><div class="er-metric-head"><div><small>'+(m.informational?'Response diagnostic · ':'')+(m.lineage?esc(m.lineage.scope)+' library · ':'')+esc(scoreMethod(m.method))+(m.judge?' · '+esc(m.judge)+(r.candidates.some(c=>c.id===m.judge)?' · also a candidate':''):'')+'</small><h3>'+esc(m.label)+'</h3></div>'+
       '<span>'+esc(m.pairedCases)+' / '+esc(m.totalCases)+' matched cases</span></div>'+
       (m.comparisonIssue?'<p>'+esc(m.comparisonIssue)+'</p>':'')+metricComparisons(m,r.candidates)+
       '<details class="er-evidence" data-report-run="'+esc(run.manifest.id)+'" data-metric-index="'+i+'"><summary>Case scores and rationale</summary><div></div></details></article>').join("")+'</div>':'')+
@@ -79,17 +80,21 @@ document.addEventListener("toggle",e=>{
   const labels=new Map(report.candidates.map(c=>[c.id,reportCandidateLabel(c,report.candidates)]));
   const rows=(metric.caseScores || []).flatMap(c=>c.values.map(v=>{
     const index=indexes.get(JSON.stringify([c.caseId,v.candidateId]));
+    const native=v.opikMetric;
+    const nativeEvidence=native ? '<small>'+esc(native.metricKey)+' · native score '+esc(native.nativeScore)+' · '+esc(native.direction.replaceAll("-"," "))+'</small>' : "";
     const receipt=v.decision;
     const transport=receipt?.provider==="local" ? (receipt.protocol==="mlx-vlm"?"Local MLX-VLM":"Local System One") : "OpenRouter";
     const switchDetail=receipt?.fallbackReason ? " · switched to "+esc(receipt.dispatchedModel)+" ("+esc(receipt.fallbackReason.replaceAll("-"," "))+")" : "";
     const evidence=receipt?.actualModel ? '<small>'+esc(transport)+switchDetail+' · served '+esc(receipt.actualModel)+' · P(yes) '+esc(receipt.probabilityYes)+'</small>' : switchDetail ? '<small>'+esc(transport)+switchDetail+' · no verified response</small>' : '';
     return [index==null?esc(c.caseId):link(esc(c.caseId),"run/"+encodeURIComponent(run.manifest.id)+"/"+index,"link"),
       esc(labels.get(v.candidateId) || v.candidateId), esc(scorePercent(v.score)),
-      receipt?.status==="review"?"Review":v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.reason || "")+(evidence?"<br>"+evidence:"")];
+      receipt?.status==="review"?"Review":v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.reason || "")+(nativeEvidence?"<br>"+nativeEvidence:"")+(evidence?"<br>"+evidence:"")];
   }));
   const target = details.querySelector("div");
   if (!target) return;
-  target.innerHTML=rows.length?table(["Case","Candidate","Score","Result","Evidence"],rows):'<p>No case scores were recorded.</p>';
+  const lineage=metric.lineage;
+  const origin=lineage ? '<p>Family '+esc(lineage.familyId)+' · revision '+esc(metric.id)+(lineage.parentRevisionId?' · derived from '+esc(lineage.parentRevisionId):'')+'</p>' : "";
+  target.innerHTML=origin+(rows.length?table(["Case","Candidate","Score","Result","Evidence"],rows):'<p>No case scores were recorded.</p>');
   details.dataset.loaded="true";
 },true);
 function guardrailDetails(g: UiGuardrail | null | undefined) {

@@ -51,7 +51,7 @@ test("decision grader model changes create immutable revisions that can be reope
   for(const failAt of [-0.1,0.8,0.81])
     assert.throws(()=>graders.save({...definition,decision:{...definition.decision,failAt}},[]));
   assert.throws(()=>graders.save({...definition,requiredEvidence:["goals"]},[]));
-  assert.equal(graders.list().length,2);
+  assert.equal(graders.list().filter(g=>g.library?.scope==="customer").length,2);
 });
 
 test("native pass, fail and review thresholds preserve probabilities separately from binary Opik grades",async t=>{

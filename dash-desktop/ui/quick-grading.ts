@@ -6,7 +6,10 @@ function newQuickGradingPlan(id:string) {
     criteria:"", judgeId:"", threshold:1, error:"", sequence:0};
 }
 function rememberQuickGraders(plan:UiQuickPlan) {
-  if (plan.designed && workflows.quick.approved) writeGraderAttachment("prompt:"+workflows.quick.approved.id,plan.saved,plan.enabled);
+  if (workflows.quick.approved) {
+    plan.designed=true;
+    writeGraderAttachment("prompt:"+workflows.quick.approved.id,plan.saved,plan.enabled);
+  }
 }
 async function loadQuickGrading(approved:UiApproved|null) {
   if (!approved) return;
@@ -23,10 +26,7 @@ async function loadQuickGrading(approved:UiApproved|null) {
       plan.judgeId = options.generated?.judgeId || "";
       plan.threshold = options.generated?.threshold ?? 1;
       if (!plan.designed) plan.enabled = !!plan.judgeId && options.judges.some(j=>j.id===plan.judgeId) && !!plan.criteria;
-      if (!plan.designed && !plan.enabled) {
-        const reusable = options.recommended.find(g=>!["judge","opik","decision"].includes(g.type));
-        if (reusable) plan.saved.add(reusable.id);
-      }
+
     }
     plan.options=options;
     plan.error="";
@@ -59,7 +59,7 @@ function quickGradeStatus() {
   const plan=quickGradePlan(), issue=quickGradeIssue(plan);
   if (issue) return issue;
   const count=(plan?.saved.size || 0) + Number(!!plan?.enabled);
-  if (!plan || !count) return "Ungraded comparison · responses only";
+  if (!plan || !count) return plan?.options?.automatic.length ? "Automatic checks only" : "No graders selected";
   const judge=plan.enabled && plan.options?.judges.find(j=>j.id===plan.judgeId);
   const pinnedJudges=new Set((plan.options?.available || []).filter(g=>plan.saved.has(g.id)).map(g=>g.judge?.id).filter(Boolean));
   if (judge) pinnedJudges.add(judge.id);
@@ -67,22 +67,16 @@ function quickGradeStatus() {
   return count+" active "+(count===1?"grader":"graders") + (judge?" · "+judge.model+" judges both responses":" · scoring both responses") +
     (shared?" · a selected candidate is also a judge":"");
 }
-function graderPick(g:UiGrader,plan:UiQuickPlan,reason?:string) {
-  return '<label class="qc-grade-choice"><input type="checkbox" name="qc-saved-grader" value="'+esc(g.id)+'" '+(plan.saved.has(g.id)?"checked":"")+'><span><strong>'+
-    esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc([graderTypes[g.type],g.industry,decisionTarget(g)].filter(Boolean).join(" · "))+'</small>'+
-    (reason?'<small>'+esc(reason)+'</small>':'')+'</span></label>';
-}
 function quickGradePicker() {
   const plan=quickGradePlan(), options=plan?.options;
   if (!plan || !options || plan.error) return '<section id="qc-grading" class="qc-grading"><h2>Score the responses</h2><p role="status">'+
     esc(plan?.error || "Grading options are loading.")+'</p><button type="button" data-qc-reload>Reload grading options</button>'+(plan?.enabled || plan?.saved.size?'<button type="button" data-qc-clear>Clear graders</button>':'')+'</section>';
-  const recommended=options.recommended || [], recommendedIds=new Set(recommended.map(g=>g.id));
-  const others=options.available.filter(g=>!recommendedIds.has(g.id));
+  const reasons=new Map(options.recommended.map(g=>[g.id,g.reason]));
   const generated=options.generated, judges=options.judges || [];
   const judge=judges.find(j=>j.id===plan.judgeId);
   const unavailable=[...plan.saved].filter(id=>!options.available.some(g=>g.id===id));
   return '<section id="qc-grading" class="qc-grading"><div class="qc-section-title"><h2>Score the responses</h2>'+
-    link("Grader library →","graders","link")+'</div>'+
+    link("Grader library →","graders","link")+'</div>'+automaticChecks(options.automatic)+
     (generated?'<div class="qc-outcome"><div class="qc-section-title"><div><strong>Opik G-Eval outcome rubric</strong><small>'+
       esc(generated.industry)+' · '+(plan.enabled && judge ? esc(judge.model)+' scores both responses':'evaluate the approved measures')+'</small></div><button id="qc-rubric-toggle" type="button" title="'+(plan.enabled?"Disable the suggested judge":"Enable the suggested judge")+'" aria-pressed="'+plan.enabled+'" '+
       'aria-controls="qc-rubric-settings">'+(plan.enabled?"✓ Judge enabled":"Add outcome judge")+'</button></div>'+
@@ -94,8 +88,8 @@ function quickGradePicker() {
         '<label class="field"><span>Pass threshold (0–1)</span><input id="qc-threshold" type="number" min="0" max="1" step="any" required value="'+esc(plan.threshold)+'"></label></div>'+
         '<small>DASH saves this rubric in the grader library when the run starts.</small>':
         '<p class="qc-rubric-preview">'+esc(plan.criteria)+'</p>')+'</div></details></div>':'')+
-    (recommended.length?'<fieldset class="qc-saved"><legend>Recommended saved graders</legend>'+recommended.map(g=>graderPick(g,plan,g.reason)).join("")+'</fieldset>':'')+
-    (others.length?'<details class="qc-saved"><summary>Other compatible graders · '+others.length+'</summary>'+others.map(g=>graderPick(g,plan)).join("")+'</details>':'')+
+    (options.available.length?'<details class="qc-saved"><summary>Optional saved graders · '+plan.saved.size+' selected</summary>'+
+      catalogChoices(options.available,plan.saved,"qc-saved-grader",reasons)+'</details>':'')+
     (unavailable.length?'<button type="button" data-qc-unavailable>Remove unavailable graders</button>':'')+'</section>';
 }
 function updateQuickGradingControls() {
@@ -131,6 +125,8 @@ function handleQuickGradingField(target:EventTarget|null) {
   if (target.name==="qc-saved-grader") {
     if (target instanceof HTMLInputElement && target.checked) plan.saved.add(target.value); else plan.saved.delete(target.value);
     rememberQuickGraders(plan);
+    const summary=target.closest("details.qc-saved")?.querySelector("summary");
+    if(summary)summary.textContent="Optional saved graders · "+plan.saved.size+" selected";
   } else {
     if (target.id==="qc-criteria") plan.criteria=target.value;
     else if (target.id==="qc-threshold") plan.threshold=target.value;

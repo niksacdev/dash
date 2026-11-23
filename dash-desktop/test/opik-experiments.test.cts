@@ -107,7 +107,7 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
       const chunks: Buffer[]=[];
       for await(const chunk of req){assert.ok(Buffer.isBuffer(chunk));chunks.push(chunk);}
       const payload:unknown=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
-      assert.doesNotMatch(JSON.stringify(payload),/dash-synthetic-private|localhost:8181|Private grading instructions/);
+      assert.doesNotMatch(JSON.stringify(payload),/dash-synthetic-private|localhost:8181|Private grading instructions|PRIVATE_CUSTOMER_CATALOG/);
       assert.ok(req.url && req.method);
       const url=new URL(req.url,"http://localhost"), [group,sub,leaf]=url.pathname.replace("/api/v1/private/","").split("/");
       requests.push([req.method,url.pathname]);res.setHeader("Content-Type","application/json");
@@ -362,4 +362,32 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   await new OpikExperiments(bench(db,decision),{env}).sync(decision.manifest.id);
   assert.equal(scores.size,afterDecision);
   assert.deepEqual(seen(lastTrace()),[{...publicPin,dispatchedModel:masked.fallbackModel,fallbackReason:"primary-unavailable",status:"unscored",grader_id:grader.id,grader_version:1}]);
+
+  const copied={type:"exact",judge:null,id:"9".repeat(64),name:"PRIVATE_CUSTOMER_CATALOG inspection policy",version:2,threshold:1,
+    category:"Quality",industry:"Manufacturing",criteria:"PRIVATE_CUSTOMER_CATALOG rubric",
+    library:{scope:"customer",familyId:"/Users/PRIVATE_CUSTOMER_CATALOG/rubrics",parentRevisionId:"8".repeat(64)}} satisfies GraderSpec;
+  const diag={...copied,name:"Completion observed",id:"7".repeat(64),type:"catalog",ruleKey:"completion",ruleVersion:1,
+    library:{scope:"general",automatic:true,familyId:"6".repeat(64)}} satisfies GraderSpec;
+  const catalog:TestRun={...saved,manifest:{...saved.manifest,id:"catalog-grades",datasetScorer:"selected-graders",graders:[copied,diag]}};
+  catalog.assessments=catalog.results.flatMap((result,index)=>[copied,diag].map(g=>{
+    const pass=g.type==="catalog" ? null : index===0;
+    return {id:g.id+index,created:result.trace.started,graderId:g.id,name:g.name,version:g.version,category:g.category,
+      candidate:result.candidateId,caseId:result.caseId,threshold:1,engine:g.type,judge:null,
+      value:pass===null?null:Number(pass),pass,reason:"PRIVATE_CUSTOMER_CATALOG reference and rationale"};
+  }));
+  catalog.report=buildReport({...catalog,partial:null});
+  const synchronized=await new OpikExperiments(bench(db,catalog),{env}).sync(catalog.manifest.id);
+  for (const [i,experiment] of synchronized.experiments.entries()) {
+    const {metadata}=present(experiments.get(experiment.id));
+    const pins=z.array(z.record(str,z.unknown())).parse(metadata.dash_grader_revisions);
+    const child=present(pins.find(p=>p.revision_id===copied.id)),baseline=present(pins.find(p=>p.revision_id===diag.id));
+    assert.match(z.string().parse(child.family_id),/^[0-9a-f]{64}$/);
+    assert.deepEqual([child.scope,child.parent_revision_id,child.version,child.purpose],["customer",copied.library.parentRevisionId,2,"quality"]);
+    assert.deepEqual([baseline.scope,baseline.family_id,baseline.purpose],["general",diag.library.familyId,"diagnostic"]);
+    const item=present([...links.values()].find(item=>item.experiment_id===experiment.id)),trace=present(traces.get(item.trace_id));
+    const judgments=z.array(z.record(str,z.unknown())).parse(trace.metadata.dash_grades);
+    assert.deepEqual(judgments,[{...child,pass:i===0,score:i===0?1:0,status:i===0?"passed":"failed"},{...baseline,pass:null,score:null,status:"unscored"}]);
+    const native=[...scores.values()].filter(s=>s.id===trace.id);
+    assert.deepEqual(native.map(s=>[s.name,s.value]),[["Customer grader ["+copied.id+"]",i===0?1:0]]);
+  }
 });

@@ -28,23 +28,47 @@ function caseJudgePicker(w:UiWorkflow) {
 }
 
 const datasetScorerChoices=new Map<string,string>();
+function datasetScoringMethod(d:UiDataset) {
+  return datasetScorerChoices.get(d.id) || (d.casesWithoutReference || readGraderAttachment("dataset:"+d.id)?.ids.length ? "selected-graders" : "case-judge");
+}
+function referenceScoringIssue() {
+  const d=dataset();
+  if(!d || pack()?.kind!=="reference" || workflows.dataset.approved)return "";
+  const method=datasetScoringMethod(d);
+  if(method==="exact-reference")return d.casesWithoutReference || d.casesWithRubric ? "Exact matching needs a reference answer on every case and no case rubrics." : "";
+  if(method==="case-judge")return d.casesWithoutReference ? "Some cases have no reference or rubric. Use saved graders with their own criteria." : "";
+  const selected=datasetGradeSelection(activeDatasetGraderScope());
+  const graders=[...(datasetGradingChoices?.automatic || []),...(datasetGradingChoices?.available || []).filter(g=>selected.has(g.id))];
+  const meaningful=graders.filter(g=>!(g.type==="catalog" && ["response-present","completion","json-valid"].includes(g.ruleKey || "")));
+  if(d.casesWithRubric && !meaningful.some(g=>["judge","opik","decision"].includes(g.type)))
+    return "Choose a rubric-aware judge to score the case-specific instructions.";
+  if(d.casesWithoutReference && !meaningful.some(g=>g.type!=="field" && g.type!=="trajectory" && g.metricKey!=="hallucination" && !g.requiredEvidence?.length))
+    return "Choose a grader that can score the input and response without a reference, such as Opik Usefulness.";
+  return meaningful.length ? "" : "Choose a saved grader or enable an automatic Opik metric to evaluate these responses.";
+}
+function updateDatasetGradingControls() {
+  const note=document.getElementById("dataset-scoring-issue");
+  if(note){const issue=referenceScoringIssue();note.textContent=issue;note.hidden=!issue;}
+  const go=dashElement("#dataset-models .go-button",HTMLButtonElement);
+  if(go)go.disabled=!canStartDataset();
+}
 function datasetRunPage(w:UiWorkflow) {
   const d=dataset(), scenario=pack(), reference=scenario?.kind==="reference";
   if (!d || !scenario) return '<section class="wf-page"><h1>Dataset run</h1>'+link("Import a dataset →","datasets")+'</section>';
-  const method=datasetScorerChoices.get(d.id) || (d.casesWithoutReference || readGraderAttachment("dataset:"+d.id)?.ids.length ? "selected-graders" : "case-judge");
+  const method=datasetScoringMethod(d),issue=referenceScoringIssue();
   const error=w.error?'<p class="wf-error" role="alert">'+esc(w.error)+'</p>':'';
   return '<section class="wf-page"><div class="wf-title"><h1>Dataset run</h1></div>'+error+
     '<form id="dataset-run-form" class="wf-panel"><h2>Evaluate saved cases</h2>'+pickers()+
     '<div class="wf-section-head"><p>'+esc(d.metadata.family)+' · '+esc(d.metadata.industry)+' · '+esc(d.count)+' cases</p>'+
     link("Inspect prompts and references →","datasets/"+encodeURIComponent(d.id),"link")+'</div>'+
     '<p>'+esc(reference ? "Each model receives the prompt or conversation saved with each case." : "Each model receives the scenario instructions and the input saved with each case.")+
-    (d.casesWithoutReference ? " This snapshot includes input-only cases. Choose a saved grader with its own success criteria.</p>" : " The grader can use the held-out evidence after the model answers.</p>")+
+    (d.casesWithoutReference ? " This snapshot includes input-only cases. These need a grader with its own success criteria.</p>" : " The grader can use the held-out evidence after the model answers.</p>")+
     (reference ? '<label class="field"><span>Scoring method</span><select name="datasetScorer">'+
       opt("case-judge","Use Opik G-Eval on case references and rubrics",method)+
       opt("selected-graders","Use saved graders",method)+opt("exact-reference","Match the reference exactly",method)+'</select></label>'+
       (method==="case-judge" ? caseJudgePicker(w) : '') :
       '<div class="wf-options"><strong>Scenario grader</strong><p>'+esc(scenario.scorer)+' · '+esc(scenario.metrics.join(" · "))+'</p></div>')+
-    graderPicker()+
+    graderPicker()+(reference?'<p id="dataset-scoring-issue" role="status" class="wf-hint" '+(issue?'':'hidden')+'>'+esc(issue)+'</p>':'')+
     '<details class="wf-options"><summary>Token limits</summary><div class="cols">'+
     '<label class="field"><span>Max input tokens</span><input name="inputCap" type="number" min="1" max="1000000" value="'+esc(w.inputCap)+'" placeholder="Automatic"></label>'+
     '<label class="field"><span>Max output tokens</span><input name="outputCap" type="number" min="1" max="1000000" value="'+esc(w.outputCap)+'" placeholder="Automatic"></label></div></details>'+

@@ -32,7 +32,7 @@ export type StoredGuardrail=Omit<Guardrail,LaterGuardrailFields> & Partial<Pick<
 export type StoredMetadata=Omit<DatasetMetadata,"industry"> & {industry?:string};
 export interface TraceStep {at:string; action:string; guardrail?:StoredGuardrail;}
 export interface RunResult {
-  candidateId:string; caseId:string; output:string|null; error:string|null; score:CaseScore|null; finishReason?:string|null;
+  candidateId:string; caseId:string; output:string|null; error:string|null; score:CaseScore|null; finishReason?:string|null; reportedFinishReason?:string|null;
   trace:{id:string;runId:string;candidateId:string;caseId:string;started:string;finished?:string;steps:TraceStep[]};
   telemetry:(Partial<InferenceTelemetry> & {device_power?:StoredPower|null})|null;
   dispatchState?:"pending"|"canceled"|"interrupted";

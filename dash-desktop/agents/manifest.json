@@ -113,8 +113,8 @@
     },
     {
       "id": "grader-designer",
-      "version": 1,
-      "path": "prompts/grader-designer.md"
+      "version": 2,
+      "path": "prompts/grader-designer-v2.md"
     },
     {
       "id": "report-analyzer",
