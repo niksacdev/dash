@@ -1,6 +1,8 @@
 import type { RunManifest,RunResult,RunData } from "./run-types.cjs";
 // Summarize a saved run for inspection without modifying its original scores.
 function classify(manifest:RunManifest, result:RunResult) {
+  if (result.dispatchState==="canceled" || result.dispatchState==="interrupted")
+    return {stage:result.dispatchState==="canceled" ? "Observation canceled" : "Observation interrupted",note:result.error ?? "The final candidate response is unknown."};
   if (result.error) return { stage: "Runtime error", note: result.error };
   if (manifest.mode === "quick")
     return { stage: "Response", note: "Prompt completed" };

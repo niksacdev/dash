@@ -15,11 +15,11 @@ function count(value:unknown):number {
   return value;
 }
 function records(db:DatabaseSync, run:string):ChartSample[] {
-  return db.prepare(`SELECT candidate, json_extract(record,'$.error') IS NOT NULL AS error,
+  return db.prepare(`SELECT candidate, (json_extract(record,'$.error') IS NOT NULL AND json_extract(record,'$.dispatchState') IS NULL) AS error,
     json_extract(record,'$.score.pass') AS pass, json_extract(record,'$.score.review') AS review,
     json_extract(record,'$.telemetry.latency_ms') AS latency, json_extract(record,'$.telemetry.device_power.average_w') AS watts,
     json_extract(record,'$.telemetry.input_tokens') AS input,
-    json_extract(record,'$.telemetry.output_tokens') AS output FROM results WHERE run=?`).all(run).map(r=>({candidate:stringValue(r.candidate),error:numberOrMissing(r.error),pass:numberOrMissing(r.pass),review:numberOrMissing(r.review),latency:numberOrMissing(r.latency),input:numberOrMissing(r.input),output:numberOrMissing(r.output),watts:numberOrMissing(r.watts)}));
+    json_extract(record,'$.telemetry.output_tokens') AS output FROM results WHERE run=? AND json_extract(record,'$.dispatchState') IS NOT 'pending'`).all(run).map(r=>({candidate:stringValue(r.candidate),error:numberOrMissing(r.error),pass:numberOrMissing(r.pass),review:numberOrMissing(r.review),latency:numberOrMissing(r.latency),input:numberOrMissing(r.input),output:numberOrMissing(r.output),watts:numberOrMissing(r.watts)}));
 }
 export function performance(db:DatabaseSync, id:string) {
   const row = db.prepare("SELECT status,manifest FROM runs WHERE id=?").get(id);

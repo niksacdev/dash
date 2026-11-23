@@ -515,7 +515,7 @@ function measures(run:UiRunDetail, candidate:UiModel) {
     ready: scored.filter((r) => r.score?.ready).length,
     unsafe: scored.filter((r) => r.score?.falseAccept).length,
     review: scored.filter((r) => r.score?.review).length,
-    errors: recs.filter((r) => r.error).length,
+    errors: recs.filter((r) => r.error && !r.dispatchState).length,
   };
 }
 async function paired(run:UiRunDetail) {
@@ -585,6 +585,11 @@ async function paired(run:UiRunDetail) {
     "</div>"
   );
 }
+function observationLabel(result:UiResult):string|null {
+  if (result.dispatchState==="canceled") return "Observation canceled";
+  if (result.dispatchState==="interrupted") return "Observation interrupted";
+  return null;
+}
 async function runPage(id:string, record?:string) {
   const run = await api.detail(id),
     m = run.manifest;
@@ -603,7 +608,7 @@ async function runPage(id:string, record?:string) {
       '<div class="row">' +
       tag(
         r.error
-          ? "Runtime error"
+          ? observationLabel(r) ?? "Runtime error"
           : r.score
             ? r.score?.pass
               ? "Passed"
@@ -613,10 +618,10 @@ async function runPage(id:string, record?:string) {
       (m.datasetId ? btn("Rerun case", "rerun") : "") +
       '</div><div class="cols spacer"><div class="panel">' +
       (row ? datasetCaseDetails(row, m.pack) : box("Input", m.prompt)) +
-      '</div><div class="panel"><h3>Candidate output</h3><pre>' +
-      esc(r.output || r.error) +
+      '</div><div class="panel"><h3>' + (r.dispatchState ? "Partial candidate output" : "Candidate output") + '</h3><pre>' +
+      esc(r.output ?? (r.dispatchState ? "No response text was observed." : r.error)) +
       "</pre>" +
-      (r.error ? box("Runtime error", r.error) : "") +
+      (r.error ? box(observationLabel(r) ?? "Runtime error", r.error) : "") +
       (r.score ? box("Score explanation", r.score) : "") +
       '</div></div><details class="card spacer"><summary>Case trace and telemetry</summary>' +
       box("Trace", r.trace) +
@@ -671,6 +676,7 @@ async function runPage(id:string, record?:string) {
                 (live ? "Waiting…" : "No response"),
             ) +
             "</pre>" +
+            (r && observationLabel(r) ? tag(observationLabel(r) ?? "") : "") +
             (r ? link("Inspect trace", "run/" + id + "/" + i, "link") : "") +
             "</article>"
           );
@@ -729,7 +735,7 @@ async function runPage(id:string, record?:string) {
               esc(r.candidateId),
               esc(
                 r.error
-                  ? "Runtime error"
+                  ? observationLabel(r) ?? "Runtime error"
                   : !r.score ? "Grader evaluation" : r.score?.pass
                     ? "Passed"
                     : "Failed check",

@@ -48,6 +48,7 @@ const result=z.object({candidateId:str,caseId:str,output:nullable,error:nullable
   trace:z.object({id:str,runId:str,candidateId:str,caseId:str,started:str,finished:str.optional(),
     steps:z.array(z.object({at:str,action:str,guardrail:guardrail.optional()}).passthrough())}).passthrough(),
   score:z.object({pass:z.boolean(),reasons:z.array(str),ready:z.boolean().optional(),falseAccept:z.boolean().optional(),review:z.boolean().optional(),evaluator:str.optional()}).passthrough().nullable(),
+  dispatchState:z.enum(["pending","canceled","interrupted"]).optional(),
   finishReason:nullable.optional(),telemetry:telemetry.nullable(),guardrail:guardrail.optional(),dispatchedMessages:z.array(turn).optional(),
   inputBudget:z.object({tokens:num,source:str,cap:n}).passthrough().optional(),
 }).passthrough();

@@ -246,4 +246,19 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   await new OpikExperiments(bench(db,failed),{env}).sync("failed-at-dispatch");
   assert.match([...traces.values()].at(-1).metadata.input_provenance,/dispatch may have failed/);
   assert.equal(spans.size,spanCount);
+  const interruptedCase={...saved.results[0],caseId:"lot",dispatchState:"interrupted",output:"Partial reply",score:null,
+    error:"DASH closed after dispatch.",telemetry:null,dispatchedMessages:[{role:"user",content:"Inspect lot 8"}],
+    trace:{...saved.results[0].trace,finished:undefined}};
+  const interrupted={...saved,status:"interrupted",manifest:{...saved.manifest,id:"interrupted-adapter",candidates:[saved.manifest.candidates[0]]},
+    results:[interruptedCase],assessments:[],report:{metrics:[]}};
+  const scoredBeforeInterruption=scores.size;
+  await new OpikExperiments(bench(db,interrupted),{env}).sync(interrupted.manifest.id);
+  const observation=[...traces.values()].at(-1);
+  assert.equal(observation.metadata.dispatch_state,"interrupted");
+  assert.equal(observation.output.partial,true);
+  assert.equal(observation.output.response,"Partial reply");
+  assert.ok(observation.start_time);
+  assert.equal(observation.end_time,undefined);
+  assert.equal([...spans.values()].at(-1).end_time,undefined);
+  assert.equal(scores.size,scoredBeforeInterruption);
 });

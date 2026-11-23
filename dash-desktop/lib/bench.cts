@@ -49,8 +49,15 @@ export class Bench {
   constructor(file:string, readonly adapters:RuntimeAdapters=providers, readonly powerSampler:typeof startPower=startPower) {
     this.db = new DatabaseSync(file);
     this.db.exec(
-      "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, created TEXT, status TEXT, manifest TEXT); CREATE TABLE IF NOT EXISTS results(run TEXT,candidate TEXT,case_id TEXT,record TEXT,PRIMARY KEY(run,candidate,case_id)); CREATE TABLE IF NOT EXISTS datasets(id TEXT PRIMARY KEY,pack TEXT,name TEXT,rows TEXT); UPDATE runs SET status='interrupted' WHERE status IN ('running','queued');",
+      "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, created TEXT, status TEXT, manifest TEXT); CREATE TABLE IF NOT EXISTS results(run TEXT,candidate TEXT,case_id TEXT,record TEXT,PRIMARY KEY(run,candidate,case_id)); CREATE TABLE IF NOT EXISTS datasets(id TEXT PRIMARY KEY,pack TEXT,name TEXT,rows TEXT);",
     );
+    this.db.exec(`BEGIN IMMEDIATE;
+      UPDATE results SET record=json_set(record,'$.dispatchState','interrupted',
+          '$.error','DASH closed after dispatch. The final candidate response is unknown.')
+        WHERE run IN (SELECT id FROM runs WHERE status IN ('running','queued'))
+          AND json_extract(record,'$.dispatchState')='pending';
+      UPDATE runs SET status='interrupted' WHERE status IN ('running','queued');
+      COMMIT;`);
     this.reports = new RunReports(this.db);
     this.packs = loadPacks();
     for (const { pack, rows } of this.packs) if(pack.kind !== "reference")
@@ -389,6 +396,9 @@ export class Bench {
     const signal = job.controller.signal;
     const status = (value:RunStatus) =>
       this.db.prepare("UPDATE runs SET status=? WHERE id=?").run(value, m.id);
+    const writeResult=this.db.prepare(`INSERT INTO results VALUES(?,?,?,?)
+      ON CONFLICT(run,candidate,case_id) DO UPDATE SET record=excluded.record`);
+    const saveResult=(result:RunResult)=>writeResult.run(m.id,result.candidateId,result.caseId,JSON.stringify(result));
     let errors = 0;
     try {
       status("running");
@@ -454,17 +464,34 @@ export class Bench {
               if (inputBudget) rec.inputBudget = { cap: m.tokenBudget.inputCap, tokens: inputBudget.tokens, source: inputBudget.source };
               const finishPower = await this.powerSampler();
               let response;
+              let observing=true;
+              let lastCheckpoint=-Infinity;
               try {
+                signal.throwIfAborted();
                 rec.dispatchedMessages = messages;
+                rec.dispatchState = "pending";
+                saveResult(rec);
                 response = await this.adapters.invoke(c, messages, {
                   signal,
                   apiKey: this.endpoints.keys.get(c.id),
                   maxTokens: guardrail.outputReserve,
                   inputBudget,
                   structured: m.pack?.outputSchema,
-                  onText: (text) => { if (job.partial) job.partial.text = text; },
+                  onText: text => {
+                    if (!observing) return;
+                    if (job.partial) job.partial.text=text;
+                    rec.output=text;
+                    // Store the first visible response and at most one update per second.
+                    const elapsed=performance.now();
+                    if (elapsed-lastCheckpoint>=1000) {
+                      saveResult(rec);
+                      lastCheckpoint=elapsed;
+                    }
+                  },
                 });
+                trace.finished=now();
               } finally {
+                observing=false;
                 rec.telemetry = { ...response?.telemetry, device_power: await finishPower() };
               }
               rec.output = response.output;
@@ -480,8 +507,7 @@ export class Bench {
                   "Provider completed without visible response content.",
                 );
             }
-            if (signal.aborted) break;
-            if (m.pack && m.datasetScorer !== "selected-graders") {
+            if (!signal.aborted && m.pack && m.datasetScorer !== "selected-graders") {
               if (m.datasetScorer === "exact-reference") rec.score = await exactReference(row,rec.output);
               else if(m.pack.kind !== "reference") rec.score = grade(m.pack,row,rec.output);
               trace.steps.push({
@@ -490,11 +516,21 @@ export class Bench {
               });
             }
           } catch (e) {
-            if (signal.aborted) break;
+            if (signal.aborted && !trace.finished) {
+              if (rec.dispatchState==="pending") {
+                rec.dispatchState="canceled";
+                rec.error="Observation canceled after dispatch. The final candidate response is unknown.";
+                trace.steps.push({at:now(),action:"DASH stopped observing this request"});
+                saveResult(rec);
+              }
+              break;
+            }
             errors++;
             rec.error = errorMessage(e);
           }
-          trace.finished = now();
+          delete rec.dispatchState;
+          trace.finished ??= now();
+          saveResult(rec);
           if (!signal.aborted && !rec.error) {
             for (const scorer of m.graders || []) {
               if (signal.aborted) break;
@@ -507,9 +543,6 @@ export class Bench {
                 {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal);
             }
           }
-          this.db
-            .prepare("INSERT INTO results VALUES(?,?,?,?)")
-            .run(m.id, c.id, row.case_id, JSON.stringify(rec));
         }
       if (!m.fixture && !errors && !signal.aborted && typeof this.adapters.reportStage === "function") {
         const completed:RunData = { ...this.detail(m.id), status: "completed" };
@@ -543,7 +576,7 @@ export class Bench {
       status: statusValue(run.status),
       manifest: decodeManifest(run.manifest),
       results: this.db
-        .prepare("SELECT record FROM results WHERE run=? ORDER BY rowid")
+        .prepare("SELECT record FROM results WHERE run=? AND json_extract(record,'$.dispatchState') IS NOT 'pending' ORDER BY rowid")
         .all(id)
         .map((r)=>decodeResult(r.record)),
       assessments: this.graders.recorded(id),

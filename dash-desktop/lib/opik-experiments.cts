@@ -233,7 +233,9 @@ export class OpikExperiments {
         const data=byCase.get(result.caseId);
         if(!data)throw problem("A saved response has no matching source case.");
         const key=prefix+"/case/"+result.caseId, traceId=this.stableId(key+"/trace");
-        const startTime=date(result.trace?.started),endTime=date(result.trace?.finished), tel=result.telemetry || {};
+        const startTime=date(result.trace.started), tel=result.telemetry || {};
+        const unconfirmed=result.dispatchState==="canceled" || result.dispatchState==="interrupted";
+        const endTime=unconfirmed && !result.trace.finished ? undefined : date(result.trace.finished);
         let messages, provenance;
         if(!m.fixture && Array.isArray(result.dispatchedMessages)) {
           messages=result.dispatchedMessages;
@@ -248,11 +250,11 @@ export class OpikExperiments {
             "Reconstructed legacy input; dispatch may have failed" : "Reconstructed from the saved run, case and input optimization";
         }
         const input={messages};
-        const output={response:result.output ?? null,...(result.error && {error:result.error})};
+        const output={response:result.output ?? null,...(unconfirmed && {partial:true}),...(result.error && {error:result.error})};
         const trace:NativeTrace={id:traceId,projectName,name:result.caseId,startTime,endTime,input,output,source:"experiment",
           metadata:{dash_trace_id:result.trace?.id,dash_steps:result.trace?.steps,case_id:result.caseId,candidate_id:candidate.id,
             actual_usage:tel,guardrail:result.guardrail,finish_reason:result.finishReason,fixture:m.fixture,
-            input_provenance:provenance}};
+            input_provenance:provenance,dispatch_state:result.dispatchState}};
         if(typeof tel.first_token_ms==="number" && Number.isFinite(tel.first_token_ms))trace.ttft=tel.first_token_ms;
         traces.push(trace);
         if(!m.fixture && (!result.error || Array.isArray(result.dispatchedMessages) || result.telemetry?.input_tokens!=null)){

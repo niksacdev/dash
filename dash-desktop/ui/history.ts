@@ -7,7 +7,7 @@ async function runPerformance(id: string, loadedRun?: UiRunDetail): Promise<UiPe
     }
   }
   const run = loadedRun || await api.detail(id), m = run.manifest;
-  const records = run.results.map(r => ({candidate:r.candidateId, error:r.error, pass:r.score?.pass,
+  const records = run.results.map(r => ({candidate:r.candidateId, error:r.dispatchState ? null : r.error, pass:r.score?.pass,
     review:r.score?.review, latency:r.telemetry?.latency_ms, input:r.telemetry?.input_tokens,
     output:r.telemetry?.output_tokens, watts:r.telemetry?.device_power?.average_w}));
   return {id, title:m.title,created:m.created,status:run.status,fixture:m.fixture,mode:m.mode,

@@ -35,6 +35,7 @@ export interface RunResult {
   candidateId:string; caseId:string; output:string|null; error:string|null; score:CaseScore|null; finishReason?:string|null;
   trace:{id:string;runId:string;candidateId:string;caseId:string;started:string;finished?:string;steps:TraceStep[]};
   telemetry:(Partial<InferenceTelemetry> & {device_power?:StoredPower|null})|null;
+  dispatchState?:"pending"|"canceled"|"interrupted";
   guardrail?:StoredGuardrail; dispatchedMessages?:ChatTurn[]; inputBudget?:{cap:number|null;tokens:number;source:string};
 }
 export type RunPartial = {candidateId:string;caseId:string;text:string}|{stage:string;text:string};
