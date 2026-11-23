@@ -38,9 +38,14 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   const datasets=new Map(),experiments=new Map(),links=new Map(),traces=new Map(),spans=new Map(),scores=new Map(),requests=[];
   const prompts=new Map(),promptVersions=new Map();
   const versions=new Map(), snapshots=new Map(), changes=[], failures=[];
-  let interrupt=true, loseNextVersion=false, losePrompt=true;
+  let interrupt=true, loseNextVersion=false, losePrompt=true, competingInitializer=true;
+  // The managed local destination presents no API key even when a cloud key exists in the process.
+  const priorKey=process.env.OPIK_API_KEY;
+  process.env.OPIK_API_KEY="isolated-cloud-key";
+  t.after(()=>{if(priorKey===undefined)delete process.env.OPIK_API_KEY;else process.env.OPIK_API_KEY=priorKey;});
   const server=http.createServer(async(req,res)=>{
     try{
+      assert.doesNotMatch(JSON.stringify(req.headers),/isolated-cloud-key/);
       const chunks=[];for await(const c of req)chunks.push(c);
       const body=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
       const url=new URL(req.url,"http://localhost"), [group,sub,leaf]=url.pathname.replace("/api/v1/private/","").split("/");
@@ -64,6 +69,9 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
         if(!leaf)return send(200,datasets.get(sub));
         if(leaf==="versions")return send(200,{content:history,total:history.length});
         if(req.method==="POST"&&url.pathname.endsWith("items/changes")){
+          if(!head && url.searchParams.get("override")!=="true")return send(400,{message:"Use override=true to create the first version without a base."});
+          if(head && body.base_version==null)return send(400,{message:"baseVersion is required when the dataset already has versions."});
+          if(head)assert.notEqual(url.searchParams.get("override"),"true","Every case-changing delta needs an explicit matching base version");
           if((head?.id ?? null)!==body.base_version)return send(409,{message:"stale version"});
           const rows=new Map(snapshots.get(head?.version_hash) || []);
           if(!head && body.added_items?.length)return send(400,{message:"First delta requires an empty base"});
@@ -75,10 +83,16 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
           const version={id:randomUUID(),version_hash:randomUUID(),version_name:"v"+(history.length+1),tags:body.tags,
             metadata:body.metadata,items_total:rows.size};
           history.unshift(version);snapshots.set(version.version_hash,rows);if(head)changes.push(body);
+          if(!head && competingInitializer){
+            // Another publisher established the empty base after DASH listed the family.
+            competingInitializer=false;
+            return send(400,{message:"baseVersion is required when the dataset already has versions."});
+          }
           // The server can accept the atomic version write and lose its response.
           if(loseNextVersion){loseNextVersion=false;return send(503,{message:"version stored"});}
           return send(201,version);
         }
+        if(leaf==="items" && url.pathname.endsWith("experiments/items") && url.searchParams.has("experiment_ids") && url.searchParams.has("dataset_version"))return send(400,{message:"dataset_version can only be used when experiment_ids is omitted"});
         if(leaf==="items"&&url.pathname.endsWith("experiments/items"))return send(200,{content:[...snapshots.get(head.version_hash).values()].map(item=>({...item,experiment_items:[...links.values()].filter(link=>link.dataset_item_id===item.id)}))});
         if(leaf==="items"){
           const rows=snapshots.get(url.searchParams.get("version"));assert.ok(rows,"read by immutable hash");
@@ -232,4 +246,19 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   await new OpikExperiments(bench(db,failed),{env}).sync("failed-at-dispatch");
   assert.match([...traces.values()].at(-1).metadata.input_provenance,/dispatch may have failed/);
   assert.equal(spans.size,spanCount);
+  const interruptedCase={...saved.results[0],caseId:"lot",dispatchState:"interrupted",output:"Partial reply",score:null,
+    error:"DASH closed after dispatch.",telemetry:null,dispatchedMessages:[{role:"user",content:"Inspect lot 8"}],
+    trace:{...saved.results[0].trace,finished:undefined}};
+  const interrupted={...saved,status:"interrupted",manifest:{...saved.manifest,id:"interrupted-adapter",candidates:[saved.manifest.candidates[0]]},
+    results:[interruptedCase],assessments:[],report:{metrics:[]}};
+  const scoredBeforeInterruption=scores.size;
+  await new OpikExperiments(bench(db,interrupted),{env}).sync(interrupted.manifest.id);
+  const observation=[...traces.values()].at(-1);
+  assert.equal(observation.metadata.dispatch_state,"interrupted");
+  assert.equal(observation.output.partial,true);
+  assert.equal(observation.output.response,"Partial reply");
+  assert.ok(observation.start_time);
+  assert.equal(observation.end_time,undefined);
+  assert.equal([...spans.values()].at(-1).end_time,undefined);
+  assert.equal(scores.size,scoredBeforeInterruption);
 });

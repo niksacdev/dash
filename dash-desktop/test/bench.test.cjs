@@ -192,3 +192,92 @@ test("duplicate JSON keys cannot silently replace a conflicting financial fact",
   assert.ok(score.reasons.includes("Duplicate output key: value"));
   assert.equal(grade(pack, rows[0], correct).pass, true);
 });
+
+test("stop retains every observed fragment; reopening an in-flight checkpoint preserves only confirmed evidence", async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"dash-interruption-"));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const candidate={id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  const first="First fragment.";
+  let notify;
+  const dispatched=new Promise(resolve=>{notify=resolve;});
+  let observed;
+  let calls=0;
+  const bench=new Bench(":memory:",{
+    discover:async()=>[{models:[candidate]}],
+    invoke:async(_candidate,messages,{signal,onText})=>{
+      calls++;
+      observed=messages;
+      onText(first);
+      onText(first+" Second fragment.");
+      notify();
+      return new Promise((_,reject)=>signal.addEventListener("abort",()=>reject(Error("stopped")),{once:true}));
+    }
+  },async()=>async()=>null);
+  t.after(()=>bench.db.close());
+  await bench.refresh();
+  const rows=["first","second"].map(case_id=>({case_id,dataset_version:"1",split:"development",prompt:"Name a color.",reference:"blue"}));
+  const datasetId=bench.import("reference","Interrupted QA",rows.map(x=>JSON.stringify(x)).join("\n"));
+  const id=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],datasetScorer:"exact-reference"});
+  const done=bench.active.done;
+  await dispatched;
+  assert.equal(bench.detail(id).results.length,0);
+  const image=path.join(dir,"checkpoint.sqlite");
+  bench.db.prepare("VACUUM INTO ?").run(image);
+  bench.stop(id);
+  await done;
+  const saved=bench.exportRun(id), canceled=saved.results[0];
+  assert.equal(calls,1);
+  assert.equal(saved.status,"canceled");
+  assert.equal(saved.results.length,1);
+  assert.equal(canceled.dispatchState,"canceled");
+  assert.equal(canceled.output,first+" Second fragment.");
+  assert.deepEqual(canceled.dispatchedMessages,observed);
+  assert.equal(canceled.trace.finished,undefined);
+  assert.equal(canceled.score,null);
+  assert.equal(saved.report.verdict,"incomplete");
+  assert.equal(saved.assessments.length,0);
+  assert.ok(canceled.trace.steps.find(s=>s.action==="DASH stopped observing this request"));
+  assert.equal(require("../lib/performance.cjs").performance(bench.db,id).candidates[0].errors,0);
+
+  const recovery=new Bench(image,{discover:async()=>[],invoke:()=>assert.fail("must not dispatch an interrupted request")});
+  const reopened=recovery.exportRun(id);
+  recovery.db.close();
+  assert.equal(reopened.status,"interrupted");
+  assert.equal(reopened.results.length,1);
+  const interrupted=reopened.results[0];
+  assert.equal(interrupted.dispatchState,"interrupted");
+  assert.deepEqual(interrupted.dispatchedMessages,observed);
+  // Wall-clock scheduling can produce a second valid checkpoint before the snapshot.
+  assert.ok([first,canceled.output].includes(interrupted.output));
+  assert.equal(interrupted.trace.finished,undefined);
+  assert.equal(interrupted.trace.id,canceled.trace.id);
+  assert.equal(interrupted.score,null);
+  assert.equal(interrupted.telemetry,null);
+  assert.equal(reopened.assessments.length,0);
+  assert.equal(reopened.report.verdict,"incomplete");
+  const again=new Bench(image);
+  t.after(()=>again.db.close());
+  assert.deepEqual(again.exportRun(id).results,reopened.results);
+});
+
+test("stopping during the initial sensor read records no candidate dispatch", async t => {
+  let sampling,finishSample;
+  const started=new Promise(resolve=>{sampling=resolve;});
+  const candidate={id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  const bench=new Bench(":memory:",{discover:async()=>[{models:[candidate]}],invoke:()=>assert.fail("canceled before dispatch")},async()=>{
+    sampling();
+    await new Promise(resolve=>{finishSample=resolve;});
+    return async()=>null;
+  });
+  t.after(()=>bench.db.close());
+  await bench.refresh();
+  const id=bench.start({mode:"dataset",datasetId:bench.list().datasets[0].id,candidateIds:[candidate.id]});
+  const done=bench.active.done;
+  await started;
+  bench.stop(id);
+  finishSample();
+  await done;
+  const saved=bench.exportRun(id);
+  assert.equal(saved.status,"canceled");
+  assert.equal(saved.results.length,0);
+});

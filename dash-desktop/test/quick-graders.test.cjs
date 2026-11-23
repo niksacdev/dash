@@ -88,7 +88,9 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   ]);
   for (const e of judgeCalls) {
     assert.deepEqual(e.evaluationBrief,{objective:approved.objective,metrics:approved.metrics,criteria:approved.requirements});
-    assert.equal(e.input,approved.prompt);
+    assert.deepEqual(e.input,[{role:"user",content:approved.prompt}]);
+    assert.equal(e.inputSource,"recorded-dispatch");
+    assert.equal(Object.hasOwn(e,"trajectory"),false);
   }
   assert.equal(bench.quickGraderOptions(approved.id).recommended[0].id,pinned.id);
   const reuse = start({graderIds:[pinned.id],outcomeRubric});
