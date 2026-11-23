@@ -1,0 +1,330 @@
+import { test } from "node:test";
+import assert = require("node:assert/strict");
+import * as http from "node:http";
+import { once } from "node:events";
+import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { z } from "zod";
+import { buildReport } from "../lib/run-report.cjs";
+import { OpikExperiments } from "../lib/opik-experiments.cjs";
+import type { SavedRun, SyncStore } from "../lib/opik-types.cjs";
+import type { RunManifest, RunResult, StoredGuardrail, DatasetCase, DatasetMetadata } from "../lib/run-types.cjs";
+import { isCaseRow } from "../lib/run-types.cjs";
+import type { Candidate } from "../lib/runtime-types.cjs";
+import { referencePack } from "../lib/evaluation-cases.cjs";
+import { loadPacks } from "../lib/packs.cjs";
+import { decodeApprovedPrompt } from "../lib/outcome-contracts.cjs";
+import { present } from "./runtime-fixtures.cjs";
+
+const guardrail: StoredGuardrail = {status:"unverified", requestedInputCap:256, requestedOutputCap:80,
+  inputTokens:null, contextTokens:null, outputReserve:80, source:"Synthetic", message:""};
+const metadata: DatasetMetadata = {family:"Incoming inspection",industry:"Manufacturing",category:"QA",
+  tags:["synthetic"],source:"test",changeNote:"",parentId:null};
+type TestRun = SavedRun & { cases: DatasetCase[]; sourceCases?: DatasetCase[] };
+
+function savedRun() {
+  const cases=[{case_id:"lot",prompt:"Inspect lot 8",reference:"hold",sme_rationale:"Synthetic reference note",dataset_version:"2",split:"development"}] satisfies DatasetCase[];
+  const candidates=["a","b"].map((id): Candidate=>({id,model:"model-"+id,provider:"lmstudio",kind:"model",revision:"r1"}));
+  const started="2026-01-01T00:00:00.000Z";
+  const manifest={id:"saved-run",title:"Inspection",mode:"dataset",pack:{...referencePack,title:"Inspection"},
+    format:1,created:started,prompt:null,promptHash:"prompt-hash",split:"development",
+    device:{arch:"arm64",platform:"darwin",release:"qa"},parameters:{},animation:false,
+    approvedPromptId:null,datasetId:"snapshot-v2",datasetVersion:"2",datasetScorer:"exact-reference",industry:"Manufacturing",datasetMetadata:metadata,
+    caseIds:["lot"],caseSetHash:"hash",candidates,graders:[],fixture:false,policyHash:"policy",tokenBudget:{inputCap:256,outputCap:80}} satisfies RunManifest;
+  const results=candidates.map((c,i): RunResult=>({caseId:"lot",candidateId:c.id,output:i?"release":"hold",error:null,
+    telemetry:{input_tokens:30,output_tokens:4,latency_ms:100,device_power:{average_w:5,source:"Synthetic",scope:"Whole device",samples:1}},
+    guardrail,score:{pass:i===0,reasons:i?["Incorrect disposition"]:[]},
+    trace:{id:randomUUID(),runId:manifest.id,candidateId:c.id,caseId:"lot",started,finished:"2026-01-01T00:00:00.100Z",
+      steps:[{at:started,action:"Invoke local"}]}}));
+  const saved={status:"completed" as const,manifest,results,assessments:[],cases,partial:null};
+  return {...saved,report:present(buildReport(saved))};
+}
+
+function bench(db: DatabaseSync, saved: TestRun): SyncStore {
+  return {db, dataset: id=>({id, name:"Inspection cases", pack:present(saved.manifest.pack).id,
+    metadata:{...metadata,...saved.manifest.datasetMetadata}, rows:saved.sourceCases ?? saved.cases}),
+    exportRun:id=>{assert.equal(id,saved.manifest.id);return saved;}};
+}
+
+function approved(id:string, familyId:string, version:number, mode:RunManifest["mode"], prompt:string, requirements:string[]=[]) {
+  return decodeApprovedPrompt({id,familyId,version,mode,prompt,requirements,domain:"Manufacturing",objective:"Inspect an incoming lot."});
+}
+
+// The isolated service observes JSON on the wire, after the official SDK has serialized it.
+const str = z.string(), fields = z.record(str,z.unknown());
+const datasetWire = z.looseObject({id:str,name:str});
+const wireRow = z.looseObject({data:fields}), editedRow = wireRow.extend({id:str});
+const deltaWire = z.looseObject({base_version:str.nullable(),tags:z.array(str),metadata:fields.optional(),
+  deleted_ids:z.array(str).default([]),added_items:z.array(wireRow).default([]),edited_items:z.array(editedRow).default([])});
+const experimentWire = z.looseObject({id:str,name:str,status:str,dataset_version_id:str,
+  metadata:z.looseObject({token_budget:z.looseObject({outputCap:z.number()})}),
+  experiment_scores:z.array(z.unknown()).optional(),prompt_versions:z.array(z.object({id:str})).optional()});
+const updatedExperiment = z.looseObject({status:str,experiment_scores:z.array(z.unknown())});
+const linkWire = z.looseObject({id:str,experiment_id:str,dataset_item_id:str,trace_id:str});
+const traceWire = z.looseObject({id:str,start_time:str,end_time:str.optional(),
+  input:z.looseObject({messages:z.array(z.object({role:str,content:str}))}),
+  output:z.looseObject({partial:z.boolean().optional(),response:str.nullable()}),
+  metadata:z.looseObject({actual_usage:z.looseObject({latency_ms:z.number().optional()}),input_provenance:str,dispatch_state:str.optional()})});
+const spanWire = z.looseObject({id:str,type:str,usage:z.looseObject({total_tokens:z.number().optional()}).optional(),end_time:str.optional()});
+const scoreWire = z.looseObject({id:str,name:str,value:z.number()});
+const promptRequest = z.looseObject({name:str,version:z.looseObject({id:str,template:str})});
+interface MockVersion {id:string;version_hash:string;version_name:string;tags:string[];metadata?:Record<string,unknown>;items_total:number}
+
+test("Opik status remains offline and unconfigured unless the DASH destination is explicit",()=>{
+  const db=new DatabaseSync(":memory:"), run=savedRun();
+  try{
+    const svc=new OpikExperiments(bench(db,run),{env:{OPIK_API_KEY:"secret",OPIK_URL_OVERRIDE:"https://example.org/api"},makeApi:()=>assert.fail("offline")});
+    assert.deepEqual(svc.status(run.manifest.id),{configured:false,error:undefined});
+    assert.throws(()=>svc.sync(run.manifest.id),/DASH_OPIK_API_URL/);
+    const enabled=new OpikExperiments(bench(db,{...run,status:"running"}),{env:{DASH_OPIK_API_URL:"http://127.0.0.1/api"},makeApi:()=>assert.fail("running")});
+    return assert.rejects(enabled.sync(run.manifest.id),/finish before syncing/);
+  } finally{db.close();}
+});
+
+test("actual SDK syncs saved traces and scores into native version-pinned experiments and resumes a lost write acknowledgement",async t=>{
+  const datasets=new Map<string,z.infer<typeof datasetWire>>(), experiments=new Map<string,z.infer<typeof experimentWire>>();
+  const links=new Map<string,z.infer<typeof linkWire>>(), traces=new Map<string,z.infer<typeof traceWire>>();
+  const spans=new Map<string,z.infer<typeof spanWire>>(), scores=new Map<string,z.infer<typeof scoreWire>>();
+  const requests: [string,string][] = [], failures: string[] = [];
+  const prompts=new Map<string,string>(), promptVersions=new Map<string,z.infer<typeof promptRequest>["version"]>();
+  const versions=new Map<string,MockVersion[]>(), snapshots=new Map<string,Map<string,z.infer<typeof editedRow>>>();
+  const changes: z.infer<typeof deltaWire>[] = [];
+  const lastTrace = () => present([...traces.values()].at(-1));
+  const historyFor = (datasetId:string) => present(versions.get(datasetId));
+  const rowsFor = (datasetId:string) => present(snapshots.get(historyFor(datasetId)[0].version_hash));
+  let interrupt=true, loseNextVersion=false, losePrompt=true, competingInitializer=true;
+  // The managed local destination presents no API key even when a cloud key exists in the process.
+  const priorKey=process.env.OPIK_API_KEY;
+  process.env.OPIK_API_KEY="isolated-cloud-key";
+  t.after(()=>{if(priorKey===undefined)delete process.env.OPIK_API_KEY;else process.env.OPIK_API_KEY=priorKey;});
+  const server=http.createServer(async(req,res)=>{
+    try{
+      assert.doesNotMatch(JSON.stringify(req.headers),/isolated-cloud-key/);
+      const chunks: Buffer[]=[];
+      for await(const chunk of req){assert.ok(Buffer.isBuffer(chunk));chunks.push(chunk);}
+      const payload:unknown=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
+      assert.ok(req.url && req.method);
+      const url=new URL(req.url,"http://localhost"), [group,sub,leaf]=url.pathname.replace("/api/v1/private/","").split("/");
+      requests.push([req.method,url.pathname]);res.setHeader("Content-Type","application/json");
+      function send(status:number,value?:unknown){res.writeHead(status);res.end(value===undefined?undefined:JSON.stringify(value));}
+      if(group==="prompts" && sub==="versions"){
+        if(req.method==="GET")return promptVersions.has(leaf)?send(200,promptVersions.get(leaf)):send(404,{message:"unknown prompt version"});
+        if(req.method==="POST"){
+          const body=promptRequest.parse(payload);
+          if(!prompts.has(body.name))prompts.set(body.name,randomUUID());
+          assert.ok(!promptVersions.has(body.version.id));assert.ok(!JSON.stringify(body).includes("PRIVATE_BLUEPRINT"));
+          const version={...body.version,prompt_id:prompts.get(body.name),commit:randomUUID().slice(0,8),version_number:"v"+(promptVersions.size+1)};
+          promptVersions.set(version.id,version);
+          if(losePrompt){losePrompt=false;return send(503,{message:"write committed"});}
+          return send(201,version);
+        }
+      }
+      if(group==="datasets"){
+        if(req.method==="POST"&&!sub){const body=datasetWire.parse(payload);datasets.set(body.id,body);versions.set(body.id,[]);return send(201);}
+        if(!datasets.has(sub))return send(404,{message:"missing"});
+        const history=historyFor(sub), head=history[0];
+        if(!leaf)return send(200,datasets.get(sub));
+        if(leaf==="versions")return send(200,{content:history,total:history.length});
+        if(req.method==="POST"&&url.pathname.endsWith("items/changes")){
+          const body=deltaWire.parse(payload);
+          if(!head && url.searchParams.get("override")!=="true")return send(400,{message:"Use override=true to create the first version without a base."});
+          if(head && body.base_version==null)return send(400,{message:"baseVersion is required when the dataset already has versions."});
+          if(head)assert.notEqual(url.searchParams.get("override"),"true","Every case-changing delta needs an explicit matching base version");
+          if((head?.id ?? null)!==body.base_version)return send(409,{message:"stale version"});
+          const rows=new Map(head ? present(snapshots.get(head.version_hash)) : []);
+          if(!head && body.added_items?.length)return send(400,{message:"First delta requires an empty base"});
+          for(const id of body.deleted_ids || [])rows.delete(id);
+          for(const item of body.added_items || []){const id=randomUUID();rows.set(id,{...item,id});}
+          for(const item of body.edited_items || []){
+            const was=rows.get(item.id);assert.ok(was);rows.set(item.id,{...was,data:{...was.data,...item.data}});
+          }
+          const version={id:randomUUID(),version_hash:randomUUID(),version_name:"v"+(history.length+1),tags:body.tags,
+            metadata:body.metadata,items_total:rows.size};
+          history.unshift(version);snapshots.set(version.version_hash,rows);if(head)changes.push(body);
+          if(!head && competingInitializer){
+            // Another publisher established the empty base after DASH listed the family.
+            competingInitializer=false;
+            return send(400,{message:"baseVersion is required when the dataset already has versions."});
+          }
+          // The server can accept the atomic version write and lose its response.
+          if(loseNextVersion){loseNextVersion=false;return send(503,{message:"version stored"});}
+          return send(201,version);
+        }
+        if(leaf==="items" && url.pathname.endsWith("experiments/items") && url.searchParams.has("experiment_ids") && url.searchParams.has("dataset_version"))return send(400,{message:"dataset_version can only be used when experiment_ids is omitted"});
+        if(leaf==="items"&&url.pathname.endsWith("experiments/items"))return send(200,{content:[...rowsFor(sub).values()].map(item=>({...item,experiment_items:[...links.values()].filter(link=>link.dataset_item_id===item.id)}))});
+        if(leaf==="items"){
+          const rows=snapshots.get(present(url.searchParams.get("version")));assert.ok(rows,"read by immutable hash");
+          return send(200,{content:[...rows.values()],total:rows.size});
+        }
+      }
+      if(group==="experiments"){
+        if(req.method==="POST"&&!sub){const body=experimentWire.parse(payload);experiments.set(body.id,body);return send(201);}
+        if(req.method==="POST"&&sub==="items"){
+          const body=z.object({experiment_items:z.array(linkWire)}).parse(payload);
+          if(body.experiment_items.every(item=>links.has(item.id)))return send(409,{message:"existing stable item ID"});
+          for(const item of body.experiment_items)links.set(item.id,item);
+          if(interrupt){interrupt=false;return send(503,{message:"write committed, response lost"});}
+          return send(204);
+        }
+        if(!experiments.has(sub)) return send(404,{message:"missing"});
+        if(req.method==="GET")return send(200,experiments.get(sub));
+        if(req.method==="PATCH"){Object.assign(present(experiments.get(sub)),updatedExperiment.parse(payload));return send(204);}
+      }
+      if(group==="traces"&&sub==="batch"){for(const item of z.object({traces:z.array(traceWire)}).parse(payload).traces)traces.set(item.id,item);return send(204);}
+      if(group==="spans"&&sub==="batch"){for(const item of z.object({spans:z.array(spanWire)}).parse(payload).spans)spans.set(item.id,item);return send(204);}
+      if(group==="traces"&&sub==="feedback-scores"){for(const score of z.object({scores:z.array(scoreWire)}).parse(payload).scores)scores.set(score.id+"/"+score.name,score);return send(204);}
+      throw Error("Unexpected SDK request "+req.method+" "+url.pathname);
+    }catch(e){failures.push(e instanceof Error ? e.message : String(e));res.statusCode=500;res.end("{}");}
+  });
+  server.listen(0,"127.0.0.1");await once(server,"listening");
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const temp=fs.mkdtempSync(path.join(os.tmpdir(),"dash-opik-test-")), file=path.join(temp,"jobs.sqlite");
+  t.after(()=>fs.rmSync(temp,{recursive:true,force:true}));
+  const endpoint=server.address();assert.ok(endpoint && typeof endpoint==="object");
+  const saved=savedRun(),env={DASH_OPIK_API_URL:"http://127.0.0.1:"+endpoint.port+"/api",OPIK_WORKSPACE:"test",OPIK_PROJECT_NAME:"QA"};
+  let db=new DatabaseSync(file);
+  t.after(()=>db.close());
+  let svc=new OpikExperiments(bench(db,saved),{env});
+  const beforeSync=svc.status(saved.manifest.id);assert.ok(beforeSync.configured);
+  assert.equal(beforeSync.state,"ready");
+  assert.equal(requests.length,0);
+  const first=svc.sync(saved.manifest.id);
+  assert.equal(svc.sync(saved.manifest.id),first);
+  await assert.rejects(first,/503/);
+  const afterFailure=svc.status(saved.manifest.id);assert.ok(afterFailure.configured);
+  assert.equal(afterFailure.state,"partial");
+  db.close();db=new DatabaseSync(file);svc=new OpikExperiments(bench(db,saved),{env});
+  const receipt=await svc.sync(saved.manifest.id);
+  assert.deepEqual(failures,[]);
+  const firstVersion=historyFor(receipt.datasetId)[0],version=firstVersion.id,items=rowsFor(receipt.datasetId);
+  assert.equal(receipt.versionId,version);assert.equal(receipt.experiments.length,2);
+  assert.deepEqual([datasets.size,items.size,experiments.size,traces.size,spans.size,links.size,scores.size],[1,1,2,2,2,2,2]);
+  assert.equal([...items.values()][0].data.sme_rationale,"Synthetic reference note");
+  for(const e of experiments.values()){
+    assert.equal(e.dataset_version_id,version);assert.equal(e.status,"completed");assert.equal(e.metadata.token_budget.outputCap,80);
+    assert.equal(e.experiment_scores?.length,1);
+  }
+  for(const e of links.values()){assert.ok(experiments.has(e.experiment_id));assert.ok(items.has(e.dataset_item_id));assert.ok(traces.has(e.trace_id));}
+  for(const trace of traces.values()){
+    assert.deepEqual(trace.input.messages,[{role:"user",content:"Inspect lot 8"}]);
+    assert.ok(trace.start_time);assert.ok(trace.end_time);
+    assert.equal(trace.metadata.actual_usage.latency_ms,100);
+    assert.doesNotMatch(JSON.stringify(trace.input),/Synthetic reference/);
+  }
+  assert.deepEqual([...scores.values()].map(s=>s.value).sort(),[0,1]);
+  for(const span of spans.values()){assert.equal(span.usage?.total_tokens,34);assert.equal(span.type,"llm");}
+  assert.ok([...traces.values()].every(t=>t.metadata.input_provenance.includes("Reconstructed")));
+  const before=requests.length;
+  assert.deepEqual(await svc.sync(saved.manifest.id),receipt);
+  assert.equal(requests.length,before);
+  // Another saved run of the same snapshot shares the dataset/version, with independent experiments.
+  const second: TestRun={...saved,manifest:{...saved.manifest,id:"next-saved-run",datasetMetadata:{...saved.manifest.datasetMetadata,family:"INCOMING INSPECTION"}},
+    results:saved.results.map(r=>({...r,dispatchedMessages:[{role:"user",content:"Actual saved adapter payload"}]}))};
+  let next=await new OpikExperiments(bench(db,second),{env}).sync(second.manifest.id);
+  assert.equal(next.datasetId,receipt.datasetId);assert.equal(next.versionId,receipt.versionId);
+  assert.equal(datasets.size,1);assert.equal(experiments.size,4);
+  assert.equal(next.datasetName,receipt.datasetName);
+  assert.equal(lastTrace().input.messages[0].content,"Actual saved adapter payload");
+  assert.equal(lastTrace().metadata.input_provenance,"Recorded adapter request");
+  const nextRows=[{...saved.cases[0],dataset_version:"3",reference:"NEW",sme_rationale:null},
+    {case_id:"new",dataset_version:"3",split:"development",prompt:"New case",reference:"HOLD"}].map(row=>{assert.ok(isCaseRow(row));return row;});
+  const updated={...saved,cases:[nextRows[0]],sourceCases:nextRows,
+    manifest:{...saved.manifest,id:"v3-subset",datasetVersion:"3",datasetId:"snapshot-v3",datasetMetadata:{...saved.manifest.datasetMetadata,changeNote:"Add new case"}}};
+  // A case rerun publishes its complete dataset snapshot but only its observed responses.
+  loseNextVersion=true;
+  const v3Service=new OpikExperiments(bench(db,updated),{env});
+  await assert.rejects(v3Service.sync(updated.manifest.id),/503/);
+  const v3=await v3Service.sync(updated.manifest.id);
+  assert.equal(v3.datasetId,receipt.datasetId);assert.notEqual(v3.versionId,version);assert.equal(v3.caseCount,2);
+  assert.deepEqual(v3.experiments.map(e=>e.traces),[1,1]);assert.equal(changes.length,2);
+  assert.equal(changes[1].edited_items[0].id,[...items.keys()][0]);assert.equal(changes[1].added_items.length,1);
+  const v3Rows=rowsFor(receipt.datasetId);
+  assert.equal([...v3Rows.values()][0].data.expected_output,"NEW");
+  assert.equal([...items.values()][0].data.expected_output,"hold");
+  const v4Data=[{...nextRows[0],dataset_version:"4",prompt:"Changed prompt"}];
+  const v4={...updated,cases:v4Data,sourceCases:v4Data,manifest:{...updated.manifest,id:"v4",datasetId:"snapshot-v4",datasetVersion:"4"}};
+  await new OpikExperiments(bench(db,v4),{env}).sync(v4.manifest.id);
+  assert.equal(changes[2].deleted_ids.length,1);assert.equal(historyFor(receipt.datasetId).length,4);
+  const old={...saved,manifest:{...saved.manifest,id:"another-run-on-v2"}};
+  next=await new OpikExperiments(bench(db,old),{env}).sync(old.manifest.id);
+  assert.equal(next.versionId,version);assert.equal(changes.length,3);
+  assert.ok(next.experiments.every(e=>present(experiments.get(e.id)).dataset_version_id===version));
+  for(const field of ["industry","family","pack"]){
+    const separate: TestRun={...old,manifest:{...old.manifest,id:"unrelated-"+field}};
+    if(field==="pack")separate.manifest.pack={...old.manifest.pack,id:"different"};
+    else if(field==="family")separate.manifest.datasetMetadata={...old.manifest.datasetMetadata,family:"other"};
+    else separate.manifest.industry="Financial Services";
+    const receipt2=await new OpikExperiments(bench(db,separate),{env}).sync(separate.manifest.id);
+    assert.notEqual(receipt2.datasetId,receipt.datasetId);
+  }
+  // Quick comparisons have no imported dataset and must retain the operator-approved prompt.
+  const quick: TestRun={...saved,manifest:{...saved.manifest,id:"saved-quick",mode:"quick",pack:null,datasetId:null,
+    caseIds:["prompt"],prompt:"Review the supplied QA result.",fixture:false},cases:[],report:{...saved.report,metrics:[]},
+    results:saved.results.map(r=>({...r,caseId:"prompt",score:null}))};
+  next=await new OpikExperiments(bench(db,quick),{env}).sync(quick.manifest.id);
+  assert.notEqual(next.datasetId,receipt.datasetId);
+  const quickItems=rowsFor(next.datasetId);
+  assert.equal([...quickItems.values()][0].data.prompt,quick.manifest.prompt);
+  assert.equal(next.experiments[0].scores,0);assert.equal(next.experiments[1].scores,0);
+  assert.equal(lastTrace().input.messages[0].content,quick.manifest.prompt);
+  const snapshotCount=historyFor(next.datasetId).length;
+  const promptFamily={...quick,manifest:{...quick.manifest,id:"prompt-v1",approvedPromptId:"p1",approvedPrompt:approved("p1","catalog-family",1,"quick",present(quick.manifest.prompt),["PRIVATE_BLUEPRINT"])}};
+  assert.equal(promptVersions.size,0);
+  await assert.rejects(new OpikExperiments(bench(db,promptFamily),{env}).sync(promptFamily.manifest.id),/503/);
+  const p1=await new OpikExperiments(bench(db,promptFamily),{env}).sync(promptFamily.manifest.id);
+  const revised={...promptFamily,manifest:{...promptFamily.manifest,id:"prompt-v2",prompt:"New approved prompt",approvedPromptId:"p2",approvedPrompt:approved("p2","catalog-family",2,"quick","New approved prompt")}};
+  const p2=await new OpikExperiments(bench(db,revised),{env}).sync(revised.manifest.id);
+  assert.equal(p1.datasetId,p2.datasetId);assert.notEqual(p1.versionId,p2.versionId);
+  assert.equal(prompts.size,1);assert.equal(promptVersions.size,2);
+  assert.equal(present(p1.promptVersion).promptId,present(p2.promptVersion).promptId);assert.notEqual(present(p1.promptVersion).id,present(p2.promptVersion).id);
+  assert.equal(present(promptVersions.get(present(p1.promptVersion).id)).template,quick.manifest.prompt);
+  assert.equal(present(promptVersions.get(present(p2.promptVersion).id)).template,"New approved prompt");
+  for(const v of [p1,p2])for(const e of v.experiments)assert.deepEqual(present(experiments.get(e.id)).prompt_versions,[{id:present(v.promptVersion).id}]);
+  const prior={...promptFamily,manifest:{...promptFamily.manifest,id:"later-p1"}};
+  const priorReceipt=await new OpikExperiments(bench(db,prior),{env}).sync(prior.manifest.id);
+  assert.equal(promptVersions.size,2);assert.equal(present(priorReceipt.promptVersion).id,present(p1.promptVersion).id);
+  assert.notEqual(p1.datasetId,next.datasetId);assert.equal(historyFor(next.datasetId).length,snapshotCount);
+
+  const compactedRow: DatasetCase={case_id:"compact",input:{message:"keep  spaces"},source_locator:"loc",dataset_version:"1",split:"development"};
+  const structured=loadPacks().map(p=>p.pack).find(pack=>pack.kind!=="reference");assert.ok(structured);
+  const compacted: TestRun={...saved,cases:[compactedRow],manifest:{...saved.manifest,id:"compacted",pack:{...structured,id:"compact",system:"Existing system"},effectiveSystem:"Pinned effective system",
+    caseIds:["compact"],datasetId:"compact-source",candidates:[saved.manifest.candidates[0]]},results:[
+      {...saved.results[0],caseId:"compact",guardrail:{...guardrail,inputOptimization:{status:"compacted",charactersSaved:2}}},
+    ],report:{...saved.report,metrics:[]}};
+  compacted.manifest.approvedPromptId="dataset-p1";
+  compacted.manifest.approvedPrompt=approved("dataset-p1","inspection",1,"dataset",present(compacted.manifest.effectiveSystem),["PRIVATE_BLUEPRINT"]);
+  const measured=await new OpikExperiments(bench(db,compacted),{env}).sync("compacted");
+  assert.equal(present(promptVersions.get(present(measured.promptVersion).id)).template,compacted.manifest.effectiveSystem);
+  assert.equal(present(measured.promptVersion).variant,"dataset-system");
+  assert.equal(lastTrace().input.messages[0].content,"Pinned effective system");
+  assert.deepEqual(z.object({input:z.unknown()}).parse(JSON.parse(lastTrace().input.messages[1].content)).input,compactedRow.input);
+  const fixture={...saved,manifest:{...saved.manifest,id:"fixture",fixture:true}};
+  const spanCount=spans.size;
+  await new OpikExperiments(bench(db,fixture),{env}).sync("fixture");
+  assert.match(lastTrace().metadata.input_provenance,/no inference request/);
+  assert.equal(spans.size,spanCount);
+  const failed: TestRun={...quick,status:"failed",manifest:{...quick.manifest,id:"failed-at-dispatch"},results:[
+    {...quick.results[0],output:null,telemetry:null,error:"runtime unavailable"},
+  ]};
+  await new OpikExperiments(bench(db,failed),{env}).sync("failed-at-dispatch");
+  assert.match(lastTrace().metadata.input_provenance,/dispatch may have failed/);
+  assert.equal(spans.size,spanCount);
+  const interruptedCase: RunResult={...saved.results[0],caseId:"lot",dispatchState:"interrupted",output:"Partial reply",score:null,
+    error:"DASH closed after dispatch.",telemetry:null,dispatchedMessages:[{role:"user",content:"Inspect lot 8"}],
+    trace:{...saved.results[0].trace,finished:undefined}};
+  const interrupted: TestRun={...saved,status:"interrupted",manifest:{...saved.manifest,id:"interrupted-adapter",candidates:[saved.manifest.candidates[0]]},
+    results:[interruptedCase],assessments:[],report:{...saved.report,metrics:[]}};
+  const scoredBeforeInterruption=scores.size;
+  await new OpikExperiments(bench(db,interrupted),{env}).sync(interrupted.manifest.id);
+  const observation=lastTrace();
+  assert.equal(observation.metadata.dispatch_state,"interrupted");
+  assert.equal(observation.output.partial,true);
+  assert.equal(observation.output.response,"Partial reply");
+  assert.ok(observation.start_time);
+  assert.equal(observation.end_time,undefined);
+  assert.equal(present([...spans.values()].at(-1)).end_time,undefined);
+  assert.equal(scores.size,scoredBeforeInterruption);
+});

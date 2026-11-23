@@ -1,29 +1,50 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const { DatabaseSync } = require("node:sqlite");
-const { OutcomeWorkflow, contractHash } = require("../lib/outcome-workflow.cjs");
+import {test,type TestContext} from "node:test";
+import assert = require("node:assert/strict");
+import { DatabaseSync } from "node:sqlite";
+import {OutcomeWorkflow,contractHash,type DesignContext} from "../lib/outcome-workflow.cjs";
+import type {PlannerAdapters,PlanningAttempt} from "../lib/planner-routing.cjs";
+import type {LocalCandidate,ModelCandidate,ChatTurn} from "../lib/runtime-types.cjs";
+import {z} from "zod";
+const planSchema=z.object({properties:z.record(z.string(),z.unknown()),required:z.array(z.string())});
+const expertBrief=z.object({title:z.string(),metrics:z.array(z.string()),requirements:z.array(z.string())});
+const review=z.object({omitted:z.number(),supplementSource:z.string().optional()});
+const attempts=z.array(z.object({status:z.string(),provider:z.string(),revision:z.string().nullable().optional(),reason:z.string().optional(),fallbackReason:z.string().optional()}));
+interface PlannerCall {candidate:ModelCandidate; messages:ChatTurn[]; structured:z.infer<typeof planSchema>; signal:AbortSignal}
+interface ReplyFields {title?:string;domain?:string;metrics?:string[];requirements?:string[];prompt?:string}
+interface FixtureOptions {
+  inventory?:(Omit<LocalCandidate,"provider"> & {provider:string;endpoint?:string})[];
+  reply?:(result:ReplyFields)=>string|null;
+}
+import {inventory as runtimeInventory,reply as inferenceReply} from "./runtime-fixtures.cjs";
+const runtime=runtimeInventory([]);
 
-const model = { model:"lfm3-planner", provider:"lmstudio", loaded:true, parameterSize:"8B" };
+
+const model:LocalCandidate = {kind:"model",id:"test/lfm3-planner",model:"lfm3-planner", provider:"lmstudio", loaded:true, parameterSize:"8B" };
 const expert = { title:"Review incoming lots", metrics:["Correct drawing revisions per cited revision"], requirements:["Cite the drawing revision."] };
 const quick = { mode:"quick", objective:"Flag out-of-tolerance parts for the inspector." };
 const pack = { id:"inspection", title:"Receiving inspection", system:"Inspect a part.", outputSchema:{type:"object"}, metrics:["False releases"] };
 const context = { pack, datasetId:"snapshot-1", version:"3", split:"holdout", industry:"Manufacturing" };
 const dataset = { ...quick, mode:"dataset", datasetId:"snapshot-1" };
 
-function fixture(t, options = {}) {
+function fixture(t:TestContext, options:FixtureOptions = {}) {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
-  const calls = [];
-  const adapters = {
-    discover:async () => [{ models:options.inventory || [model] }],
+  const calls:PlannerCall[] = [];
+  const adapters:PlannerAdapters = {
+    discover:async () => [{...runtime,models:[model]}],
     invoke:async (candidate, messages, { structured, signal }) => {
-      calls.push({ candidate, messages, structured, signal });
-      const schema = structured.properties;
+      const decoded=planSchema.parse(structured);
+      calls.push({candidate,messages,structured:decoded,signal});
+      const schema=decoded.properties;
       const result = schema.domain ? { domain:"Manufacturing" } :
         schema.requirements ? expert : { prompt:"Check the source drawing, record units, and explain any inspection referral." };
-      return { output:options.reply?.(result) ?? JSON.stringify(result) };
+      return inferenceReply(options.reply?.(result) ?? JSON.stringify(result));
     },
   };
+  if (options.inventory) {
+    // Include inconsistent and hosted advertisements to exercise the runtime-discovery boundary.
+    t.mock.method(adapters,"discover",async()=>[{...runtime,models:options.inventory}]);
+  }
   return { db, adapters, calls, work:new OutcomeWorkflow(db, adapters) };
 }
 
@@ -37,7 +58,7 @@ test("the router selects the domain and the two local domain roles prepare a reu
   const expertMessage = calls[1].messages[0].content;
   assert.match(expertMessage, /[Mm]anufacturing/);
   assert.match(expertMessage, /nist\.gov/);
-  const implementationBrief = JSON.parse(calls[2].messages[1].content);
+  const implementationBrief=z.object({expertBrief,outputCap:z.number(),inputCap:z.number(),metrics:z.array(z.string())}).parse(JSON.parse(calls[2].messages[1].content));
   assert.deepEqual(implementationBrief.expertBrief, expert);
   assert.equal(implementationBrief.outputCap, 80);
   assert.equal(implementationBrief.inputCap, 600);
@@ -45,7 +66,7 @@ test("the router selects the domain and the two local domain roles prepare a reu
   assert.match(draft.prompt, /Flag out-of-tolerance parts/);
   assert.equal(draft.domainSource, "inferred");
   assert.equal(draft.domain, "Manufacturing");
-  assert.equal(draft.agents.length, 2);
+  assert.equal(draft.agents?.length, 2);
   assert.equal(draft.datasetId, null);
   assert.deepEqual(work.list(), []);
 
@@ -57,7 +78,7 @@ test("the router selects the domain and the two local domain roles prepare a reu
   assert.equal(saved.requestedMetrics, request.metrics);
   assert.equal(saved.version, 1);
   assert.equal(saved.familyId, saved.id);
-  assert.equal(saved.designer.model, "lfm3-planner");
+  assert.equal(saved.designer?.model, "lfm3-planner");
   assert.deepEqual(work.get(saved.id), saved);
 });
 
@@ -67,18 +88,23 @@ test("suggestions use the domain expert and edited measures reach the implemente
   assert.equal(calls.length, 2);
   assert.deepEqual(s.criteria, expert.requirements);
   assert.deepEqual(work.list(), []);
-  assert.equal(work.drafts.size, 0);
+  const drafts:unknown=Object.getOwnPropertyDescriptor(work,"drafts")?.value;
+  assert.ok(drafts instanceof Map);
+  assert.equal(drafts.size, 0);
   const measures = {metrics:["Incorrect releases per 100 inspected lots"],criteria:["Route missing revisions to quality review."]};
   const draft = await work.design({...quick,suggestionId:s.id,measures});
   assert.equal(calls.length, 3);
-  const brief = JSON.parse(calls.at(-1).messages[1].content);
+  const last=calls.at(-1);
+  assert.ok(last);
+  const rawBrief:unknown=JSON.parse(last.messages[1].content);
+  const brief=z.object({metrics:z.array(z.string()),expertBrief}).parse(rawBrief);
   assert.deepEqual(brief.metrics, measures.metrics);
   assert.deepEqual(brief.expertBrief.requirements, measures.criteria);
-  assert.doesNotMatch(JSON.stringify(brief), /Cite the drawing revision/);
+  assert.doesNotMatch(JSON.stringify(rawBrief), /Cite the drawing revision/);
   const p = work.approve({draftId:draft.draftId,prompt:draft.prompt});
   assert.deepEqual(p.metrics, measures.metrics);
   assert.deepEqual(p.requirements, measures.criteria);
-  assert.equal(p.suggestions.designer.model, model.model);
+  assert.equal(z.object({designer:z.object({model:z.string()})}).parse(p.suggestions).designer.model, model.model);
   await assert.rejects(work.design({...quick,objective:"Perform a reconciliation.",suggestionId:s.id,measures}), /Suggest Metrics again/);
   await assert.rejects(work.design({...dataset,suggestionId:s.id,measures},context), /Suggest Metrics again/);
 });
@@ -89,7 +115,7 @@ test("dataset drafting uses two real stages and only the public task contract", 
   const draft = await work.design(dataset, dirty);
   assert.equal(calls.length, 2);
   for (const call of calls) {
-    const publicTask = JSON.parse(call.messages[1].content).dataset;
+    const {dataset:publicTask}=z.object({dataset:z.record(z.string(),z.unknown())}).parse(JSON.parse(call.messages[1].content));
     assert.equal(publicTask.system, pack.system);
     assert.equal(publicTask.version, undefined);
     assert.equal(publicTask.datasetId, undefined);
@@ -97,8 +123,8 @@ test("dataset drafting uses two real stages and only the public task contract", 
   assert.doesNotMatch(JSON.stringify(calls), /SECRET_/);
   assert.equal(draft.contractHash, contractHash(pack));
   assert.equal(draft.packId, pack.id);
-  assert.equal(draft.dataset.version, "3");
-  assert.deepEqual(draft.dataset.outputSchema, pack.outputSchema);
+  assert.equal(z.object({version:z.string()}).parse(draft.dataset).version, "3");
+  assert.deepEqual(z.object({outputSchema:z.record(z.string(),z.unknown())}).parse(draft.dataset).outputSchema, pack.outputSchema);
   assert.equal(draft.domainSource, "dataset");
   assert.notEqual(contractHash({...pack, system:"Changed."}), draft.contractHash);
   await assert.rejects(work.design({...dataset, domain:"Financial Services"}, context), /domain assigned/);
@@ -132,6 +158,7 @@ test("admin edits are versioned, checked for conflicts, and take effect on later
   const roles = work.roles();
   assert.equal(roles.length, 6);
   const original = roles.find(r => r.domain === "Manufacturing" && r.role === "expert");
+  assert.ok(original);
   const before = await work.design(dataset, context);
   const edit = {...original, expectedVersion:original.version, instructions:"Inspect the lot using the custom inspection guide."};
   const next = work.saveRole(edit);
@@ -139,10 +166,10 @@ test("admin edits are versioned, checked for conflicts, and take effect on later
   assert.equal(next.version, 2);
   assert.throws(() => work.saveRole(edit), /changed/);
   const after = await work.design(dataset, context);
-  assert.equal(after.agents.find(a => a.role === "expert").hash, next.hash);
+  assert.equal(after.agents?.find(a => a.role === "expert")?.hash, next.hash);
   assert.match(calls[2].messages[0].content, /custom inspection guide/);
   const savedBefore = work.approve({draftId:before.draftId,prompt:before.prompt});
-  assert.equal(savedBefore.agents.find(a => a.role === "expert").hash, original.hash);
+  assert.equal(savedBefore.agents?.find(a => a.role === "expert")?.hash, original.hash);
 });
 
 test("offline or malformed responses do not generate or approve a substitute", async t => {
@@ -166,7 +193,7 @@ test("Financial Services suggestions need no title and reuse the objective for a
     assert.deepEqual(suggested.criteria, ["Each accepted claim cites its filing."]);
     const draft = await work.design({...request,suggestionId:suggested.id});
     assert.equal(draft.title, request.objective);
-    assert.deepEqual(draft.planningAttempts.map(a=>a.status), ["succeeded","succeeded"]);
+    assert.deepEqual(attempts.parse(draft.planningAttempts).map(a=>a.status), ["succeeded","succeeded"]);
   }
 });
 
@@ -182,8 +209,8 @@ test("a repetitive implementer retries locally with changed instructions and exc
   assert.match(calls[2].messages[0].content, /Correct the previous generation/);
   assert.doesNotMatch(calls[2].messages[0].content, /part_id, part_id/);
   assert.doesNotMatch(draft.prompt, /part_id/);
-  assert.match(draft.planningAttempts[1].reason, /repeated/);
-  assert.deepEqual(draft.planningAttempts.map(a=>a.status), ["succeeded","failed","succeeded"]);
+  assert.match(attempts.parse(draft.planningAttempts)[1].reason || "", /repeated/);
+  assert.deepEqual(attempts.parse(draft.planningAttempts).map(a=>a.status), ["succeeded","failed","succeeded"]);
 });
 
 test("failure of either role falls back directly to the configured OpenAI endpoint with accurate provenance", async t => {
@@ -193,26 +220,29 @@ test("failure of either role falls back directly to the configured OpenAI endpoi
       if (failingRole === "implementer" && result.prompt) return "invalid output";
       return null;
     }});
-    const urls = [], events = [];
+    const urls:string[] = [], events:PlanningAttempt[] = [];
     const work = new OutcomeWorkflow(db, adapters, {
       openaiFallback:() => ({model:"configured-openai",apiKey:"test-session-value",endpoint:"https://unapproved.invalid"}),
       fetch:async (url,init) => {
-        urls.push(url);
+        urls.push(String(url));
+        assert.ok(init && typeof init.body === "string");
         assert.equal(init.redirect, "error");
-        assert.equal(init.headers.Authorization, "Bearer test-session-value");
-        const body = JSON.parse(init.body);
+        assert.equal(new Headers(init.headers).get("Authorization"), "Bearer test-session-value");
+        const body=z.object({store:z.boolean()}).parse(JSON.parse(init.body));
         assert.equal(body.store, false);
         assert.doesNotMatch(init.body, /test-session-value|part_id, part_id|PRIVATE_DATASET_GOLD/);
         const output = failingRole === "expert" ? expert : {prompt:"Inspect the source drawing and explain any referral."};
         return Response.json({model:"configured-openai-snapshot",choices:[{message:{content:JSON.stringify(output)},finish_reason:"stop"}]});
       },
     });
-    const draft = await work.design(dataset, {...context, gold:"PRIVATE_DATASET_GOLD", onStage:e=>events.push(e)});
+    const privateContext:DesignContext & {gold:string}={...context,gold:"PRIVATE_DATASET_GOLD",onStage:e=>events.push(e)};
+    const draft = await work.design(dataset,privateContext);
     assert.deepEqual(urls, ["https://api.openai.com/v1/chat/completions"]);
     assert.equal(calls.length, 3);
-    assert.equal(draft[ failingRole === "expert" ? "expertDesigner" : "designer"].provider, "openai");
-    assert.equal(draft[ failingRole === "expert" ? "designer" : "expertDesigner"].provider, "lmstudio");
-    const hosted = draft.planningAttempts.find(a=>a.provider==="openai");
+    assert.equal(z.object({provider:z.string()}).parse(draft[failingRole === "expert" ? "expertDesigner" : "designer"]).provider, "openai");
+    assert.equal(z.object({provider:z.string()}).parse(draft[failingRole === "expert" ? "designer" : "expertDesigner"]).provider, "lmstudio");
+    const hosted=attempts.parse(draft.planningAttempts).find(a=>a.provider==="openai");
+    assert.ok(hosted);
     assert.equal(hosted.status, "succeeded");
     assert.equal(hosted.revision, "configured-openai-snapshot");
     assert.ok(hosted.fallbackReason);
@@ -230,6 +260,7 @@ test("unconfigured hosted models and loaded Gemma cannot become planners", async
 test("invalid metrics and incomplete instructions never become catalogue entries", async t => {
   const {work} = fixture(t,{reply:() => JSON.stringify({metrics:["part_id"],requirements:["—"]})});
   await assert.rejects(work.design({...quick,domain:"Financial Services"},{}, "suggest"), error => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /meaningful/);
     assert.doesNotMatch(error.message, /\.\./);
     return true;
@@ -256,10 +287,10 @@ test("unwritten inspection policies are removed before the implementer sees the 
   const d = await work.design({mode:"quick",domain:"Manufacturing",objective});
   assert.ok(d.prompt.startsWith(objective));
   assert.match(d.prompt,/Cite the supplied measurement and its stated limit/);
-  assert.equal(d.criteriaReview.omitted,2);
-  assert.equal(d.guidanceReview.omitted,2);
-  assert.equal(d.criteriaReview.supplementSource,"DASH built-in manufacturing inspection check");
-  assert.equal(d.guidanceReview.supplementSource,d.criteriaReview.supplementSource);
+  assert.equal(review.parse(d.criteriaReview).omitted,2);
+  assert.equal(review.parse(d.guidanceReview).omitted,2);
+  assert.equal(review.parse(d.criteriaReview).supplementSource,"DASH built-in manufacturing inspection check");
+  assert.equal(review.parse(d.guidanceReview).supplementSource,review.parse(d.criteriaReview).supplementSource);
   assert.doesNotMatch(calls[1].messages[1].content,/0\.01|typical boundary/);
   assert.doesNotMatch(d.prompt,/0\.01|pass rate|typical boundary/i);
 });

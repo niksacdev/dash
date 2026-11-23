@@ -1,5 +1,9 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
+import { test } from "node:test";
+import assert = require("node:assert/strict");
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 const manager = import("../scripts/local-opik.mjs");
 
 test("local setup accepts local Docker sockets and rejects remote engines", async () => {
@@ -26,11 +30,12 @@ test("only the loopback frontend is exposed, images are pinned, and usage report
 
 test("the readiness check requires both the frontend and an Opik project page and refuses redirects", async () => {
   const { healthy } = await manager;
-  function gateway(body, mime, frontend = "healthy\n") {
-    return async (url, options) => {
-      assert.equal(new URL(url).origin, "http://127.0.0.1:51734");
-      assert.equal(options.redirect, "error");
-      return url.endsWith("/health") ? new Response(frontend) :
+  function gateway(body: string, mime: string, frontend = "healthy\n"): typeof fetch {
+    return async (input, options) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      assert.equal(url.origin, "http://127.0.0.1:51734");
+      assert.equal(options?.redirect, "error");
+      return url.pathname === "/health" ? new Response(frontend) :
         new Response(body, {headers: {"Content-Type": mime}});
     };
   }
@@ -43,8 +48,6 @@ test("the readiness check requires both the frontend and an Opik project page an
 
 test("verified public files are readable inside containers, repaired offline and kept on download failure", async t => {
   const { cachePublicFile } = await manager;
-  const { createHash } = require("node:crypto");
-  const fs = require("node:fs"), path = require("node:path"), os = require("node:os");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "dash-opik-config-"));
   t.after(() => fs.rmSync(root, {recursive:true, force:true}));
   const file = path.join(root,"probe.xml"), good = Buffer.from("<config/>");

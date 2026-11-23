@@ -6,7 +6,7 @@
   "main": "dist/main.cjs",
   "scripts": {
     "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.ui.json && node dist/scripts/assets.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.ui.json",
+    "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.ui.json && tsc --noEmit -p tsconfig.tests.json",
     "start": "npm run build && electron .",
     "test": "npm run build:test && node --test dist/test/*.test.cjs",
     "test:desktop": "npm run build:test && electron dist/test/desktop-smoke.cjs",
@@ -16,7 +16,8 @@
     "opik:start": "node --experimental-strip-types scripts/local-opik.mts start",
     "opik:status": "node --experimental-strip-types scripts/local-opik.mts status",
     "opik:stop": "node --experimental-strip-types scripts/local-opik.mts stop",
-    "build:test": "npm run build && node dist/scripts/assets.mjs --tests-only"
+    "build:test": "npm run build && tsc -p tsconfig.tests.json",
+    "docs:check": "node --experimental-strip-types scripts/check-docs.mts"
   },
   "engines": {
     "node": ">=22.13"

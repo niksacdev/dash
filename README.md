@@ -53,11 +53,14 @@ Run history preserves prompt versions, selected models, grader versions and meas
 
 ## Development
 
-From `dash-desktop/`, the compiler checks the renderer and main process separately. To build and run all desktop checks:
+From `dash-desktop/`, the compiler checks the renderer, main process, and test suite with strict TypeScript. To build and run all desktop checks:
 
 ```sh
+npm run docs:check
 npm run check
 ```
+
+Tests and fixtures are authored in TypeScript. The compiler emits CommonJS into the ignored `dist/` directory for Node and Electron. A production build clears the compiled test harness. New G-Eval graders use Opik's TypeScript SDK. The optional Python bridge preserves the evaluator for older grader revisions on machines configured for it.
 
 The desktop tests run Electron against isolated temporary profiles. The workflow test simulates model transport and exercises the approval, inference, scoring and report paths. Live model quality and hardware power readings depend on the device and runtime.
 

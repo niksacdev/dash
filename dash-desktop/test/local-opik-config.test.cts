@@ -1,9 +1,9 @@
-const {test} = require("node:test");
-const assert = require("node:assert/strict");
-const {mkdtempSync, writeFileSync, rmSync} = require("node:fs");
-const {tmpdir} = require("node:os");
-const {join} = require("node:path");
-const {localOpikEnvironment} = require("../lib/local-opik-config.cjs");
+import { test } from "node:test";
+import assert = require("node:assert/strict");
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { localOpikEnvironment } from "../lib/local-opik-config.cjs";
 
 test("a successful DASH-managed setup selects only the fixed loopback destination", t=>{
   const dir=mkdtempSync(join(tmpdir(),"dash-local-opik-"));

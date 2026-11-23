@@ -1,41 +1,46 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const { DatabaseSync } = require("node:sqlite");
-const { Bench } = require("../lib/bench.cjs");
-const { PlannerSettings } = require("../lib/planner-settings.cjs");
-const { referencePack, exactReference, graderEvidence } = require("../lib/evaluation-cases.cjs");
-const { parseDataset } = require("../lib/packs.cjs");
-const { opikJudgeRequest } = require("./opik-judge-fixture.cjs");
-const turns = [{role:"user",content:"Inspect lot K7."},{role:"assistant",content:"Which limits apply?"},{role:"user",content:"10.00 to 10.03 mm. The sample measures 10.04 mm."}];
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { Bench } from "../lib/bench.cjs";
+import { PlannerSettings } from "../lib/planner-settings.cjs";
+import { referencePack, exactReference, graderEvidence } from "../lib/evaluation-cases.cjs";
+import { parseDataset } from "../lib/packs.cjs";
+import { opikJudgeRequest } from "./opik-judge-fixture.cjs";
+import { inventory,reply,withoutPower,present } from "./runtime-fixtures.cjs";
+import type { ChatTurn,LocalCandidate } from "../lib/runtime-types.cjs";
+import type { RunResult } from "../lib/run-types.cjs";
+import {z} from "zod";
+const turns:ChatTurn[] = [{role:"user",content:"Inspect lot K7."},{role:"assistant",content:"Which limits apply?"},{role:"user",content:"10.00 to 10.03 mm. The sample measures 10.04 mm."}];
 const record = {case_id:"qa-1",dataset_version:"1.0",split:"holdout",messages:turns,rubric:"Hold for review with units.",sme_rationale:"Private reason from the SME."};
 
 test("a chat dataset can run against its own case rubric with an empty grader library",async t=>{
-  const model = {id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  const model:LocalCandidate = {kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
   let candidateCalls=0,judgeCalls=0;
   const b=new Bench(":memory:",{
-    discover:async()=>[{models:[model]}],
+    discover:async()=>[inventory([model])],
     invoke:async(c,m,o)=>{
       const evaluation=opikJudgeRequest(m);
-      if (evaluation?.stage==="geval-steps") return {output:"Compare the reading and units against the case limits."};
+      if (evaluation?.stage==="geval-steps") return reply("Compare the reading and units against the case limits.");
       if (evaluation?.stage==="geval-score") {
-        assert.equal(o.structured.properties.score.maximum,10);
+        const schema=z.object({properties:z.object({score:z.object({maximum:z.number()})})}).parse(o.structured);
+        assert.equal(schema.properties.score.maximum,10);
         const evidence=evaluation.evidence;
         assert.deepEqual(evidence.input,turns);
         assert.equal(evidence.inputSource,"recorded-dispatch");
         assert.equal(Object.hasOwn(evidence,"trajectory"),false);
         assert.equal(evidence.sme_rationale,record.sme_rationale);
         assert.equal(evidence.rubric,record.rubric);
-        judgeCalls++; return {output:'{"score":10,"reason":"Identified the out-of-tolerance sample."}'};
+        judgeCalls++; return reply('{"score":10,"reason":"Identified the out-of-tolerance sample."}');
       }
-      assert.deepEqual(m,turns); candidateCalls++; return {output:"Hold the lot for review."};
+      assert.deepEqual(m,turns); candidateCalls++; return reply("Hold the lot for review.");
     }
-  },async()=>async()=>null);
+  },withoutPower);
   t.after(()=>b.db.close());
   await b.refresh();
   const ds=b.import("reference","QA rubric cases",JSON.stringify(record));
   assert.throws(()=>b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],datasetScorer:"exact-reference"}),/Exact matching/);
   const id=b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],caseJudgeId:model.id});
-  await b.active.done;
+  await present(b.active).done;
   const saved=b.exportRun(id);
   assert.equal(saved.status,"completed",saved.manifest.error);
   assert.deepEqual(saved.results[0].dispatchedMessages,turns);
@@ -44,25 +49,26 @@ test("a chat dataset can run against its own case rubric with an empty grader li
   const [rubric]=saved.manifest.graders;
   assert.equal(rubric.type,"opik");
   assert.equal(rubric.version,2);
-  assert.match(rubric.opikEngine,/^opik-js@/);
+  assert.match(present(rubric.opikEngine),/^opik-js@/);
   assert.equal(saved.assessments[0].evaluator,rubric.opikEngine);
+  assert.ok(saved.report);
   assert.ok(saved.report.metrics.some(m=>m.method==="opik-judge"));
   assert.equal(saved.report.verdict,"single");
   const rerun=b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],parentId:id,caseId:record.case_id});
-  await b.active.done;
+  await present(b.active).done;
   assert.deepEqual(b.detail(rerun).manifest.graders,saved.manifest.graders);
   assert.deepEqual([candidateCalls,judgeCalls],[2,2]);
 });
 
 test("input-only datasets can use a saved grader as their sole source of success criteria",async t=>{
-  const c={id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
-  const b=new Bench(":memory:",{discover:async()=>[{models:[c]}],invoke:async()=>({output:"hold"})},async()=>async()=>null);
+  const c:LocalCandidate={kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  const b=new Bench(":memory:",{discover:async()=>[inventory([c])],invoke:async()=>reply("hold")},withoutPower);
   t.after(()=>b.db.close());await b.refresh();
   const datasetId=b.import("reference","Input only",JSON.stringify({case_id:"01",dataset_version:"1",split:"development",prompt:"Reply hold."}));
-  assert.equal(b.list().datasets.find(d=>d.id===datasetId).casesWithoutReference,1);
+  assert.equal(present(b.list().datasets.find(d=>d.id===datasetId)).casesWithoutReference,1);
   assert.throws(()=>b.start({mode:"dataset",datasetId,candidateIds:[c.id],caseJudgeId:c.id}),/own success criteria/);
   const grader=b.graders.save({name:"Disposition",category:"Routing",industry:"Manufacturing",type:"exact",criteria:"hold",threshold:1},[]);
-  const id=b.start({mode:"dataset",datasetId,candidateIds:[c.id],graderIds:[grader]});await b.active.done;
+  const id=b.start({mode:"dataset",datasetId,candidateIds:[c.id],graderIds:[grader]});await present(b.active).done;
   assert.equal(b.detail(id).assessments[0].pass,true);
 });
 
@@ -73,7 +79,7 @@ test("an assistant's expected response must be held out of candidate chat turns"
 
 test("planner fallback saves the model preference without persisting the session secret",()=>{
   const db=new DatabaseSync(":memory:");
-  const endpoints={list:()=>[],keys:new Map()};
+  const endpoints={list:()=>[],keys:new Map<string,string>()};
   try {
     const settings=new PlannerSettings(db,endpoints,{});
     assert.equal(settings.fallback(),null);
@@ -85,37 +91,39 @@ test("planner fallback saves the model preference without persisting the session
   } finally {db.close();}
 });
 test("exact reference strings use Opik and structured references preserve JSON semantics",async()=>{
-  const score=await exactReference({reference:"  HOLD "},"HOLD");
+  const score=await exactReference({case_id:"example",reference:"  HOLD "},"HOLD");
   assert.equal(score.pass,true);
-  assert.match(score.evaluator,/^opik-js@/);
-  assert.equal((await exactReference({reference:"HOLD"},"hold")).pass,false);
-  assert.equal((await exactReference({reference:{a:1,b:2}},'{"b":2,"a":1}')).pass,true);
-  assert.equal((await exactReference({reference:[1,2]},"[2,1]")).pass,false);
+  assert.match(present(score.evaluator),/^opik-js@/);
+  assert.equal((await exactReference({case_id:"example",reference:"HOLD"},"hold")).pass,false);
+  assert.equal((await exactReference({case_id:"example",reference:{a:1,b:2}},'{"b":2,"a":1}')).pass,true);
+  assert.equal((await exactReference({case_id:"example",reference:[1,2]},"[2,1]")).pass,false);
 });
 
 test("grading prefers recorded dispatch, identifies older inputs, and excludes host actions", () => {
   const manifest={pack:referencePack}, row={case_id:"evidence",prompt:"Original case text"};
-  const actual=[{role:"user",content:"The exact representation dispatched under the token budget"}];
-  const result={output:"hold",dispatchedMessages:actual,trace:{steps:[{action:"Invoke local model"}]}};
+  const actual:ChatTurn[]=[{role:"user",content:"The exact representation dispatched under the token budget"}];
+  const legacy:RunResult={candidateId:"local",caseId:row.case_id,output:"hold",score:null,error:null,telemetry:null,
+    trace:{id:"qa-trace",runId:"qa-run",candidateId:"local",caseId:row.case_id,started:"2026-01-01T00:00:00Z",
+      steps:[{at:"2026-01-01T00:00:00Z",action:"Invoke local model"}]}};
+  const result={...legacy,dispatchedMessages:actual};
   const evidence=graderEvidence(manifest,row,result);
   assert.deepEqual(evidence.input,actual);
   assert.equal(evidence.inputSource,"recorded-dispatch");
   assert.equal(Object.hasOwn(evidence,"trajectory"),false);
-  const legacy={output:result.output,trace:result.trace};
   assert.deepEqual(graderEvidence(manifest,row,legacy).input,[{role:"user",content:row.prompt}]);
   assert.equal(graderEvidence(manifest,row,legacy).inputSource,"reconstructed-case");
   assert.equal(graderEvidence({...manifest,fixture:true},row,legacy).inputSource,"fixture-case");
 });
 
 test("action graders leave missing traces unscored and score only supplied agent actions", async t => {
-  const candidate={id:"ollama/qa",provider:"ollama",model:"qa",loaded:true};
-  const bench=new Bench(":memory:",{discover:async()=>[{models:[candidate]}],invoke:async()=>({output:"hold"})},async()=>async()=>null);
+  const candidate:LocalCandidate={kind:"model",id:"ollama/qa",provider:"ollama",model:"qa",loaded:true};
+  const bench=new Bench(":memory:",{discover:async()=>[inventory([candidate])],invoke:async()=>reply("hold")},withoutPower);
   t.after(()=>bench.db.close());
   await bench.refresh();
   const datasetId=bench.import("reference","Tool evidence",JSON.stringify({case_id:"1",dataset_version:"1",split:"development",prompt:"Inspect lot K7."}));
   const graderId=bench.graders.save({name:"Observed lookup and hold",category:"Operations",industry:"Manufacturing",type:"trajectory",criteria:"lookup\nhold",threshold:1},[]);
   const runId=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId]});
-  await bench.active.done;
+  await present(bench.active).done;
   const result=bench.detail(runId);
   assert.ok(result.results[0].trace.steps.some(step=>step.action==="Invoke ollama"));
   const assessment=result.assessments[0];
@@ -124,7 +132,7 @@ test("action graders leave missing traces unscored and score only supplied agent
   assert.equal(assessment.inputSource,"recorded-dispatch");
   assert.match(assessment.reason,/No candidate tool trajectory/);
   const evidence={input:"Inspect lot K7.",reference:null,output:"hold"};
-  const grade=trajectory=>bench.graders.record(bench.graders.get(graderId),{...evidence,...(trajectory===undefined?{}:{trajectory})},{},bench.adapters,new AbortController().signal);
+  const grade=(trajectory?:unknown[])=>bench.graders.record(bench.graders.get(graderId),{...evidence,...(trajectory===undefined?{}:{trajectory})},{},bench.adapters,new AbortController().signal);
   assert.equal((await grade(undefined)).value,null);
   assert.equal((await grade([])).value,0);
   assert.equal((await grade([{}, {action:"hold"}])).value,null);

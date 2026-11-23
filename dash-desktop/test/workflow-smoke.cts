@@ -1,12 +1,16 @@
-// Run with ./node_modules/.bin/electron test/workflow-smoke.cjs.
-const assert = require("node:assert/strict");
-const { mkdtempSync, rmSync } = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const { DatabaseSync } = require("node:sqlite");
-const { app } = require("electron");
-
-const { opikJudgeRequest } = require("./opik-judge-fixture.cjs");
+// Run the compiled test with npm run test:workflow.
+import assert from "node:assert/strict";
+import {mkdtempSync, rmSync} from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {DatabaseSync} from "node:sqlite";
+import {mock} from "node:test";
+import {app} from "electron";
+import {z} from "zod";
+import {opikJudgeRequest} from "./opik-judge-fixture.cjs";
+import {decodeApprovedPrompt} from "../lib/outcome-contracts.cjs";
+import {decodeManifest} from "../lib/run-decode.cjs";
+import power = require("../lib/power.cjs");
 
 const profile = mkdtempSync(path.join(os.tmpdir(), "dash-workflow-smoke-"));
 app.setPath("userData", profile);
@@ -16,14 +20,37 @@ app.on("browser-window-created", (_event, window) => {
   window.show = () => {};
 });
 
-const calls = [];
+const schema = z.looseObject({
+  properties: z.record(z.string(), z.looseObject({type:z.unknown()})).optional(),
+});
+const request = z.looseObject({
+  model: z.string(),
+  messages: z.array(z.looseObject({role:z.string(), content:z.string()})).min(1),
+  format: schema.optional(),
+  response_format: z.object({json_schema:z.object({schema})}).optional(),
+  options: z.looseObject({num_predict:z.number().optional()}).optional(),
+  max_tokens: z.number().optional(),
+});
+type Stage = "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
+interface TransportCall {stage:Stage; body:z.infer<typeof request>; brief:unknown}
+const calls:TransportCall[] = [];
+const expertBrief = z.object({requirements:z.array(z.string())});
+const datasetBrief = z.looseObject({dataset:z.looseObject({outputSchema:z.unknown()})});
+const priorRunBrief = z.looseObject({priorRun:z.looseObject({id:z.string(),candidates:z.array(z.looseObject({scored:z.number()}))})});
+const stageStatus = z.object({status:z.string()});
+const gradedDetail = z.object({
+  assessments:z.array(z.object({value:z.number().nullable(),evaluator:z.string()})),
+  results:z.array(z.object({guardrail:z.object({status:z.string(),outputReserve:z.number()})})),
+  report:z.object({verdict:z.string(),winnerId:z.string().nullable(),metrics:z.array(z.object({method:z.string()})),
+    assistance:z.object({analyzer:stageStatus,reporter:stageStatus})}),
+});
 const models = { ollama: "lfm3-qa-7b", lmstudio: "qa-ledger-2b" };
 const quickGoal = "Help inspection staff decide which nonconforming parts need a second inspection.";
 const metric = "Measure the share of lots with cited inspection evidence.";
 const guidance = "Cite the inspection record and identify the next review step.";
 const roleEdit = "Trace the inspection record to the incoming lot.";
 
-function modelOutput(stage, brief, model) {
+function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   if (stage === "route") return { domain: "Manufacturing" };
   if (stage === "expert") return {
     title: "Review incoming evidence",
@@ -31,19 +58,28 @@ function modelOutput(stage, brief, model) {
     requirements: ["Cite the evidence used for each decision"],
   };
   if (stage === "implementer") {
+    const brief = z.object({expertBrief}).parse(raw);
     assert.ok(brief.expertBrief.requirements.length, "Expert output must reach the implementer");
     return { prompt: guidance };
   }
-  if (stage === "analyzer") return { evidence: [brief.evidence[0].id] };
+  if (stage === "analyzer") {
+    const brief = z.object({evidence:z.array(z.object({id:z.string()})).min(1)}).parse(raw);
+    return {evidence:[brief.evidence[0].id]};
+  }
   if (stage === "reporter") {
+    const brief = z.object({
+      selected:z.array(z.object({id:z.string(),scores:z.array(z.number().nullable())})).min(1),
+      auditedVerdict:z.record(z.string(),z.unknown()),
+    }).parse(raw);
     const { id, scores } = brief.selected[0];
     let observation = "single";
     if (scores.includes(null)) observation = "missing";
-    else if (scores.length === 2)
+    else if (scores.length === 2 && scores[0] !== null && scores[1] !== null)
       observation = scores[0] === scores[1] ? "equal" : scores[0] > scores[1] ? "first_higher" : "second_higher";
     return { ...brief.auditedVerdict, highlights: [{ evidence: id, observation }] };
   }
   if (stage === "geval-score") {
+    const brief = z.object({output:z.string()}).parse(raw);
     const cited = brief.output.includes("QA inspection record");
     return { score: cited ? 10 : 0, reason: cited ? "The response cites the inspection record." : "The response lacks the required evidence." };
   }
@@ -53,7 +89,7 @@ function modelOutput(stage, brief, model) {
 // Intercept HTTP at the transport boundary. Discovery, request formatting,
 // streaming response parsing and all Electron IPC handlers remain in use.
 globalThis.fetch = async (url, options = {}) => {
-  const target = new URL(url);
+  const target = new URL(url instanceof Request ? url.url : url);
   assert.equal(target.hostname, "127.0.0.1");
   if (target.port === "11434" && ["/api/tags", "/api/ps"].includes(target.pathname)) {
     return Response.json({ models: [
@@ -70,13 +106,14 @@ globalThis.fetch = async (url, options = {}) => {
   if (!["/api/chat", "/v1/chat/completions", "/api/v1/chat"].includes(target.pathname)) {
     throw Error("Unexpected request: " + url);
   }
-  const body = JSON.parse(options.body);
+  assert.ok(typeof options.body === "string", "Expected a JSON request body");
+  const body = request.parse(JSON.parse(options.body));
   const schema = body.format ?? body.response_format?.json_schema?.schema;
   const props = schema?.properties ?? {};
   const evaluation = opikJudgeRequest(body.messages);
   const stage = evaluation?.stage ?? (props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
     props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
-  const brief = evaluation ? evaluation.evidence : stage === "candidate" ? null : JSON.parse(body.messages.at(-1).content);
+  const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
   calls.push({ stage, body, brief });
   const content = stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
   if (target.pathname === "/api/chat") {
@@ -88,17 +125,22 @@ globalThis.fetch = async (url, options = {}) => {
   return new Response("data: " + JSON.stringify({ choices: [{ delta: { content }, finish_reason: "stop" }], usage: { prompt_tokens: 21, completion_tokens: 12 } }) + "\n\ndata: [DONE]\n\n");
 };
 
-const power = require("../lib/power.cjs");
-power.readPower = async () => ({ watts: null, source: "QA", at: new Date().toISOString() });
-power.startPower = async () => async () => ({ source: "QA", scope: "Test", samples: [], average_w: null });
+const readPower:typeof power.readPower = async () => ({watts:null,source:"QA",at:new Date().toISOString()});
+const startPower:typeof power.startPower = async () => async () => ({
+  source:"QA", scope:"Whole device", samples:[], average_w:null, peak_w:null,
+  estimated_energy_j:null, sampled_seconds:0, interval_ms:1000,
+});
+mock.method(power, "readPower", readPower);
+mock.method(power, "startPower", startPower);
 
 async function smoke() {
-  const win = await require("../desktop.cjs").openWindow();
+  const win = await (await import("../desktop.cjs")).openWindow();
   const db = new DatabaseSync(path.join(profile, "dash.sqlite"), { readOnly: true });
   const q = JSON.stringify;
-  const js = source => win.webContents.executeJavaScript(source);
-  const exists = selector => js("!!document.querySelector(" + q(selector) + ")");
-  async function wait(check, message) {
+  const js = (source:string):Promise<unknown> => win.webContents.executeJavaScript(source);
+  const text = async (source:string) => z.string().parse(await js(source));
+  const exists = (selector:string) => js("!!document.querySelector(" + q(selector) + ")");
+  async function wait(check:()=>unknown, message:string) {
     const until = Date.now() + 10000;
     do {
       if (await check()) return;
@@ -106,31 +148,31 @@ async function smoke() {
     } while (Date.now() < until);
     throw Error(message + "\n" + await js("document.body.innerText.slice(-1600)"));
   }
-  async function click(selector) {
+  async function click(selector:string) {
     await wait(() => js("!!document.querySelector(" + q(selector) + ") && !document.querySelector(" + q(selector) + ").disabled"), "Missing enabled control " + selector);
     await js("document.querySelector(" + q(selector) + ").click(); true");
   }
-  async function fill(selector, text) {
+  async function fill(selector:string, text:string) {
     await wait(() => exists(selector), "Missing input " + selector);
     await js("(() => { const field = document.querySelector(" + q(selector) + "); field.value = " + q(text) + "; field.dispatchEvent(new Event('input',{bubbles:true})); field.dispatchEvent(new Event('change',{bubbles:true})); return true; })()");
   }
-  const route = name => js("location.hash=" + q(name));
-  const records = () => db.prepare("SELECT spec FROM outcome_prompts ORDER BY rowid").all().map(row => JSON.parse(row.spec));
-  async function completedRun(count) {
-    await wait(() => db.prepare("SELECT count(*) n FROM runs WHERE status='completed'").get().n === count, "Expected " + count + " completed runs");
-    return JSON.parse(db.prepare("SELECT manifest FROM runs ORDER BY rowid DESC LIMIT 1").get().manifest);
+  const route = (name:string) => js("location.hash=" + q(name));
+  const records = () => db.prepare("SELECT spec FROM outcome_prompts ORDER BY rowid").all().map(row => decodeApprovedPrompt(JSON.parse(z.string().parse(row.spec))));
+  async function completedRun(count:number) {
+    await wait(() => db.prepare("SELECT count(*) n FROM runs WHERE status='completed'").get()?.n === count, "Expected " + count + " completed runs");
+    return decodeManifest(db.prepare("SELECT manifest FROM runs ORDER BY rowid DESC LIMIT 1").get()?.manifest);
   }
   await wait(() => exists(".hero"), "Overview");
   const wc = win.webContents;
   wc.setBackgroundThrottling(false);
   wc.debugger.attach("1.3");
-  const motion = value => wc.debugger.sendCommand("Emulation.setEmulatedMedia", {
+  const motion = (value:"no-preference"|"reduce") => wc.debugger.sendCommand("Emulation.setEmulatedMedia", {
     features: [{name:"prefers-reduced-motion", value}],
   });
   await motion("no-preference");
   const scene = () => js("document.querySelector('.capability-reel').dataset.scene");
-  const caption = () => js("document.querySelector('.capability-frame h2').textContent");
-  const lanes = () => js("document.querySelector('.banner-track').innerText");
+  const caption = () => text("document.querySelector('.capability-frame h2').textContent");
+  const lanes = () => text("document.querySelector('.banner-track').innerText");
   const previous = '[data-carousel="previous"]', next = '[data-carousel="next"]', playback = '[data-carousel="playback"]';
   const slideCount = await js("Number(document.querySelector('.capability-position').textContent.split('/')[1])");
   assert.equal(slideCount, 6);
@@ -153,7 +195,7 @@ async function smoke() {
   await click(next);
   assert.equal(await caption(), "Run domain-specific use cases");
   assert.equal(await js("document.querySelector('.capability-context').textContent"), "Financial Services · Manufacturing");
-  const domainExamples = await js("document.querySelector('.capability-frame .capability-detail').textContent");
+  const domainExamples = await text("document.querySelector('.capability-frame .capability-detail').textContent");
   assert.match(domainExamples, /earnings per share/);
   assert.match(domainExamples, /drawing’s tolerances/);
   assert.match(await lanes(), /Financial implementer/);
@@ -183,7 +225,7 @@ async function smoke() {
   assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "The outcome form should fit a phone viewport");
   assert.ok(await js("document.querySelector('#wf-design').getBoundingClientRect().height >= 44"), "Touch-size draft button");
   await click('[data-wf-example="manufacturing"]');
-  assert.match(await js("document.querySelector('#wf-objective').value"), /Synthetic inspection record/);
+  assert.match(await text("document.querySelector('#wf-objective').value"), /Synthetic inspection record/);
   await fill("#wf-objective", quickGoal);
   await fill("#wf-metrics", metric);
   await fill("#wf-output-cap", "180");
@@ -199,9 +241,9 @@ async function smoke() {
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Quick prompt review");
   assert.deepEqual(calls.map(c => c.stage), ["route", "expert", "implementer"]);
-  assert.equal(calls[1].brief.objective, quickGoal);
-  assert.deepEqual(calls[2].brief.expertBrief.requirements, [criterion]);
-  assert.deepEqual(calls[2].brief.metrics, [metric]);
+  assert.equal(z.object({objective:z.string()}).parse(calls[1].brief).objective, quickGoal);
+  assert.deepEqual(z.object({expertBrief}).parse(calls[2].brief).expertBrief.requirements, [criterion]);
+  assert.deepEqual(z.object({metrics:z.array(z.string())}).parse(calls[2].brief).metrics, [metric]);
   assert.equal(records().length, 0, "Unapproved drafts stay out of the catalogue");
   const approvedText = quickGoal + "\n\n" + guidance + "\nShow the lot identifier.";
   await fill("#wf-prompt", approvedText);
@@ -216,25 +258,25 @@ async function smoke() {
   assert.equal(first.version, 1);
   assert.deepEqual(first.metrics, [metric]);
   assert.deepEqual(first.requirements, [criterion]);
-  assert.deepEqual(first.agents.map(a => a.role).sort(), ["expert", "implementer"]);
+  assert.deepEqual(first.agents?.map(a => a.role).sort(), ["expert", "implementer"]);
   // Duplicate delivery and conflicting re-submission go through the public preload bridge.
-  const approve = (value) => js("window.dash.approvePrompt(" + q(value) + ")");
-  const repeat = { draftId: first.draftId, prompt: approvedText, metrics: first.metrics };
+  const approve = async (value:{draftId:string;prompt:string;metrics:string[]}) => z.object({id:z.string()}).parse(await js("window.dash.approvePrompt(" + q(value) + ")"));
+  const repeat = { draftId: z.string().parse(first.draftId), prompt: approvedText, metrics: first.metrics };
   assert.equal((await approve(repeat)).id, first.id);
   await assert.rejects(() => approve({ ...repeat, prompt: "different" }), /already approved/i);
   assert.equal(records().length, 1);
 
-  const pick = (provider) => '[data-model="' + provider + "/" + models[provider] + '"]';
+  const pick = (provider:keyof typeof models) => '[data-model="' + provider + "/" + models[provider] + '"]';
   await wait(() => exists("#qc-criteria"), "Default outcome rubric");
   assert.equal(await js("document.querySelector('#qc-rubric-toggle').getAttribute('aria-pressed')"), "true");
-  assert.match(await js("document.querySelector('#qc-criteria').value"), /inspection|lots/i);
+  assert.match(await text("document.querySelector('#qc-criteria').value"), /inspection|lots/i);
   await fill("#qc-threshold","0.8");
   await click(pick("lmstudio"));
   assert.equal(await js("document.querySelector('#setup .go-button').disabled"), true);
   await click('[data-model="ollama/qa-short-context"]');
   await wait(() => exists('[data-qc-budget="ollama/qa-short-context"][data-budget-status="blocked"]'), "Short-context lane blocks GO");
   assert.equal(await js("document.querySelector('#setup .go-button').disabled"), true);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM runs").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM runs").get()?.n, 0);
   await click('[data-remove="ollama/qa-short-context"]');
   await click(pick("ollama"));
   await wait(() => exists('[data-qc-budget="ollama/'+models.ollama+'"][data-budget-status="unverified"]'), "Compatible lane budget preview");
@@ -252,11 +294,11 @@ async function smoke() {
   assert.equal(quick.approvedPromptId, first.id);
   assert.deepEqual(quick.approvedPrompt, first, "Persist the exact reviewed prompt, agents, and revisions with the run");
 
-  const quickRecords = await js("window.dash.detail(" + q(quick.id) + ")");
+  const quickRecords = gradedDetail.parse(await js("window.dash.detail(" + q(quick.id) + ")"));
   assert.equal(quick.graders.length, 1);
   assert.equal(quick.graders[0].threshold, .8);
   assert.equal(quick.graders[0].type,"opik");
-  assert.match(quick.graders[0].opikEngine,/^opik-js@/);
+  assert.match(quick.graders[0].opikEngine ?? "",/^opik-js@/);
   assert.equal(calls.filter(c=>c.stage==="geval-score").length,2);
   assert.ok(quickRecords.assessments.every(a=>a.evaluator===quick.graders[0].opikEngine));
   assert.equal(quickRecords.assessments.length, 2);
@@ -277,10 +319,10 @@ async function smoke() {
   const role = 'form[data-wf-role][data-domain="Manufacturing"][data-role="expert"]';
   const area = role + ' textarea[name="instructions"]';
   await wait(() => exists(area), "Manufacturing expert editor");
-  const prior = await js("document.querySelector(" + q(area) + ").value");
+  const prior = await text("document.querySelector(" + q(area) + ").value");
   await fill(area, prior + "\n" + roleEdit);
   await click(role + " button[type=submit]");
-  await wait(() => db.prepare("SELECT MAX(version) AS v FROM outcome_agent_roles WHERE domain=? AND role=?").get("Manufacturing","expert").v === 2, "Saved revised role");
+  await wait(() => db.prepare("SELECT MAX(version) AS v FROM outcome_agent_roles WHERE domain=? AND role=?").get("Manufacturing","expert")?.v === 2, "Saved revised role");
   await route("prompts");
   await click('[data-wf-use="' + first.id + '"]');
   await wait(() => exists(pick("ollama")), "Reused approved prompt");
@@ -294,13 +336,13 @@ async function smoke() {
   assert.equal(second.familyId, first.familyId);
   assert.equal(second.parentId, first.id);
   assert.equal(second.version, 2);
-  assert.equal(first.agents.find(a => a.role === "expert").version, 1);
-  assert.equal(second.agents.find(a => a.role === "expert").version, 2);
-  assert.ok(calls.filter(c => c.stage === "expert").at(-1).body.messages[0].content.includes(roleEdit));
+  assert.equal(first.agents?.find(a => a.role === "expert")?.version, 1);
+  assert.equal(second.agents?.find(a => a.role === "expert")?.version, 2);
+  assert.ok(calls.filter(c => c.stage === "expert").at(-1)?.body.messages[0].content.includes(roleEdit));
   assert.deepEqual(records()[0], first, "Revision preserves the approved original");
 
   await route("new");
-  const scenario = db.prepare("SELECT id FROM datasets WHERE pack='earnings' ORDER BY rowid LIMIT 1").get().id;
+  const scenario = z.string().parse(db.prepare("SELECT id FROM datasets WHERE pack='earnings' ORDER BY rowid LIMIT 1").get()?.id);
   await fill("#pack", "earnings");
   await fill("#ds", scenario);
   const directStart = calls.length;
@@ -347,12 +389,13 @@ async function smoke() {
   const start = calls.length;
   await click("#wf-suggest");
   await wait(() => exists("#wf-criteria"), "Dataset suggestions");
-  assert.match(await js("document.querySelector('#wf-measure-fields').textContent"), /Financial Services expert/);
+  assert.match(await text("document.querySelector('#wf-measure-fields').textContent"), /Financial Services expert/);
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Dataset prompt review");
   const proposalCalls = calls.slice(start);
   assert.deepEqual(proposalCalls.map(c => c.stage), ["expert", "implementer"]);
-  for (const { brief } of proposalCalls) {
+  for (const call of proposalCalls) {
+    const brief = datasetBrief.parse(call.brief);
     assert.equal(brief.dataset.datasetId, undefined, "Catalogue IDs are not task evidence");
     assert.ok(brief.dataset.outputSchema);
     assert.equal(brief.dataset.rows, undefined);
@@ -370,13 +413,14 @@ async function smoke() {
   assert.equal(dataset.industry, "Financial Services");
   assert.equal(dataset.fixture, false);
   const datasetPrompt = records().at(-1);
+  assert.ok(datasetPrompt);
   assert.equal(datasetPrompt.domain, "Financial Services");
-  assert.equal(datasetPrompt.dataset.datasetId, scenario);
+  assert.equal(z.object({datasetId:z.string()}).parse(datasetPrompt.dataset).datasetId, scenario);
   assert.equal(dataset.approvedPromptId, datasetPrompt.id);
   const dispatched = calls.slice(start).filter(c => c.stage === "candidate");
   assert.equal(dispatched.length, dataset.caseIds.length);
   for (const { body } of dispatched) {
-    assert.deepEqual(body.format, proposalCalls[0].brief.dataset.outputSchema);
+    assert.deepEqual(body.format, datasetBrief.parse(proposalCalls[0].brief).dataset.outputSchema);
     assert.ok(body.messages.some(m => m.content.includes(datasetPrompt.prompt)));
     assert.doesNotMatch(JSON.stringify(body.messages), /\\"gold\\":/);
   }
@@ -385,7 +429,8 @@ async function smoke() {
   const beforeRefinement = calls.length;
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Run-informed prompt review");
-  for (const { brief } of calls.slice(beforeRefinement)) {
+  for (const call of calls.slice(beforeRefinement)) {
+    const brief = priorRunBrief.parse(call.brief);
     assert.equal(brief.priorRun.id, dataset.id);
     assert.equal(brief.priorRun.candidates[0].scored, dataset.caseIds.length);
     assert.doesNotMatch(JSON.stringify(brief.priorRun), /QA response|gold/);

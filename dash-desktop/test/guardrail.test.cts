@@ -1,12 +1,13 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const { assessCase, lengthFailure } = require("../lib/guardrail.cjs");
+import { test } from "node:test";
+import assert = require("node:assert/strict");
+import { assessCase, lengthFailure, GuardrailError, reasoningPolicy, autoOutputTarget } from "../lib/guardrail.cjs";
+import type { ChatTurn, LocalCandidate, CompatibleCandidate, CheckInputBudget } from "../lib/runtime-types.cjs";
 
-const candidate = { model: "reasoner", provider: "lmstudio", loaded: true, maxContextTokens: 262144 };
+const candidate: LocalCandidate = { id:"lmstudio/reasoner", kind:"model", model: "reasoner", provider: "lmstudio", loaded: true, maxContextTokens: 262144 };
 const signal = new AbortController().signal;
-const messages = [{ role: "user", content: "Preserve my  approved prompt\nexactly." }];
+const messages: ChatTurn[] = [{ role: "user", content: "Preserve my  approved prompt\nexactly." }];
 
-function assess(options = {}) {
+function assess(options: Partial<Parameters<typeof assessCase>[0]> = {}) {
   return assessCase({
     candidate, messages, signal, defaultOutput: 2048, budget: {},
     checkInputBudget: async () => ({ tokens: 750, contextTokens: 32000, source: "test tokenizer" }),
@@ -30,16 +31,16 @@ test("auto allocation uses the measured active context and available output ceil
 
 test("explicit caps are honored exactly or fail before dispatch with a reproducible reason", async () => {
   assert.equal((await assess({ budget:{ inputCap:800, outputCap:40 } })).guardrail.outputReserve, 40);
-  await assert.rejects(assess({ budget:{ inputCap:10 } }), e =>
-    e.guardrail.status === "blocked" && e.guardrail.inputTokens === 750 && /approve a shorter prompt/.test(e.message));
-  await assert.rejects(assess({ budget:{ outputCap:32000 } }), e =>
-    e.guardrail.contextTokens === 32000 && /31250 for output/.test(e.message));
+  await assert.rejects(assess({ budget:{ inputCap:10 } }), (e: unknown) =>
+    e instanceof GuardrailError && e.guardrail.status === "blocked" && e.guardrail.inputTokens === 750 && /approve a shorter prompt/.test(e.message));
+  await assert.rejects(assess({ budget:{ outputCap:32000 } }), (e: unknown) =>
+    e instanceof GuardrailError && e.guardrail.contextTokens === 32000 && /31250 for output/.test(e.message));
   await assert.rejects(assess({ candidate:{ ...candidate, maxOutputTokens:500 }, budget:{ outputCap:501 } }), /ceiling of 500/);
-  await assert.rejects(assess({ checkInputBudget: async () => ({ tokens: 1024, contextTokens: 1024 }) }), /larger context/);
+  await assert.rejects(assess({ checkInputBudget: async () => ({ tokens: 1024, contextTokens: 1024, source:"test tokenizer" }) }), /larger context/);
 });
 
 test("unsupported runtimes never claim exact tokenization or use a published maximum as their active context", async () => {
-  const unknown = { model:"remote", provider:"compatible", maxContextTokens:100000 };
+  const unknown: CompatibleCandidate = { id:"compatible/remote", kind:"model", endpoint:"https://example.invalid/v1", section:"Hosted", keyRequired:false, model:"remote", provider:"compatible", maxContextTokens:100000 };
   const r = await assess({ candidate:unknown });
   assert.equal(r.guardrail.status, "unverified");
   assert.equal(r.guardrail.contextTokens, null);
@@ -50,16 +51,18 @@ test("unsupported runtimes never claim exact tokenization or use a published max
 });
 
 test("compacts only case-envelope whitespace without changing quotation, duplicate fields, numbers or approved instructions", async () => {
-  const system = { role: "system", content: "  Cite the exact  text.\n" };
+  const system: ChatTurn = { role: "system", content: "  Cite the exact  text.\n" };
   const source = '{\n  "n": 1.00, "n": 1e+3, "input": { "evidence": "t  a\\n\\" sample" }\n}';
-  const chat = [system, { role:"user", content:source }];
-  let seen;
-  const checkInputBudget = async ({ messages, measureContext }) => {
+  const chat: ChatTurn[] = [system, { role:"user", content:source }];
+  const observed: ChatTurn[][] = [];
+  const checkInputBudget: CheckInputBudget = async ({ messages, measureContext }) => {
     assert.equal(measureContext, true);
-    seen = messages;
+    observed.push(messages);
     return { tokens:6, contextTokens:10000, source:"test" };
   };
   const r = await assess({ serializedCaseInput:true, messages: chat, checkInputBudget });
+  const [seen] = observed;
+  assert.ok(seen);
   assert.equal(r.preparedMessages, seen);
   assert.equal(seen[0], system);
   assert.equal(seen[1].content, '{"n":1.00,"n":1e+3,"input":{"evidence":"t  a\\n\\" sample"}}');
@@ -74,8 +77,8 @@ test("compacts only case-envelope whitespace without changing quotation, duplica
   assert.equal(quick.guardrail.inputOptimization.status, "preserved");
 });
 
-test("truncated output retains context on the effective reserve and next action", () => {
-  const reason = lengthFailure({ requestedOutputCap: null, outputReserve:8192 }, { output_tokens:8192 });
+test("truncated output retains context on the effective reserve and next action", async () => {
+  const reason = lengthFailure((await assess()).guardrail, { output_tokens:8192 });
   assert.match(reason, /8192 generated tokens/);
   assert.match(reason, /saved without a score/);
   assert.match(reason, /shorter answer/);
@@ -83,25 +86,24 @@ test("truncated output retains context on the effective reserve and next action"
 
 
 test("authored reference messages, plain-text prefixes and JSON examples are preserved byte for byte", async () => {
-  const messages = [
+  const messages: ChatTurn[] = [
     { role: "system", content: "Use the source  as-is." },
     { role: "user", content: 'Please explain  this case.\n\n{"input": 99}' },
   ];
   assert.equal((await assess({ messages, serializedCaseInput: true })).preparedMessages, null);
-  const jsonExample = [messages[0], { role: "user", content: '{ "input": 99 }' }];
+  const jsonExample: ChatTurn[] = [messages[0], { role: "user", content: '{ "input": 99 }' }];
   assert.equal((await assess({ messages:jsonExample, serializedCaseInput:false })).preparedMessages, null);
 });
 
 test("short-answer thinking control is specific to verified Quick calls with an advertised off switch", async () => {
-  const { reasoningPolicy, autoOutputTarget } = require("../lib/guardrail.cjs");
   assert.equal(autoOutputTarget, 8192);
   const model = { ...candidate, reasoningOff: true };
-  const opts = { mode: "quick", outputCap: 384, verifiedAdapter: true };
+  const opts: Parameters<typeof reasoningPolicy>[1] = { mode: "quick", outputCap: 384, verifiedAdapter: true };
   assert.equal(reasoningPolicy(model, opts), "thinking disabled for short answer");
-  for (const overrides of [{ outputCap: null }, { outputCap: 8192 }, { verifiedAdapter: false }, { mode: "dataset" }])
+  for (const overrides of [{ outputCap: null }, { outputCap: 8192 }, { verifiedAdapter: false }, { mode: "dataset" }] as const)
     assert.equal(reasoningPolicy(model, { ...opts, ...overrides }), "runtime default");
   assert.equal(reasoningPolicy({ ...model, reasoningOff:false }, opts), "runtime default");
-  let disabled;
+  let disabled: boolean | undefined;
   await assess({ candidate:model, mode:"quick", budget:{outputCap:384}, checkInputBudget:async args=>{
     disabled = args.disableThinking;
     return { tokens:20, contextTokens:4096, source:"test" };
