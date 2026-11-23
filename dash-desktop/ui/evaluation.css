@@ -5,7 +5,6 @@
 .qc-grading small,.qc-grade-choice small,.er-metric-head small,.er-score-line small,.er-policy small {display:block;color:var(--muted);font-size:12px;line-height:1.5}
 .qc-grading .link {font-size:13px}
 .qc-outcome {background:var(--surface-soft);border-left:3px solid var(--accent);margin-top:13px;padding:12px 14px}
-.qc-outcome [aria-pressed=true] {border-color:var(--accent);color:var(--accent-strong)}
 .qc-rubric-options,.qc-saved,.er-policy,.er-evidence {margin-top:12px}
 .qc-saved {border:0;padding:0;min-width:0}
 .qc-grading summary,.er-report summary {cursor:pointer;width:fit-content;font-size:13px;font-weight:600}

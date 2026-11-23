@@ -4,18 +4,16 @@
 .prompt-composer .field>span {padding:10px 13px 0;font-size:13px;color:var(--ink)}
 .prompt-composer textarea {width:100%;min-height:85px;border:0;border-radius:0;background:transparent;outline-offset:-3px;resize:vertical;padding:7px 13px 12px;line-height:1.5}
 .compose-footer {display:flex;gap:10px;align-items:flex-start;justify-content:space-between;border-top:1px solid var(--border);padding:6px 7px 6px 12px}
-.composer-actions .go-button {flex:0 0 85px;min-height:38px;align-self:start;color:white}
-.composer-actions .go-button:disabled {color:var(--muted)}
+.composer-actions .go-button {flex:0 0 85px;min-height:38px;align-self:start}
 .prompt-guide {flex:1;min-width:0;align-self:center}
-.guide-tools>button,.guide-response button,.prompt-guide [data-guide=retry] {background:none;border:0;min-height:32px;color:var(--ink);padding:3px 0;font-size:12px}
-.guide-tools [aria-pressed=false] {color:var(--muted)}
-.guide-tools .icon {width:15px;height:15px;color:var(--accent)}
-.guide-tools span,.guide-source {font:10px/1.4 var(--mono);color:var(--muted)}
-.guide-tools span {border-left:1px solid var(--border);padding-left:7px}
+.guide-tools>button,.guide-response button,.prompt-guide [data-guide=retry] {min-height:32px;padding:3px 8px;font-size:12px}
+.guide-tools .icon {width:15px;height:15px}
+.guide-tools span,.guide-source {font:10px/1.4 var(--mono)}
+.guide-source {color:var(--muted)}
+.guide-tools span {border-left:1px solid var(--button-border);padding-left:7px}
 .guide-response {padding:3px 0 5px}
 .guide-response p {margin:4px 0 6px;color:var(--ink);font-size:14px;line-height:1.45}
-.guide-response [data-guide=apply],.guide-response [data-guide=answer],.prompt-guide [data-guide=retry] {color:var(--accent)}
-.guide-response [data-guide=dismiss] {margin-left:10px;color:var(--muted)}
+.guide-response [data-guide=dismiss] {margin-left:10px}
 .guide-answer {display:block}
 .guide-answer input {width:100%;border:1px solid var(--control-border);border-radius:3px;background:var(--surface-soft);color:var(--ink);padding:8px}
 #guide-body small {font-size:12px;color:var(--muted)}
@@ -27,8 +25,7 @@ body:has(.compare-console) #screen {max-width:none;margin:0;padding:18px clamp(1
 .compare-console #quick-models {margin:0}
 body:has(.compare-console) #setup {padding:0}
 .model-picker .grid-slot {padding:10px 13px;min-height:64px}
-.choose-slot {border:0;background:none;padding:0;min-height:30px;font-size:16px;font-weight:600;line-height:1.2;color:var(--ink);gap:8px}
-.choose-slot span {color:var(--accent)}
+.choose-slot {padding:0 6px;min-height:30px;font-size:16px;font-weight:600;line-height:1.2;gap:8px}
 .compare-workarea {display:grid;grid-template-columns:minmax(245px, .82fr) minmax(0,1.18fr);gap:clamp(12px,1.5vw,22px);align-items:start;margin-top:18px;border-top:1px solid var(--border);padding-top:14px}
 .compare-roster,.compare-draft {min-width:0}
 .compare-roster .field {margin:0 0 8px}

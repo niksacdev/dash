@@ -91,23 +91,15 @@ body:has(.overview) .desk > header .button {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 3px;
 }
 .capability-controls button {
   width: 34px;
   height: 34px;
   min-height: 0;
   padding: 0;
-  color: var(--track-paper);
-  background: transparent;
-  border: 1px solid transparent;
   border-radius: 50%;
   font: 500 20px/1 Arial, sans-serif;
-}
-.capability-controls button:hover, .capability-controls button:focus-visible {
-  background: #ffffff12;
-  border-color: #ffffff64;
-  outline-color: var(--track-paper);
 }
 .capability-position { font: 550 10px/1 var(--mono); white-space: nowrap; color: var(--track-paper); }
 .capability-controls [data-carousel="playback"] span {
@@ -258,14 +250,14 @@ body:has(.overview) .desk > header .button {
   padding: 9px 18px;
   border-inline-start: 1px solid var(--border);
   font: 11px/1.4 var(--mono);
-  color: var(--muted);
 }
-.timing-strip > a:hover, .device-stat:hover { background: var(--selected); }
+.timing-strip > a { color: var(--muted); }
+.timing-strip > a:hover { background: var(--selected); }
 .timing-strip .device-stat {
-  height: 100%; padding-left: 0; min-height: 0; background: transparent;
-  border: 0; border-radius: 0; anchor-name: --device-stat;
+  height: 100%; min-height: 0; padding-inline: 9px;
+  border-inline-start-color: var(--button-border); anchor-name: --device-stat;
 }
-.device-stat span { color: var(--accent); }
+.timing-strip .device-stat strong { color: inherit; }
 #device-details {
   position: fixed; inset: auto; position-anchor: --device-stat; left: anchor(left); top: anchor(bottom);
   width: min(305px, calc(100vw - 78px)); margin: 0; padding: 14px 16px;
