@@ -1,0 +1,95 @@
+{
+  "rev-scale": {
+    "field": "revenue",
+    "period": "FY26 Q2",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "supported",
+    "value": "125000000",
+    "evidence": "Revenue FY26 Q2: 125",
+    "routing": "accept"
+  },
+  "eps-gaap": {
+    "field": "diluted_eps",
+    "period": "FY26 Q2",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "supported",
+    "value": "0.85",
+    "evidence": "Adjusted diluted EPS: 0.85",
+    "routing": "accept"
+  },
+  "op-negative": {
+    "field": "operating_income",
+    "period": "FY26 Q3",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "supported",
+    "value": "-430000",
+    "evidence": "Operating income (loss): (430)",
+    "routing": "accept"
+  },
+  "eps-absent": {
+    "field": "diluted_eps",
+    "period": "FY26 Q2",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "not_disclosed",
+    "value": null,
+    "evidence": null,
+    "routing": "review"
+  },
+  "rev-ambiguous": {
+    "field": "revenue",
+    "period": "FY26 Q2",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "ambiguous",
+    "value": null,
+    "evidence": "Revenue: 125",
+    "routing": "review"
+  },
+  "rev-conflict": {
+    "field": "revenue",
+    "period": "FY26 Q4",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "source_conflict",
+    "value": "125000000",
+    "evidence": "Release: Revenue: 125",
+    "routing": "review",
+    "reconciliation": {
+      "status": "conflict",
+      "value": "128000000",
+      "evidence": "Later filing, same period and basis: Revenue: 128"
+    }
+  },
+  "rev-ytd": {
+    "field": "revenue",
+    "period": "FY26 Q2",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "supported",
+    "value": "46200000",
+    "evidence": "Q2 FY26 46.2",
+    "routing": "accept"
+  },
+  "eps-zero": {
+    "field": "diluted_eps",
+    "period": "FY26 Q3",
+    "basis": "GAAP",
+    "source_locator": "fixture:inline",
+    "currency": "USD",
+    "status": "supported",
+    "value": "0.00",
+    "evidence": "Diluted GAAP EPS: 0.00",
+    "routing": "accept"
+  }
+}

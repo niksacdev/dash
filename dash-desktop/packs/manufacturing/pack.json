@@ -1,0 +1,126 @@
+{
+  "id": "manufacturing",
+  "industry": "Manufacturing",
+  "title": "Incoming inspection triage",
+  "version": "1.0",
+  "dataset": "Incoming inspection records",
+  "datasetVersion": "1.0-dev",
+  "description": "Check one sampled dimension against the active drawing. Measure correct acceptances, false acceptances and cases needing quality review.",
+  "scorer": "incoming-inspection-v1",
+  "system": "Triage the single sampled dimension in this synthetic incoming inspection. Return one JSON object with part_id, lot_id, revision, lower_mm, upper_mm, measured_mm, spec_evidence, reading_evidence, finding and routing. Use the active drawing revision and express its limits and the reading as decimal strings in mm. In spec_evidence quote the complete drawing specification line for that revision. In reading_evidence quote the complete line beginning Reading:. Apply the supplied decision_rule. When no rule is available, use finding insufficient_evidence and routing review. Under an applicable rule, use finding within_limits and routing accept if the sampled dimension qualifies, otherwise use finding outside_limits and routing review. The decision concerns this recorded sample only.",
+  "checks": [
+    {
+      "key": "part_id",
+      "ref": "input.part_id"
+    },
+    {
+      "key": "lot_id",
+      "ref": "input.lot_id"
+    },
+    {
+      "key": "revision",
+      "ref": "gold.revision"
+    },
+    {
+      "key": "lower_mm",
+      "ref": "gold.lower_mm"
+    },
+    {
+      "key": "upper_mm",
+      "ref": "gold.upper_mm"
+    },
+    {
+      "key": "measured_mm",
+      "ref": "gold.measured_mm"
+    },
+    {
+      "key": "spec_evidence",
+      "ref": "gold.spec_evidence"
+    },
+    {
+      "key": "reading_evidence",
+      "ref": "gold.reading_evidence"
+    },
+    {
+      "key": "finding",
+      "ref": "gold.finding"
+    },
+    {
+      "key": "routing",
+      "ref": "gold.routing"
+    }
+  ],
+  "decimalFields": [
+    "lower_mm",
+    "upper_mm",
+    "measured_mm"
+  ],
+  "sourceText": "inspection",
+  "decisionField": "routing",
+  "accept": "accept",
+  "review": "review",
+  "quotes": [
+    "spec_evidence",
+    "reading_evidence"
+  ],
+  "metrics": [
+    "Correct sample accepts",
+    "Incorrect sample accepts",
+    "Review rate"
+  ],
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "part_id": {
+        "type": "string"
+      },
+      "lot_id": {
+        "type": "string"
+      },
+      "revision": {
+        "type": "string"
+      },
+      "lower_mm": {
+        "type": "string"
+      },
+      "upper_mm": {
+        "type": "string"
+      },
+      "measured_mm": {
+        "type": "string"
+      },
+      "spec_evidence": {
+        "type": "string"
+      },
+      "reading_evidence": {
+        "type": "string"
+      },
+      "finding": {
+        "enum": [
+          "within_limits",
+          "outside_limits",
+          "insufficient_evidence"
+        ]
+      },
+      "routing": {
+        "enum": [
+          "accept",
+          "review"
+        ]
+      }
+    },
+    "required": [
+      "part_id",
+      "lot_id",
+      "revision",
+      "lower_mm",
+      "upper_mm",
+      "measured_mm",
+      "spec_evidence",
+      "reading_evidence",
+      "finding",
+      "routing"
+    ],
+    "additionalProperties": false
+  }
+}

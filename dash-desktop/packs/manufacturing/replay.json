@@ -1,0 +1,62 @@
+{
+  "bushing-within": {
+    "part_id": "BUSH-010",
+    "lot_id": "RCV-041",
+    "revision": "B",
+    "lower_mm": "9.980",
+    "upper_mm": "10.020",
+    "measured_mm": "10.006",
+    "spec_evidence": "Drawing B: bore diameter 9.980 to 10.020 mm.",
+    "reading_evidence": "Reading: bore diameter 10.006 mm.",
+    "finding": "within_limits",
+    "routing": "accept"
+  },
+  "pin-at-upper-limit": {
+    "part_id": "PIN-008",
+    "lot_id": "RCV-042",
+    "revision": "C",
+    "lower_mm": "7.990",
+    "upper_mm": "8.010",
+    "measured_mm": "8.010",
+    "spec_evidence": "Drawing C: pin diameter 7.990 to 8.010 mm.",
+    "reading_evidence": "Reading: pin diameter 8.010 mm.",
+    "finding": "within_limits",
+    "routing": "accept"
+  },
+  "shim-unit-conversion": {
+    "part_id": "SHIM-2",
+    "lot_id": "RCV-043",
+    "revision": "A",
+    "lower_mm": "0.200",
+    "upper_mm": "0.220",
+    "measured_mm": "0.198",
+    "spec_evidence": "Drawing A: shim thickness 0.200 to 0.220 mm.",
+    "reading_evidence": "Reading: shim thickness 198 micrometres.",
+    "finding": "outside_limits",
+    "routing": "review"
+  },
+  "shaft-superseded-revision": {
+    "part_id": "SHAFT-016",
+    "lot_id": "RCV-044",
+    "revision": "C",
+    "lower_mm": "15.950",
+    "upper_mm": "16.050",
+    "measured_mm": "16.035",
+    "spec_evidence": "Drawing C: shaft diameter 15.950 to 16.050 mm.",
+    "reading_evidence": "Reading: shaft diameter 16.035 mm.",
+    "finding": "within_limits",
+    "routing": "accept"
+  },
+  "washer-missing-rule": {
+    "part_id": "WSHR-012",
+    "lot_id": "RCV-045",
+    "revision": "E",
+    "lower_mm": "1.180",
+    "upper_mm": "1.220",
+    "measured_mm": "1.219",
+    "spec_evidence": "Drawing E: washer thickness 1.180 to 1.220 mm.",
+    "reading_evidence": "Reading: washer thickness 1.219 mm.",
+    "finding": "insufficient_evidence",
+    "routing": "review"
+  }
+}

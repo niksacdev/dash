@@ -1,0 +1,25 @@
+# DASH desktop
+
+Open [Open DASH.command](Open%20DASH.command) on this Mac. The launcher opens the project-local Electron app. From this directory, `npm start` opens the same workbench. To restore the dependencies on another Apple Silicon Mac with Node 22.13 or later, run `npm ci`.
+
+## Evaluate a business outcome
+
+**Quick compare** starts with a business outcome. **Suggest Metrics** asks the industry expert for editable success measures. LFM3 drafts the prompt. If local planning fails validation, DASH can use direct OpenAI with the model and key configured in **Workspace → Domain agents → Prompt creation**. Prompts and metrics show which planner produced them. Approving a version saves it in the prompt catalog.
+
+Select two models and review the proposed outcome rubric, judge and pass threshold. You can edit the rubric, attach a saved grader or switch off grading. The Output Analyzer pairs scores by case and rubric. On supported live runs, local LFM3 selects cases that explain the result and the Report agent interprets those cases. DASH verifies their citations and verdict against the recorded scores. The report awards a win when one candidate leads on at least one rubric and matches or exceeds the other on the rest, with complete coverage. The report shows ties, mixed results and missing evidence separately. Latency, tokens and measured device power are available alongside the verdict.
+
+**Dataset run** starts from a saved snapshot. Choose the models and run the cases. Each bundled scenario supplies the instructions, schema and grader. **Test a prompt variant** lets you compare an approved revision on the same structured cases. Candidates receive only the authored request and case evidence. Grading can use a held-out SME answer, rationale or rubric. Case reruns use the original snapshot and grader versions.
+
+Quick compare previews the approved prompt’s measured input and available output budget as models take their lanes. The guardrail checks every candidate and case again before dispatch. On loaded LM Studio models it measures the full templated input and active context, then reserves output space. With an automatic budget it targets up to 8,192 output tokens within verified capacity. For short Quick answers with an explicit cap of up to 1,024 tokens, DASH requests thinking off when the loaded LM Studio model supports it and counts the resulting template. The run records the actual allocation and any provider-reported output ceiling. For a connection without an exact tokenizer check, an explicit input cap blocks dispatch. Explicit output caps also work with Ollama and compatible endpoints. Truncated output is retained for inspection.
+
+## Explore the bundled datasets
+
+**Earnings release capture** has eight synthetic cases, **Incoming inspection triage** has five and **Support ticket routing** exercises a different schema. The optional recorded replay runs saved answers through the scenario grader without asking a model. One earnings replay substitutes adjusted EPS for GAAP EPS. One manufacturing replay accepts a part using a superseded drawing revision. Select a case to inspect the source, reference, output, grade and trace. Exporting a run includes its manifest and completed case records.
+
+For a structured scenario, import JSONL with the scenario’s input and gold fields. For authored cases choose **Prompt and reference evaluation**. Each JSONL row has a unique `case_id`, a shared `dataset_version` and `split`, either `prompt` or `messages` ending in a user turn, and an optional `reference` or `rubric`. Input-only cases require a saved grader that defines success independently. An optional `sme_rationale` explains the expected behavior. Use exact matching for fixed answers, the built-in local judge for case rubrics, or a saved grader. The import screen includes an example. DASH stores versioned snapshots and dataset family metadata in local SQLite. Scenario contracts, deterministic scoring rules and recorded responses live in [packs](packs/).
+
+## Developer view
+
+Open **Workspace → Developer** to inspect LM Studio's loaded instances, model adapter, trace, runtime errors and case-level measurements. Time to first visible output, provider-reported time to first token, token usage and hardware readings appear when available. Mac power is measured across the whole device. Fixture runs have no model telemetry. The **Graders** workspace supports reusable checks and optional Opik judging when configured.
+
+Run `npm test` for the offline suite. Run `./node_modules/.bin/electron test/workflow-smoke.cjs` to exercise the guided desktop flow using deterministic model responses. Run `./node_modules/.bin/electron test/desktop-smoke.cjs` for the recorded replay, case rerun and history flow. Both desktop tests use a fresh temporary profile.

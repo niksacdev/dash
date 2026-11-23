@@ -1,0 +1,54 @@
+{
+  "id": "support",
+  "title": "Support ticket routing",
+  "version": "1.0",
+  "dataset": "Support routing fixtures",
+  "datasetVersion": "0.1-dev",
+  "description": "Route clear requests to a team and send ambiguous tickets for clarification.",
+  "scorer": "support-route-v1",
+  "system": "Reply with one JSON object with team (billing, technical, or null) and action (route or clarify). Ask for clarification when the user gives no actionable issue.",
+  "checks": [
+    {
+      "key": "team",
+      "ref": "gold.team"
+    },
+    {
+      "key": "action",
+      "ref": "gold.action"
+    }
+  ],
+  "decimalFields": [],
+  "decisionField": "action",
+  "accept": "route",
+  "review": "clarify",
+  "quotes": [],
+  "metrics": [
+    "Correct auto-routes",
+    "Incorrect auto-routes",
+    "Clarification rate"
+  ],
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "team": {
+        "enum": [
+          "billing",
+          "technical",
+          null
+        ]
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "route",
+          "clarify"
+        ]
+      }
+    },
+    "required": [
+      "team",
+      "action"
+    ],
+    "additionalProperties": false
+  }
+}

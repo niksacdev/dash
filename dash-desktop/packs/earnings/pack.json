@@ -1,0 +1,153 @@
+{
+  "id": "earnings",
+  "title": "Earnings release capture",
+  "version": "1.0",
+  "dataset": "Earnings development seed",
+  "datasetVersion": "0.1-dev",
+  "description": "Extract evidence-backed financial facts and route uncertain records to an analyst.",
+  "scorer": "earnings-record-v1",
+  "system": "Extract the requested financial fact from the release. Reply with one JSON object. Use field, period and basis as requested, currency, status (supported, not_disclosed, ambiguous, source_conflict), canonical value as a decimal string in base units or null, evidence as an exact source quote or null, source_locator, and routing (accept or review). Review every non-supported status. For a source conflict include reconciliation with status, value and quoted evidence for the later filing. Use an ISO currency code. Convert thousands and millions to base currency units. Copy the shortest source span that supports the requested field and period. Include reconciliation only when there is a conflict.",
+  "checks": [
+    {
+      "key": "field",
+      "ref": "input.field"
+    },
+    {
+      "key": "period",
+      "ref": "input.period"
+    },
+    {
+      "key": "basis",
+      "ref": "input.basis"
+    },
+    {
+      "key": "status",
+      "ref": "gold.status"
+    },
+    {
+      "key": "value",
+      "ref": "gold.value"
+    },
+    {
+      "key": "currency",
+      "ref": "gold.currency"
+    },
+    {
+      "key": "evidence",
+      "ref": "gold.evidence"
+    },
+    {
+      "key": "routing",
+      "ref": "gold.routing"
+    },
+    {
+      "key": "source_locator",
+      "ref": "source_locator"
+    },
+    {
+      "key": "reconciliation",
+      "ref": "gold.reconciliation",
+      "optional": true
+    }
+  ],
+  "decimalFields": [
+    "value",
+    "reconciliation.value"
+  ],
+  "decisionField": "routing",
+  "accept": "accept",
+  "review": "review",
+  "quotes": [
+    "evidence",
+    "reconciliation.evidence"
+  ],
+  "sourceText": "text",
+  "metrics": [
+    "Analyst-ready records",
+    "False accepts",
+    "Analyst review rate"
+  ],
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "field": {
+        "type": "string"
+      },
+      "period": {
+        "type": "string"
+      },
+      "basis": {
+        "type": "string"
+      },
+      "currency": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "supported",
+          "not_disclosed",
+          "ambiguous",
+          "source_conflict"
+        ]
+      },
+      "value": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "evidence": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "source_locator": {
+        "type": "string"
+      },
+      "routing": {
+        "type": "string",
+        "enum": [
+          "accept",
+          "review"
+        ]
+      },
+      "reconciliation": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "conflict"
+            ]
+          },
+          "value": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "value",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "field",
+      "period",
+      "basis",
+      "currency",
+      "status",
+      "value",
+      "evidence",
+      "source_locator",
+      "routing"
+    ],
+    "additionalProperties": false
+  }
+}
