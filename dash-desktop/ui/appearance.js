@@ -13,7 +13,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     const control = document.getElementById("appearance");
-    control.elements.namedItem("appearance").value = appearance;
+    for (const radio of control.querySelectorAll("input")) radio.checked = radio.value === appearance;
     control.addEventListener("change", event => {
       const value = event.target.value;
       if (value !== "dark" && value !== "light") return;
