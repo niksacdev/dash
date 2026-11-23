@@ -132,6 +132,38 @@ class OpikExperiments {
       throw Error(message);
     }
   }
+  async registerPrompt(api,m,step) {
+    if(m.fixture || !m.approvedPromptId)return null;
+    const approved=m.approvedPrompt, family=approved?.familyId || m.approvedPromptId;
+    if(approved?.id && approved.id!==m.approvedPromptId)throw problem("The saved approval and prompt IDs differ.");
+    const template=m.mode==="quick" ? m.prompt : m.effectiveSystem;
+    if(typeof template!=="string" || !template.trim())throw problem("The approved candidate-visible prompt is missing from this saved run.");
+    const variant=m.mode==="quick"?"quick-user":"dataset-system";
+    const name="DASH "+(m.mode==="quick"?"Quick prompt":"Dataset prompt")+" · "+digest([family,variant]).slice(0,20);
+    const key="catalog-prompt/"+digest([family,m.approvedPromptId,variant,template]);
+    return step(key,async()=>{
+      const id=this.stableId(key);
+      let remote;
+      try { remote=await api.prompts.getPromptVersionById(id,{},options); }
+      catch(e) {
+        if(e.statusCode!==404)throw e;
+        try {
+          remote=await api.prompts.createPromptVersion({name,projectName:this.config.project,templateStructure:"text",version:{
+            id,template,type:"mustache",metadata:{dash_approved_prompt_id:m.approvedPromptId,dash_family_id:family,
+              dash_revision:approved?.version ?? null,variant},tags:["DASH"],
+          }},options);
+        } catch(e) {
+          if(e.statusCode!==409)throw e;
+          remote=await api.prompts.getPromptVersionById(id,{},options);
+        }
+      }
+      if(!remote?.id || !remote.promptId || remote.template!==template ||
+         remote.metadata?.dash_approved_prompt_id!==m.approvedPromptId || remote.metadata?.variant!==variant)
+        throw problem("Opik did not confirm the approved candidate-visible prompt version.");
+      return {id:remote.id,promptId:remote.promptId,name,commit:remote.commit ?? null,
+        version:remote.versionNumber ?? null,approvedId:m.approvedPromptId,revision:approved?.version ?? null,variant};
+    });
+  }
   async send(api, saved, step) {
     const m=saved.manifest, projectName=this.config.project;
     const source=m.datasetId ? this.bench.dataset(m.datasetId) : null;
@@ -162,6 +194,7 @@ class OpikExperiments {
       split:m.split || rows[0].split || "quick",change_note:metadata.changeNote || "",parent_snapshot:metadata.parentId || "",
       category:metadata.category || "",source:metadata.source || "",dataset_tags:JSON.stringify(metadata.tags || []),
     },options,problem));
+    const promptVersion=await this.registerPrompt(api,m,step);
     const experiments=[];
     for(const candidate of m.candidates){
       const eid=this.stableId("experiment/"+m.id+"/"+candidate.id), prefix="experiment/"+eid;
@@ -173,6 +206,7 @@ class OpikExperiments {
       await step(prefix+"/create",async()=>{
         const e=await ensure(()=>api.experiments.getExperimentById(eid,{},options),
           ()=>api.experiments.createExperiment({id:eid,name,projectName,datasetName,datasetVersionId:version.id,status:"running",
+            ...(promptVersion && {promptVersions:[{id:promptVersion.id}]}),
             metadata:{dash_run_id:m.id,candidate_id:candidate.id,model:candidate.model,revision:candidate.revision,industry:m.industry,
               fixture:m.fixture,dataset_id:m.datasetId,dataset_version:m.datasetVersion,dataset_family:metadata.family,pinned_dataset_metadata:metadata,case_set_hash:m.caseSetHash,approved_prompt_id:m.approvedPromptId,policy_hash:m.policyHash,
               token_budget:m.tokenBudget,run_status:saved.status},tags:["DASH",...(m.fixture?["fixture"]:[])]},options));
@@ -249,7 +283,7 @@ class OpikExperiments {
       await step(prefix+"/finish",()=>api.experiments.updateExperiment(eid,{body:{status,experimentScores}},options));
       experiments.push({id:eid,name,candidate:candidate.model,traces:traces.length,scores:scores.length});
     }
-    return {runId:m.id,datasetId,datasetName,versionId:version.id,version:version.name,caseCount:rows.length,experiments,syncedAt:new Date().toISOString()};
+    return {runId:m.id,datasetId,datasetName,versionId:version.id,version:version.name,caseCount:rows.length,experiments,promptVersion,syncedAt:new Date().toISOString()};
   }
 }
 module.exports={OpikExperiments,configuration};
