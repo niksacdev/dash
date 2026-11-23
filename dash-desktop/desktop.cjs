@@ -78,6 +78,14 @@ function initialize() {
   bind("refresh", () => bench.refresh());
   bind("dataset", (key) => bench.dataset(id(key)));
   bind("detail", (key) => bench.detail(id(key)));
+  const opikExports = new (require("./lib/opik-experiments.cjs").OpikExperiments)(bench);
+  bind("opikExperimentStatus", run => opikExports.status(id(run)));
+  bind("syncOpikExperiment", run => opikExports.sync(id(run)));
+  bind("openOpikDashboard", () => {
+    const url = opikExports.config.dashboard;
+    if (!url) throw Error("No Opik dashboard was configured.");
+    return require("electron").shell.openExternal(url);
+  });
   bind("performance", key => require("./lib/performance.cjs").performance(bench.db, id(key)));
   bind("diagnostics", (key) =>
     require("./lib/diagnostics.cjs").diagnostics(bench.detail(id(key))),

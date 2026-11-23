@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld(
       "refresh",
       "dataset",
       "detail",
+      "opikExperimentStatus", "syncOpikExperiment", "openOpikDashboard",
       "performance",
       "diagnostics",
       "start",

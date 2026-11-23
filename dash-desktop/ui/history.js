@@ -90,7 +90,7 @@ async function historyPage(key) {
         const model=saved.report.candidates.find(c=>c.id===v.candidateId);
         return esc((model?.label || v.candidateId)+' '+scorePercent(v.score));
       }).join(' · ')+'</span></div>').join('')+'</section>':'')+
-    bar("Performance")+performanceCharts(s)+historyTrend(s)+bar("Saved runs")+'<div class="panel">'+historyList(runs)+'</div>';
+    (await opikExperimentPanel(saved))+bar("Performance")+performanceCharts(s)+historyTrend(s)+bar("Saved runs")+'<div class="panel">'+historyList(runs)+'</div>';
 }
 
 document.addEventListener("change", e=>{if(e.target.id==="history-industry"){historyIndustry=e.target.value; render();}});
