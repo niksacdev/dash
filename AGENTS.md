@@ -24,12 +24,19 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 - Use a technical critic for changes to scoring, data ownership, runtime boundaries, or external integrations. Check SDK reuse, migration and retry behavior, privacy, and the normal user entry points. Record material findings and their resolution in the PR or ADR.
 - Recheck the original goal when implementation choices change and before calling work complete. Explain any remaining gap using a concrete example. A working build alone does not establish that a business outcome was achieved.
 
+## Decision records and lineage
+
+- Before planning a material product, UX or architecture change, read the [decision log](docs/adr/README.md) and the records it points to. Record durable choices about operator workflows, interaction patterns, runtime boundaries, data ownership, grading, privacy and reproducibility. Routine fixes that implement an existing decision can cite its ADR.
+- In the same PR as the change, add the next numbered ADR and append a dated event to the log. Capture the problem, alternatives, chosen approach, trade-offs, evidence and review or implementation link. Identify which prior ADR it extends or supersedes, or mark it as the first decision on that topic.
+- On acceptance, rejection, deprecation or replacement, append a new event and update the record’s status. Preserve earlier events and rationale. Link a replacement in both directions. The reviewer or agent completing a merge reconciles the log with the maintainer’s decision and verifies the implementation on the default branch. Do not infer acceptance from a working prototype.
+
 ## Verification and review
 
 - Verify changes through their real entry points. Cover domain regressions with synthetic cases, exercise SDK serialization against an isolated service, and run Electron checks against a fresh test profile. Record which paths used real models, simulated transports, or a live service.
+- For a shared Opik destination, verify object ownership and retry behavior using two independent local profiles. Native names can be workspace-wide even when a lookup accepts a project parameter.
 - When adding a model capability, distinguish downloaded weights, a runtime catalog entry and a successful native request. Use a small synthetic case to verify the exact operation and returned model identity before describing it as live.
 - Use the repository's typecheck, build, tests and documentation-link check. GitHub Actions should exercise the same commands that contributors run locally. Update setup instructions with build changes.
-- Work on a feature branch and commit each coherent, verified increment. Keep mechanical moves separate from behavioral changes when practical. Push the branch, open or update its pull request, and verify CI on its current head. Use the PR for review before merging. Record decisions affecting architecture, data ownership, scoring or reproducibility in [docs/adr](docs/adr/). Include the user-visible effect, verification evidence and any remaining limitations.
+- Work on a feature branch and commit each coherent, verified increment. Keep mechanical moves separate from behavioral changes when practical. Push the branch, open or update its pull request, and verify CI on its current head. Use the PR for review before merging. Include the user-visible effect, verification evidence and any remaining limitations.
 - For a dependent series, agree the batch order, use the preceding PR as the next base, and check GitHub's actual merge status before adding a commit. After a squash merge, verify the remaining diff against the new base. Finish the agreed batches before starting another feature. After the last merge, fetch the default branch and compare its tree with the reviewed release. GitHub can mark a stacked PR merged into its former base while main still lacks those files.
 - Use the [documentation index](docs/START_HERE.md) for the original artifacts and product reviews. Maintain a single source for each dataset fixture and preserve original design/specification files when moving them.
 

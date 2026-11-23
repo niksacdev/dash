@@ -73,7 +73,7 @@ The desktop tests run Electron against isolated temporary profiles. The workflow
 | Directory or file | Purpose |
 | --- | --- |
 | [dash-desktop/](dash-desktop/) | Electron app, local orchestration, SQLite storage, scenario packs, and tests |
-| [docs/adr/](docs/adr/) | Architecture decisions, trade-offs and ownership boundaries |
+| [Decision log](docs/adr/README.md) | Chronological product, design and architecture decisions, including alternatives, status, related ADRs and review history |
 | [Documentation index](docs/START_HERE.md) | Workbench guide, specifications, design references, product reviews and original artifacts |
 | [CONTRIBUTING.md](.github/CONTRIBUTING.md) | Branch, commit, verification and pull request workflow |
 

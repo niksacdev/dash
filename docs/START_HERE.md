@@ -20,6 +20,8 @@ These seven Library artifacts were verified on November 22, 2026. Revisions refe
 
 ## Design and architecture
 
+Read the [chronological decision log](adr/README.md) for status, rationale, related decisions and the PR that reviewed each material product, design or architecture choice.
+
 The [design assets](design/README.md) include screenshots of the running app and the source of the circuit artwork. Accepted decisions cover the [domain hierarchy](adr/0001-domain-workbench.md) and [Opik integration](adr/0002-opik-and-offline-runs.md). The [decision grader ADR](adr/0005-decision-model-graders.md) explains model selection, missing evidence and abstention.
 
 The [grader library ADR](adr/0006-grader-library.md) and [feature specification](reviews/grader-library.md) explain automatic checks, industry criteria, customer forks and review.
