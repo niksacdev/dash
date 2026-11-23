@@ -1,0 +1,59 @@
+import {contextBridge, ipcRenderer} from "electron";
+
+type Command = Exclude<keyof DashBridge, "onPlanningStage">;
+type Reply<K extends Command> = Awaited<ReturnType<DashBridge[K]>>;
+
+// Only explicit methods below can invoke the main process. IPC handlers enforce the same reply contract.
+function invoke<K extends Command>(command:K, ...args:Parameters<DashBridge[K]>):Promise<Reply<K>> {
+  return ipcRenderer.invoke("dash:"+command,...args);
+}
+
+function isPlanningEvent(value:unknown):value is UiPlanningEvent {
+  return typeof value==="object" && value!==null &&
+    "mode" in value && (value.mode==="quick" || value.mode==="dataset") &&
+    "stage" in value && typeof value.stage==="string" &&
+    "model" in value && typeof value.model==="string" &&
+    "status" in value && (value.status==="running" || value.status==="failed" || value.status==="succeeded") &&
+    "attempt" in value && typeof value.attempt==="number" && Number.isSafeInteger(value.attempt);
+}
+
+const bridge:DashBridge = {
+  onPlanningStage(callback) {
+    if (typeof callback !== "function") return;
+    ipcRenderer.on("dash:planningStage",(_event, stage:unknown) => {
+      if (isPlanningEvent(stage)) callback(stage);
+    });
+  },
+  list: () => invoke("list"),
+  refresh: () => invoke("refresh"),
+  dataset: (id) => invoke("dataset", id),
+  detail: (id) => invoke("detail", id),
+  designPrompt: (request) => invoke("designPrompt", request),
+  suggestMetrics: (request) => invoke("suggestMetrics", request),
+  approvePrompt: (request) => invoke("approvePrompt", request),
+  cancelDesign: () => invoke("cancelDesign"),
+  saveDomainRole: (request) => invoke("saveDomainRole", request),
+  savePlannerFallback: (request) => invoke("savePlannerFallback", request),
+  guidePrompt: (draft) => invoke("guidePrompt", draft),
+  cancelGuide: () => invoke("cancelGuide"),
+  power: detailed => detailed===undefined ? invoke("power") : invoke("power",detailed),
+  saveEndpoint: (request) => invoke("saveEndpoint", request),
+  designGraders: (request) => invoke("designGraders", request),
+  confirmGraders: (definitions) => invoke("confirmGraders", definitions),
+  saveGrader: (definition) => invoke("saveGrader", definition),
+  graderSamples: () => invoke("graderSamples"),
+  quickGraderOptions: (id) => invoke("quickGraderOptions", id),
+  previewQuickBudget: (id, models) => invoke("previewQuickBudget", id, models),
+  assess: (request) => invoke("assess", request),
+  diagnostics: (id) => invoke("diagnostics", id),
+  opikExperimentStatus: (id) => invoke("opikExperimentStatus", id),
+  syncOpikExperiment: (id) => invoke("syncOpikExperiment", id),
+  openOpikDashboard: () => invoke("openOpikDashboard"),
+  performance: (id) => invoke("performance", id),
+  start: (request) => invoke("start", request),
+  stop: (id) => invoke("stop", id),
+  import: (pack) => invoke("import", pack),
+  commitImport: (token, metadata) => invoke("commitImport", token, metadata),
+  export: (id) => invoke("export", id),
+};
+contextBridge.exposeInMainWorld("dash", bridge);

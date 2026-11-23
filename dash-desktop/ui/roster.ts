@@ -1,25 +1,26 @@
 "use strict";
 const gridSections=["Local","Frontier Labs","Fine-tuned","Hosted"];
-const emptySelection = () => ({ lanes: [null, null], requestedLane: null, search: "" });
+interface UiModelSelection {lanes:(string|null)[];requestedLane:number|null;search:string}
+const emptySelection = ():UiModelSelection => ({ lanes: [null, null], requestedLane: null, search: "" });
 const modelSelections = { quick: emptySelection(), dataset: emptySelection() };
-const selectedModels = (mode = "quick") => modelSelections[mode].lanes.filter(Boolean);
-function resetModelSelection(mode) {
+const selectedModels = (mode:UiMode = "quick") => modelSelections[mode].lanes.filter((id): id is string => id!==null);
+function resetModelSelection(mode:UiMode) {
   modelSelections[mode] = emptySelection();
 }
 const rosterModels=()=>[...models(),...(state.endpoints||[])];
-const modelSection=c=>c.section || "Local";
-function rosterMark(c){
+const modelSection=(c:UiModel)=>c.section || "Local";
+function rosterMark(c:UiModel){
   const f=modelFamily(c.model);
   return '<span class="model-logo">'+(f?'<img alt="" src="assets/model-logos/'+f+'.svg">':svg("candidate-i"))+'</span>';
 }
-function modelCapacityNote(c) {
-  const active=Number.isFinite(c.contextTokens) && c.contextTokens>0 ? c.contextTokens : null;
-  const max=Number.isFinite(c.maxContextTokens) && c.maxContextTokens>0 ? c.maxContextTokens : null;
-  const output=Number.isFinite(c.maxOutputTokens) && c.maxOutputTokens>0 ? c.maxOutputTokens : null;
+function modelCapacityNote(c:UiModel) {
+  const active=isNumber(c.contextTokens) && c.contextTokens>0 ? c.contextTokens : null;
+  const max=isNumber(c.maxContextTokens) && c.maxContextTokens>0 ? c.maxContextTokens : null;
+  const output=isNumber(c.maxOutputTokens) && c.maxOutputTokens>0 ? c.maxOutputTokens : null;
   return [active ? active.toLocaleString()+" active context" : "Active context unreported",
     max && max!==active ? max.toLocaleString()+" model maximum" : "", output ? output.toLocaleString()+" max output" : ""].filter(Boolean).join(" · ");
 }
-function capacityIssue(c, approved) {
+function capacityIssue(c:UiModel, approved:UiApproved|null) {
   if (approved?.inputCap && (c.provider!=="lmstudio" || c.loaded!==true))
     return "This strict input limit requires a loaded LM Studio model. Choose one or revise the input limit.";
   if (approved?.outputCap && c.maxOutputTokens && approved.outputCap>c.maxOutputTokens)
@@ -28,42 +29,42 @@ function capacityIssue(c, approved) {
   return approved?.outputCap && limit && approved.outputCap>=limit
     ? "Output limit leaves no room for the prompt. Lower the approved output limit or choose another model." : "";
 }
-const budgetPreviews={promptId:null, lanes:new Map(), timer:null, refreshing:false};
+const budgetPreviews:{promptId:string|null;lanes:Map<string,UiLaneBudget>;timer?:number;refreshing:boolean}={promptId:null, lanes:new Map(), timer:undefined, refreshing:false};
 function clearBudgetPreviews() {
   clearTimeout(budgetPreviews.timer);
   budgetPreviews.promptId=null;
   budgetPreviews.lanes.clear();
 }
-function currentBudgetPreview(id) {
+function currentBudgetPreview(id:string) {
   return workflows.quick.approved?.id===budgetPreviews.promptId ? budgetPreviews.lanes.get(id) : null;
 }
-function laneBudgetState(model, approved) {
+function laneBudgetState(model:UiModel, approved:UiApproved|null):UiLaneBudget {
   const preview=currentBudgetPreview(model.id);
   const localIssue=capacityIssue(model,approved);
   if (localIssue) return {...preview,status:"blocked",message:preview?.status==="blocked" ? preview.message : localIssue};
   if (preview) return preview;
   return {status:typeof api.previewQuickBudget==="function" ? "pending" : "unverified"};
 }
-function laneBudgetText(budget,model) {
+function laneBudgetText(budget:UiLaneBudget,model:UiModel) {
   if (budget.status==="pending") return "Checking token allocation…";
-  const input=Number.isSafeInteger(budget.inputTokens) ? budget.inputTokens.toLocaleString()+" input tokens" : "Input count unavailable";
-  const output=Number.isSafeInteger(budget.outputReserve) ? budget.outputReserve.toLocaleString()+" output reserved" : "Output allocation unavailable";
-  const context=Number.isSafeInteger(budget.contextTokens) && budget.contextTokens!==model.contextTokens ? budget.contextTokens.toLocaleString()+" active context" : "";
+  const input=isNumber(budget.inputTokens) ? budget.inputTokens.toLocaleString()+" input tokens" : "Input count unavailable";
+  const output=isNumber(budget.outputReserve) ? budget.outputReserve.toLocaleString()+" output reserved" : "Output allocation unavailable";
+  const context=isNumber(budget.contextTokens) && budget.contextTokens!==model.contextTokens ? budget.contextTokens.toLocaleString()+" active context" : "";
   if (budget.status==="blocked")
     return '<strong>Token check blocked</strong>'+esc(budget.message || "This prompt cannot run within the current limits.")+
-      (Number.isSafeInteger(budget.inputTokens)?'<small>'+esc(input)+'</small>':'')+
+      (isNumber(budget.inputTokens)?'<small>'+esc(input)+'</small>':'')+
       '<a class="link" data-qc-revise href="#prompts">Revise approved prompt →</a>';
   const prefix=budget.status==="verified"?"Verified · ":"";
   return esc(prefix+[input,output,context].filter(Boolean).join(" · "));
 }
-function laneBudgetMarkup(model, approved) {
+function laneBudgetMarkup(model:UiModel, approved:UiApproved|null) {
   const budget=laneBudgetState(model, approved);
   return '<div class="qc-lane-budget" data-qc-budget="'+esc(model.id)+'" data-budget-status="'+esc(budget.status)+'" aria-live="polite">'+laneBudgetText(budget,model)+'</div>';
 }
 function paintBudgetPreviews() {
   if (trail()[0]!=="compare" || !document.querySelector("#quick-models")) return;
   const roster=rosterModels();
-  for (const node of document.querySelectorAll("[data-qc-budget]")) {
+  for (const node of document.querySelectorAll<HTMLElement>("[data-qc-budget]")) {
     const model=roster.find(c=>c.id===node.dataset.qcBudget);
     if (!model) continue;
     const budget=laneBudgetState(model,workflows.quick.approved);
@@ -93,9 +94,9 @@ function scheduleBudgetPreview() {
   // Batch rapid taps; keep an in-flight result for an unchanged lane.
   budgetPreviews.timer=setTimeout(async()=>{
     if (trail()[0]!=="compare" || !document.querySelector("#quick-models") || workflows.quick.busy || state.active) return;
-    const pending={status:"pending"};
+    const pending:UiLaneBudget={status:"pending"};
     for (const id of missing) budgetPreviews.lanes.set(id,pending);
-    let rows=[];
+    let rows:UiLaneBudget[]=[];
     try {
       const result=await api.previewQuickBudget(approved.id,missing);
       if (Array.isArray(result)) rows=result;
@@ -116,7 +117,7 @@ function canStartQuick() {
   if (!approved || state.active || workflows.quick.busy || graderDesignDrafts.get("prompt:"+approved.id)?.busy || selectedModels().length!==2 || quickGradeIssue(quickGradePlan())) return false;
   return !rosterModels().some(c=>selectedModels().includes(c.id) && laneBudgetState(c,approved).status==="blocked");
 }
-function lineSlots(mode){
+function lineSlots(mode:UiMode){
   const {lanes}=modelSelections[mode];
   const roster=rosterModels();
   return [0,1].map(i=>{
@@ -126,7 +127,7 @@ function lineSlots(mode){
       (model?'<button type="button" class="remove-model" data-remove="'+esc(model.id)+'" aria-label="Remove '+esc(model.model)+'">×</button>':'')+'</div>';
   }).join("");
 }
-function rosterGroups(mode){
+function rosterGroups(mode:UiMode){
   const selection=modelSelections[mode];
   const search=selection.search.trim().toLowerCase(), all=rosterModels();
   return gridSections.map(section=>{
@@ -135,7 +136,7 @@ function rosterGroups(mode){
     return '<section class="roster-group"><div class="group-name"><strong>'+esc(section)+'</strong><small>'+items.length+'</small></div><div class="roster-list">'+
       (items.length ? items.map(c=>{
         const entered=selection.lanes.includes(c.id);
-        const runtime=c.endpoint?new URL(c.endpoint).host:({lmstudio:"LM Studio",ollama:"Ollama"}[c.provider] || c.provider);
+        const runtime=c.endpoint?new URL(c.endpoint).host:(c.provider==="lmstudio"?"LM Studio":c.provider==="ollama"?"Ollama":c.provider);
         const status=c.needsKey?"Enter session key":c.loaded===true?"Loaded":c.loaded===false?"On disk":"";
         return '<button type="button" class="roster-model" data-model="'+esc(c.id)+'" aria-pressed="'+entered+'" '+
           ((selectedModels(mode).length===2&&!entered)||c.needsKey?'disabled':'')+' title="'+esc(c.model)+'">'+rosterMark(c)+'<span><b>'+esc(displayModel(c.model))+'</b>'+
@@ -146,7 +147,7 @@ function rosterGroups(mode){
 function canStartDataset() {
   return !state.active && !workflows.dataset.busy && !graderDesignDrafts.get(activeDatasetGraderScope())?.busy && selectedModels("dataset").length > 0;
 }
-function modelPicker(mode, caseCount) {
+function modelPicker(mode:UiMode, caseCount=0) {
   const quick = mode === "quick";
   const selection = modelSelections[mode];
   const available = rosterModels();
@@ -164,21 +165,22 @@ function modelPicker(mode, caseCount) {
     '<div id="roster-groups">'+rosterGroups(mode)+'</div></section></section>';
 }
 function setupQuick() {
-  return '<form id="setup" class="compare-console">'+modelPicker("quick")+gradeDesignerView("prompt:"+workflows.quick.approved.id)+quickGradePicker()+'</form>'+endpointForm()+hostingLegend();
+  return '<form id="setup" class="compare-console">'+modelPicker("quick")+gradeDesignerView("prompt:"+workflows.quick.approved?.id)+quickGradePicker()+'</form>'+endpointForm()+hostingLegend();
 }
-function updateGrid(picker) {
-  const mode = picker.dataset.pickerMode;
-  const focus = document.activeElement?.dataset.model;
-  picker.querySelector(".starting-grid").innerHTML = lineSlots(mode);
-  picker.querySelector("#roster-groups").innerHTML = rosterGroups(mode);
-  picker.querySelector("#pick-count").textContent = selectedModels(mode).length + " / 2 ready";
+function updateGrid(picker:HTMLElement) {
+  const mode = picker?.dataset.pickerMode;
+  if (!picker || !isRunMode(mode)) return;
+  const focus = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.model : undefined;
+  $(".starting-grid",picker).innerHTML = lineSlots(mode);
+  $("#roster-groups",picker).innerHTML = rosterGroups(mode);
+  $("#pick-count",picker).textContent = selectedModels(mode).length + " / 2 ready";
   if (mode === "quick") {
     updateQuickGradingControls();
     scheduleBudgetPreview();
   } else {
-    picker.querySelector(".go-button").disabled = !canStartDataset();
+    requireElement(".go-button",HTMLButtonElement,picker).disabled = !canStartDataset();
   }
-  if (focus) picker.querySelector('[data-model="'+CSS.escape(focus)+'"]')?.focus({preventScroll:true});
+  if (focus) picker.querySelector<HTMLButtonElement>('[data-model="'+CSS.escape(focus)+'"]')?.focus({preventScroll:true});
 }
 function endpointForm(){
   return '<details class="card spacer"><summary>Connect a model endpoint</summary><form id="endpoint-form" class="spacer"><div class="cols">'+
@@ -189,31 +191,39 @@ function endpointForm(){
     '<button>Save endpoint</button><p class="muted">Starting a run sends its inputs to the model destinations shown on the starting line.</p></form></details>';
 }
 document.addEventListener("input",e=>{
+  if (!textInput(e.target)) return;
+
   if (e.target.id !== "model-search") return;
-  const picker = e.target.closest("[data-picker-mode]");
-  const mode = picker.dataset.pickerMode;
+  const picker = e.target.closest<HTMLElement>("[data-picker-mode]");
+  const mode = picker?.dataset.pickerMode;
+  if (!picker || !isRunMode(mode)) return;
   modelSelections[mode].search = e.target.value;
-  picker.querySelector("#roster-groups").innerHTML = rosterGroups(mode);
+  $("#roster-groups",picker).innerHTML = rosterGroups(mode);
 });
 document.addEventListener("click",e=>{
+  if (!(e.target instanceof Element)) return;
+
   if (e.target.closest("[data-qc-revise]")) {
-    const revision=document.querySelector(".wf-approved [data-wf-revise]");
+    const revision=dashElement(".wf-approved [data-wf-revise]",HTMLButtonElement);
     if (revision) {e.preventDefault();revision.click();}
     return;
   }
-  const picker=e.target.closest("[data-picker-mode]");
+  const picker=e.target.closest<HTMLElement>("[data-picker-mode]");
   if (!picker) return;
-  const selection=modelSelections[picker.dataset.pickerMode];
+  const mode=picker.dataset.pickerMode;
+  if (!isRunMode(mode)) return;
+  const selection=modelSelections[mode];
   const lineup=selection.lanes;
-  const slot=e.target.closest("[data-choose-slot]");
+  const slot=e.target.closest<HTMLButtonElement>("[data-choose-slot]");
   if(slot){
     selection.requestedLane=Number(slot.dataset.chooseSlot);
-    document.querySelector("#model-search")?.focus();
+    dashElement("#model-search",HTMLInputElement)?.focus();
     return;
   }
-  const b=e.target.closest("[data-model],[data-remove]");
+  const b=e.target.closest<HTMLButtonElement>("[data-model],[data-remove]");
   if(!b)return;
   const id=b.dataset.model || b.dataset.remove;
+  if (!id) return;
   const prior=lineup.indexOf(id);
   if(prior>=0)lineup[prior]=null;
   else {
@@ -225,8 +235,11 @@ document.addEventListener("click",e=>{
   updateGrid(picker);
 });
 document.addEventListener("submit",async e=>{
+  if (!(e.target instanceof HTMLFormElement)) return;
+
   if(e.target.id!=="endpoint-form")return;
   e.preventDefault();
-  try {await api.saveEndpoint(Object.fromEntries(new FormData(e.target)));await render();message("Model endpoint saved.");}
-  catch(error){message(error.message);}
+  const f=e.target;
+  try {await api.saveEndpoint({section:formText(f,"section"),model:formText(f,"model"),baseUrl:formText(f,"baseUrl"),key:formText(f,"key")});await render();message("Model endpoint saved.");}
+  catch(error){message(errorText(error));}
 });

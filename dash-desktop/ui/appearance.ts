@@ -13,8 +13,10 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     const control = document.getElementById("appearance");
+    if (!control) return;
     for (const radio of control.querySelectorAll("input")) radio.checked = radio.value === appearance;
     control.addEventListener("change", event => {
+      if (!(event.target instanceof HTMLInputElement)) return;
       const value = event.target.value;
       if (value !== "dark" && value !== "light") return;
       root.dataset.appearance = value;

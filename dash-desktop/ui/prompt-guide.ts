@@ -1,7 +1,9 @@
 "use strict";
 
 let guideEnabled = localStorage.getItem("dash.quickGuide") !== "off";
-let guideSequence = 0, guideTimer, guidePending = false, guideDraft = "", guideResult = null;
+let guideSequence = 0, guidePending = false, guideDraft = "";
+let guideTimer: number | undefined;
+let guideResult: UiGuideResult | null = null;
 
 function cancelPromptGuide() {
   ++guideSequence;
@@ -16,7 +18,7 @@ function guideBody() {
   if (guidePending) return '<small role="status">Reading your draft locally…</small>';
   if (!result) return "";
   if (result.status !== "ready") {
-    const note = {offline:"Load a model in LM Studio or Ollama to get a suggestion.",
+    const note = {canceled: "", offline:"Load a model in LM Studio or Ollama to get a suggestion.",
       busy:"Guidance is available after the active run.",
       unavailable:"The guide couldn’t return a suggestion."}[result.status];
     return note ? '<small>'+esc(note)+'</small> <button type="button" data-guide="retry">Try again</button>' : "";
@@ -38,7 +40,7 @@ function drawGuide() {
   if (body) body.innerHTML = guideBody();
 }
 function scheduleGuide(force = false) {
-  const input = document.querySelector("#prompt");
+  const input = document.querySelector<HTMLTextAreaElement>("#prompt");
   if (!input) return;
   const draft = input.value.trim();
   if (!force && draft === guideDraft) return;
@@ -48,11 +50,11 @@ function scheduleGuide(force = false) {
   drawGuide();
   if (!guideEnabled || !draft || (!force && draft.length < 4) || !window.dash.guidePrompt || state?.active) return;
   const version = guideSequence;
-  guideTimer = setTimeout(async () => {
+  guideTimer = window.setTimeout(async () => {
     if (version !== guideSequence || !document.querySelector("#prompt") || trail()[0]!=="compare") return;
     guidePending = true;
     drawGuide();
-    let result;
+    let result: UiGuideResult;
     try { result = await window.dash.guidePrompt(draft); }
     catch { result = { status: "unavailable" }; }
     if (version !== guideSequence) return;
@@ -61,11 +63,11 @@ function scheduleGuide(force = false) {
     drawGuide();
   }, force ? 0 : 1500);
 }
-function addGuidance(action) {
-  const prompt = document.querySelector("#prompt");
+function addGuidance(action: "answer" | "apply") {
+  const prompt = document.querySelector<HTMLTextAreaElement>("#prompt");
   if (!prompt || prompt.value.trim() !== guideDraft || guideResult?.status !== "ready") return;
-  const answer = document.querySelector("#guide-answer")?.value.trim();
-  if (action === "answer" && !answer) { document.querySelector("#guide-answer")?.focus(); return; }
+  const answer = document.querySelector<HTMLInputElement>("#guide-answer")?.value.trim();
+  if (action === "answer" && !answer) { document.querySelector<HTMLInputElement>("#guide-answer")?.focus(); return; }
   const addition = action === "answer" ? guideResult.text+"\n"+answer : guideResult.text;
   const combined = prompt.value.trimEnd()+"\n\n"+addition;
   if (combined.length > prompt.maxLength) {message("The extra detail exceeds the shared prompt limit.");return;}
@@ -79,21 +81,23 @@ function addGuidance(action) {
   prompt.setSelectionRange(combined.length, combined.length);
   if (action === "answer") scheduleGuide(true);
 }
-document.addEventListener("input", e => { if (e.target.id === "prompt") scheduleGuide(); });
+document.addEventListener("input", e => { if (e.target instanceof HTMLElement && e.target.id === "prompt") scheduleGuide(); });
 document.addEventListener("keydown", e => {
-  if (e.target.id === "guide-answer" && e.key==="Enter" && !e.isComposing) {
+  if (e.target instanceof HTMLElement && e.target.id === "guide-answer" && e.key==="Enter" && !e.isComposing) {
     e.preventDefault(); addGuidance("answer");
   }
 });
 document.addEventListener("click", e => {
-  const button = e.target.closest("[data-guide]");
+  if (!(e.target instanceof Element)) return;
+  const button = e.target.closest<HTMLButtonElement>("[data-guide]");
   if (!button) return;
   switch (button.dataset.guide) {
     case "toggle":
       guideEnabled = !guideEnabled;
       localStorage.setItem("dash.quickGuide",guideEnabled?"on":"off");
       button.setAttribute("aria-pressed", String(guideEnabled));
-      button.querySelector("span").textContent = guideEnabled?"On":"Off";
+      const label = button.querySelector("span");
+      if (label) label.textContent = guideEnabled?"On":"Off";
       scheduleGuide(true);
       break;
     case "dismiss": cancelPromptGuide(); guideResult=null; drawGuide(); break;

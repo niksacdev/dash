@@ -1,27 +1,28 @@
 "use strict";
 
 const planningDomains = ["Financial Services", "Manufacturing", "General"];
-const modeName = mode => mode === "quick" ? "Quick compare" : "Dataset run";
-const modeRoute = mode => mode === "quick" ? "compare" : "new";
-const plannerState = mode => ({
+const modeName = (mode:UiMode) => mode === "quick" ? "Quick compare" : "Dataset run";
+const modeRoute = (mode:UiMode) => mode === "quick" ? "compare" : "new";
+const plannerState = (mode:UiMode):UiWorkflow => ({
   mode, objective: "", metrics: "", domain: "", inputCap: "", outputCap: "",
   datasetId: "", parentId: null, sourceRunId: null, draft: null, approved: null, reviewPrompt: "",
   reviewMetrics: "", suggestion: null, chosenMetrics: null, criteria: "", busy: "", error: ""
 });
 const workflows = { quick: plannerState("quick"), dataset: plannerState("dataset") };
+function activeWorkflow() { const mode=workflowMode();return mode ? workflows[mode] : null; }
 const workflowMode = () => trail()[0] === "compare" ? "quick" : trail()[0] === "new" ? "dataset" : null;
-const metricLines = text => text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-const metricList = items => '<ul class="wf-metric-list">' + (items || []).map(m => '<li>' + esc(m) + '</li>').join("") + '</ul>';
-const roleEdits = new Map();
+const metricLines = (text:string) => text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+const metricList = (items?:string[]) => '<ul class="wf-metric-list">' + (items || []).map(m => '<li>' + esc(m) + '</li>').join("") + '</ul>';
+const roleEdits = new Map<string,{value:string;version:number}>();
 
-function capLabel(p) {
+function capLabel(p:UiTokenCaps) {
   return [p.inputCap && p.inputCap + " input tokens", p.outputCap && p.outputCap + " output tokens"].filter(Boolean).join(" · ") || "Runtime token defaults";
 }
-function workflowSteps(index) {
+function workflowSteps(index:number) {
   return '<ol class="wf-steps" aria-label="Evaluation steps">' + ["Business outcome", "Review prompt", "Start run"].map((s,i) =>
     '<li' + (i === index ? ' aria-current="step"' : '') + '><span aria-hidden="true">' + (i < index ? "✓" : i+1) + '</span>' + s + '</li>').join("") + '</ol>';
 }
-function workflowPage(mode) {
+function workflowPage(mode:UiMode) {
   const w = workflows[mode];
   if (mode === "dataset" && !w.draft && !w.approved && !w.busy && !w.parentId) w.datasetId = dataset()?.id || "";
   if (mode === "dataset" && !w.approved && !w.draft && !w.parentId && !w.variant)
@@ -32,25 +33,25 @@ function workflowPage(mode) {
     (mode === "dataset" && !w.parentId && !w.busy ? '<button class="quiet" type="button" id="dataset-native">← Use dataset instructions</button>' : '') +
     (w.approved ? workflowReady(w) : w.draft ? workflowReview(w) : workflowCompose(w)) + '</section>';
 }
-const exampleOutcomes = {
+const exampleOutcomes:Record<string,{title:string;sample:string;text:string}> = {
   earnings: {title:"Review earnings disclosures", sample:"Synthetic release excerpt: For the quarter ended June 30, diluted GAAP EPS was $0.74. Adjusted diluted EPS was $0.85. The release provides no reconciliation.", text:"Identify earnings figures that need analyst review. Cite the reported period and basis for each figure and flag missing evidence."},
   manufacturing: {title:"Inspect a supplier lot", sample:"Synthetic inspection record: Lot K7, shaft diameter. Active drawing B specifies 10.00 ± 0.03 mm. Reading: 10.04 mm. The receiving rule accepts only readings within the stated limits.", text:"Help receiving inspection decide which supplier lots need review using the measurement, tolerance and drawing revision in each record."},
 };
-function outcomeExamples(w) {
+function outcomeExamples(w:UiWorkflow) {
   if (w.parentId) return "";
   const keys=w.mode==="quick"?Object.keys(exampleOutcomes):Object.keys(exampleOutcomes).filter(k=>k===packId);
   if (!keys.length) return "";
   return '<div class="wf-examples"><small>Try an outcome</small>' + keys.map(key => '<button type="button" data-wf-example="'+key+'">'+esc(exampleOutcomes[key].title)+'</button>').join("")+'</div>';
 }
-function domainControl(w) {
+function domainControl(w:UiWorkflow) {
   const snapshot=state.datasets.find(d=>d.id===w.datasetId);
-  const pinned=w.mode==="dataset" && planningDomains.includes(snapshot?.metadata?.industry) && snapshot.metadata.industry;
+  const pinned=w.mode==="dataset" && snapshot && planningDomains.includes(snapshot.metadata.industry || "") && snapshot.metadata.industry;
   if (pinned) return '<p>Planning domain · <strong>'+esc(pinned)+'</strong> · assigned to this dataset</p>';
   return '<fieldset class="wf-domain"><legend>Planning domain</legend><div>' +
     [["","Infer from the task"],...planningDomains.map(d => [d,d])].map(([value,label]) =>
       '<label><input type="radio" name="wf-domain" value="' + esc(value) + '" ' + (w.domain===value?'checked':'') + '><span>' + esc(label) + '</span></label>').join("") + '</div></fieldset>';
 }
-function refinementSummary(run) {
+function refinementSummary(run?:UiPriorRun|null) {
   if (!run?.id) return "";
   const rows=run.candidates || [], custom=run.graders || [];
   const measured=rows.map(r => '<li>'+esc(r.candidate)+' · '+esc(r.responses)+' results · '+esc(r.errors)+' errors'+
@@ -59,14 +60,15 @@ function refinementSummary(run) {
   return '<h3>Prior run observations</h3>'+link('Open source run '+esc(run.id.slice(0,8))+' →','run/'+encodeURIComponent(run.id),'link')+
     (measured || graded ? '<ul class="wf-metric-list">'+measured+graded+'</ul>' : '<p>No case results were recorded for this run.</p>');
 }
-function planningDetails(p) {
+function planningDetails(p:UiPrompt) {
   if (!p.agents?.length) return "";
-  const source={dataset:"Dataset domain",user:"Selected domain",inferred:"Inferred domain"}[p.domainSource] || "Domain";
+  const domainSources:Record<string,string>={dataset:"Dataset domain",user:"Selected domain",inferred:"Inferred domain"};
+  const source=domainSources[p.domainSource || ""] || "Domain";
   return '<details class="wf-options"><summary>How the agents prepared this prompt</summary><div class="wf-options-body"><p>' + esc(source+" · "+p.domain) + '</p>' +
     '<p>'+esc(p.agents.map(a=>(a.role==="expert"?"Industry expert":"Industry implementer")+" v"+a.version).join(" → "))+
     (p.designer?.model?' · '+esc(p.designer.model):'')+'</p><h3>Success criteria</h3>'+metricList(p.requirements)+plannerAttempts(p)+refinementSummary(p.priorRun)+'</div></details>';
 }
-function measuresSection(w) {
+function measuresSection(w:UiWorkflow) {
   const suggesting = w.busy === "suggest";
   const head = '<div class="wf-measure-head"><h3>Success measures</h3>' +
     '<button type="submit" name="intent" value="suggest" id="wf-suggest" aria-controls="wf-measure-fields" ' +
@@ -82,15 +84,15 @@ function measuresSection(w) {
   return head + '<div id="wf-measure-fields">' + fields +
     (selected ? '<small class="wf-hint">' + source + 'Edit or remove any line before drafting.</small>' : '') + '</div>';
 }
-function mergeSuggestions(text, previous = [], suggested = []) {
+function mergeSuggestions(text:string, previous:string[] = [], suggested:string[] = []) {
   const current = metricLines(text);
   const custom = current.filter(line => !previous.includes(line));
   const fresh = suggested.filter(line => !previous.includes(line) || current.includes(line));
   return [...new Set([...custom, ...fresh])].join("\n");
 }
-function invalidateSuggestions(w) {
+function invalidateSuggestions(w:UiWorkflow) {
   if (!w.suggestion) return;
-  const remainingMetrics = mergeSuggestions(w.chosenMetrics, w.suggestion.metrics);
+  const remainingMetrics = mergeSuggestions(w.chosenMetrics ?? "", w.suggestion.metrics);
   w.criteria = mergeSuggestions(w.criteria, w.suggestion.criteria);
   w.chosenMetrics = remainingMetrics || w.criteria ? remainingMetrics : null;
   w.metrics = remainingMetrics;
@@ -98,7 +100,7 @@ function invalidateSuggestions(w) {
   const section = document.getElementById("wf-measures");
   if (section) section.innerHTML = measuresSection(w);
 }
-function workflowCompose(w) {
+function workflowCompose(w:UiWorkflow) {
   const busy = !!w.busy;
   const objectiveHint = w.mode === "dataset" ? "What decision should these cases help you make?" : "What should a successful response help you do?";
   return '<form id="wf-design-form" class="wf-panel"><fieldset class="wf-fields"' + (busy ? ' disabled' : '') + '>' +
@@ -116,13 +118,13 @@ function workflowCompose(w) {
       esc(w.stage || "Finding a loaded local planning model…") + '</span><button id="wf-cancel-design" type="button">Cancel preparation</button></div>' : '') +
     (w.mode === "dataset" ? fixtureControl(w) : '');
 }
-function fixtureControl(w) {
+function fixtureControl(w:UiWorkflow) {
   const d = state.datasets.find(d=>d.id===w.datasetId);
   if (d?.origin !== "bundled") return "";
   return '<details class="wf-options wf-fixture"><summary>Test the scenario grader with saved answers</summary><p>Replay the bundled responses to inspect which cases the scenario grader passes or fails.</p>' +
     '<button type="button" id="wf-fixture" ' + (state.active || w.busy ? 'disabled' : '') + '>Replay saved answers</button></details>';
 }
-function scenarioContract(p) {
+function scenarioContract(p:{mode:UiMode;datasetId?:string|null;dataset?:UiPack|null}) {
   if (p.mode !== "dataset") return "";
   const d = state.datasets.find(d => d.id === p.datasetId);
   const s = p.dataset || state.packs.find(s => s.id === d?.pack);
@@ -131,8 +133,9 @@ function scenarioContract(p) {
     '</p><h3>Required output schema</h3><pre>' + pretty(s.outputSchema) + '</pre><small>Snapshot ' + esc((d?.name || s.title) + " · " + (s.version || d?.version || "")) +
     ' · Grader ' + esc(s.scorer || state.packs.find(pack => pack.id===d?.pack)?.scorer || "scenario grader") + '</small></div></details>';
 }
-function workflowReview(w) {
+function workflowReview(w:UiWorkflow) {
   const d = w.draft;
+  if (!d) return "";
   return '<form id="wf-approval-form" class="wf-panel"><fieldset class="wf-fields"' + (w.busy ? ' disabled' : '') +
     '><div class="wf-section-head"><h2>Review the evaluation prompt</h2>' + tag(d.domain) + '</div>' +
     '<label class="field"><span>Prompt for evaluation</span><textarea id="wf-prompt" required maxlength="24000" rows="10">' +
@@ -143,7 +146,7 @@ function workflowReview(w) {
     '<div class="wf-actions"><button type="button" data-wf-edit>Edit outcome or domain</button><button class="yellow" type="submit" id="wf-approve">' +
     (w.busy ? 'Saving version…' : 'Approve &amp; choose models →') + '</button></div></fieldset></form>';
 }
-function promptActions(p, {use=false,runId=null,reviseLabel="Revise"} = {}) {
+function promptActions(p:UiApproved, {use=false,runId=null,reviseLabel="Revise"}:{use?:boolean;runId?:string|null;reviseLabel?:string} = {}) {
   const head=(state.prompts || []).reduce((latest,v)=>v.familyId===p.familyId && v.version>latest.version ? v : latest,p);
   const older=head.id!==p.id;
   const useButton=use?'<button type="button" data-wf-use="'+esc(p.id)+'">Use v'+esc(p.version)+' for run →</button>':'';
@@ -151,8 +154,9 @@ function promptActions(p, {use=false,runId=null,reviseLabel="Revise"} = {}) {
   return description+'<div class="wf-version-actions">'+useButton+'<button type="button" data-wf-revise="'+esc(head.id)+'"'+
     (runId && !older?' data-source-run="'+esc(runId)+'"':'')+'>'+esc(older?'Revise latest · v'+head.version:reviseLabel)+'</button></div>';
 }
-function workflowReady(w) {
+function workflowReady(w:UiWorkflow) {
   const p = w.approved;
+  if (!p) return "";
   const ds = state.datasets.find(d => d.id === p.datasetId);
   return '<section class="wf-panel wf-approved"><div class="wf-section-head"><div><small class="wf-eyebrow">Approved prompt · v' +
     esc(p.version) + '</small><h2>' + esc(p.title || p.objective) + '</h2></div>' + tag(p.domain) + '</div>' +
@@ -181,7 +185,7 @@ function domainRolesPage() {
       roles.filter(r=>r.domain===domain).map(roleEditor).join("") + '</div></section>').join("") :
       '<p class="wf-error">No domain agent profiles were returned by the workspace.</p>') + '</section>';
 }
-function roleEditor(r) {
+function roleEditor(r:UiRole) {
   const edit = roleEdits.get(r.domain+"/"+r.role);
   return '<form class="wf-panel" data-wf-role data-domain="' + esc(r.domain) + '" data-role="' + esc(r.role) + '" data-version="' + esc(edit?.version ?? r.version) +
     '"><div class="wf-section-head"><h3>' + esc(r.role==="expert"?"Industry expert":"Industry implementer") + '</h3>' + tag("v"+r.version) +
@@ -190,12 +194,12 @@ function roleEditor(r) {
       '<li><strong>'+esc(s.title)+'</strong><small>'+esc(s.url)+'</small></li>').join("")+'</ul></details>' : '') +
     '<div class="wf-version-actions"><button type="submit">Save agent version</button><button type="button" data-wf-restore>Reload saved instructions</button></div></form>';
 }
-function workflowRecord(id) {
+function workflowRecord(id:string) {
   return (state.prompts || []).find(p => p.id === id) || (current?.manifest?.approvedPrompt?.id===id ? current.manifest.approvedPrompt : null);
 }
-function openWorkflowPrompt(p, revise, sourceRunId = null) {
+function openWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null = null) {
   const w = plannerState(p.mode);
-  Object.assign(w, {objective:p.objective,metrics:p.requestedMetrics || "",domain:p.domain,inputCap:p.inputCap??"",outputCap:p.outputCap??"",datasetId:p.datasetId||"",parentId:p.id,sourceRunId});
+  Object.assign(w, {objective:p.objective,metrics:p.requestedMetrics || "",domain:p.domain,inputCap:p.inputCap?.toString()??"",outputCap:p.outputCap?.toString()??"",datasetId:p.datasetId||"",parentId:p.id,sourceRunId});
   if (p.mode === "dataset") {
     const d = state.datasets.find(d=>d.id===p.datasetId);
     if (!d) { message("The dataset snapshot for this version is unavailable."); return; }
@@ -210,7 +214,7 @@ function openWorkflowPrompt(p, revise, sourceRunId = null) {
   resetModelSelection(p.mode);
   if (trail()[0] === modeRoute(p.mode)) render(); else location.hash=modeRoute(p.mode);
 }
-function workflowRunSummary(m, status) {
+function workflowRunSummary(m:UiManifest, status:string) {
   const p=m.approvedPrompt;
   if (!p) return "";
   return '<section class="wf-panel wf-run-plan"><div class="wf-section-head"><div><small class="wf-eyebrow">Approved evaluation · v' +
@@ -220,7 +224,7 @@ function workflowRunSummary(m, status) {
     '</p><p>Prompt revision '+esc(p.version)+' · '+esc(m.promptHash || p.id)+'</p>'+planningDetails(p)+'</div></details>'+
     (["completed","failed","canceled"].includes(status) ? promptActions(p,{use:true,runId:m.id,reviseLabel:m.guardrailFailure?"Shorten the prompt for this limit →":"Revise for the next run →"}) : '')+'</section>';
 }
-function workflowCaseSummary(m, r) {
+function workflowCaseSummary(m:UiManifest, r:UiResult) {
   if (!m.approvedPrompt) return "";
   const spec=m.invocations?.find(i=>i.candidateId===r.candidateId);
   const actual=r.telemetry || {};
@@ -231,7 +235,7 @@ function workflowCaseSummary(m, r) {
     esc(actual.output_tokens ?? "Unreported")+(m.tokenBudget?.outputCap ? ' · limit '+esc(m.tokenBudget.outputCap) : '')+
     '</dd></dl></div>';
 }
-function workflowDesignInput(w) {
+function workflowDesignInput(w:UiWorkflow) {
   return {
     mode: w.mode, objective: w.objective.trim(), metrics: w.metrics.trim(),
     ...(w.chosenMetrics !== null && {measures:{metrics:metricLines(w.chosenMetrics),criteria:metricLines(w.criteria)}}),
@@ -241,7 +245,7 @@ function workflowDesignInput(w) {
     ...(w.parentId && {parentId:w.parentId}), ...(w.sourceRunId && {sourceRunId:w.sourceRunId})
   };
 }
-function showCurrentWorkflow(w) {
+function showCurrentWorkflow(w:UiWorkflow) {
   return workflows[w.mode]===w && trail()[0]===modeRoute(w.mode);
 }
 window.dash?.onPlanningStage?.(({mode,stage,model}) => {
@@ -253,28 +257,33 @@ window.dash?.onPlanningStage?.(({mode,stage,model}) => {
     if (label) label.textContent = w.stage;
   }
 });
-const workflowFields = {
+type WorkflowTextField = "objective"|"metrics"|"chosenMetrics"|"criteria"|"inputCap"|"outputCap"|"reviewPrompt"|"reviewMetrics";
+const workflowFields:Record<string,WorkflowTextField|undefined> = {
   "wf-objective":"objective","wf-metrics":"metrics","wf-chosen-metrics":"chosenMetrics","wf-criteria":"criteria","wf-input-cap":"inputCap",
   "wf-output-cap":"outputCap","wf-prompt":"reviewPrompt","wf-review-metrics":"reviewMetrics"
 };
 document.addEventListener("input", e => {
-  const w = workflows[workflowMode()];
+  if (!textInput(e.target)) return;
+
+  const w = activeWorkflow();
   const key = workflowFields[e.target.id];
   if (w && key && !w.busy) {
     const changed = w[key] !== e.target.value;
     w[key] = e.target.value;
     if (key === "objective") {
       if (changed) invalidateSuggestions(w);
-      const suggest = document.getElementById("wf-suggest");
+      const suggest = dashElement("#wf-suggest",HTMLButtonElement);
       if (suggest) suggest.disabled = !w.objective.trim();
     }
   }
-  const form=e.target.closest("form[data-wf-role]");
+  const form=e.target.closest<HTMLFormElement>("form[data-wf-role]");
   if (form && e.target.name==="instructions") roleEdits.set(form.dataset.domain+"/"+form.dataset.role,
     {value:e.target.value,version:Number(form.dataset.version)});
 });
 document.addEventListener("change",e=>{
-  const w=workflows[workflowMode()];
+  if (!textInput(e.target)) return;
+
+  const w=activeWorkflow();
   if (w && !w.busy && e.target.name==="wf-domain" && w.domain !== e.target.value) {
     w.domain=e.target.value;
     invalidateSuggestions(w);
@@ -282,38 +291,43 @@ document.addEventListener("change",e=>{
   if (w?.mode==="dataset" && ["pack","ds"].includes(e.target.id)) { w.domain=""; w.error=""; invalidateSuggestions(w); }
 });
 document.addEventListener("submit", async e=>{
+  if (!(e.target instanceof HTMLFormElement)) return;
+
   const form=e.target;
+  if (!(form instanceof HTMLFormElement)) return;
   if (form.matches("[data-wf-role]")) {
     e.preventDefault();
     if (form.dataset.saving) return;
     const {domain,role,version}=form.dataset;
     form.dataset.saving="true";
-    const instructions=form.elements.instructions.value;
-    const button=form.querySelector("button[type=submit]");
-    button.disabled=true; form.elements.instructions.disabled=true;
+    const instructionsField=requireElement("[name=instructions]",HTMLTextAreaElement,form);
+    const instructions=instructionsField.value;
+    if (!domain || !role) return;
+    const button=requireElement("button[type=submit]",HTMLButtonElement,form);
+    button.disabled=true; instructionsField.disabled=true;
     try {
       await api.saveDomainRole({domain,role,instructions,expectedVersion:Number(version)});
       roleEdits.delete(domain+"/"+role);
       if (trail()[0]==="roles") {await render(); message("Agent version saved.");}
-    } catch(error) { message(error.message); }
-    finally { delete form.dataset.saving; button.disabled=false; form.elements.instructions.disabled=false; }
+    } catch(error) { message(errorText(error)); }
+    finally { delete form.dataset.saving; button.disabled=false; instructionsField.disabled=false; }
     return;
   }
   const design=form.id==="wf-design-form";
   if (!design && form.id!=="wf-approval-form") return;
   e.preventDefault();
-  const w=workflows[workflowMode()];
+  const w=activeWorkflow();
   if (!w || w.busy || !form.reportValidity()) return;
-  if (design && !w.objective.trim()) {form.querySelector("#wf-objective").focus();return;}
-  if (!design && !w.reviewPrompt.trim()) {form.querySelector("#wf-prompt").focus();return;}
-  const suggest = design && e.submitter?.value === "suggest";
+  if (design && !w.objective.trim()) {$("#wf-objective",form).focus();return;}
+  if (!design && !w.reviewPrompt.trim()) {$("#wf-prompt",form).focus();return;}
+  const suggest = design && (e.submitter instanceof HTMLButtonElement && e.submitter.value) === "suggest";
   w.error=""; w.stage=""; w.busy=suggest ? "suggest" : design ? "design" : "approve";
-  form.querySelector("fieldset").disabled=true;
-  const task=design ? workflowDesignInput(w) : {draftId:w.draft.draftId,prompt:w.reviewPrompt.trim(),metrics:metricLines(w.reviewMetrics)};
+  requireElement("fieldset",HTMLFieldSetElement,form).disabled=true;
   void render();
   try {
     if (suggest) {
       if (!api.suggestMetrics) throw Error("Reopen DASH to use Suggest Metrics.");
+      const task=workflowDesignInput(w);
       delete task.suggestionId;
       const result = await api.suggestMetrics(task);
       w.chosenMetrics = mergeSuggestions(w.chosenMetrics ?? w.metrics, w.suggestion?.metrics, result.metrics);
@@ -321,15 +335,16 @@ document.addEventListener("submit", async e=>{
       w.suggestion = result;
     } else if (design) {
       if (!api.designPrompt) throw Error("The planning service is unavailable in this session. Reopen DASH to load the domain agents.");
-      const draft=await api.designPrompt(task);
+      const draft=await api.designPrompt(workflowDesignInput(w));
       w.draft=draft; w.reviewPrompt=draft.prompt; w.reviewMetrics=draft.metrics.join("\n");
     } else {
-      w.approved=await api.approvePrompt(task);
+      if (!w.draft) throw Error("No draft is available to approve.");
+      w.approved=await api.approvePrompt({draftId:w.draft.draftId,prompt:w.reviewPrompt.trim(),metrics:metricLines(w.reviewMetrics)});
       if (workflows[w.mode]===w) {
         resetModelSelection(w.mode);
       }
     }
-  } catch(error) {w.error=String(error.message).replace(/^Error invoking remote method .dash:[^ ]+ Error: /,"");}
+  } catch(error) {w.error=String(errorText(error)).replace(/^Error invoking remote method .dash:[^ ]+ Error: /,"");}
   finally {
     w.busy="";
     if (showCurrentWorkflow(w)) {
@@ -339,28 +354,30 @@ document.addEventListener("submit", async e=>{
   }
 });
 document.addEventListener("click", async e=>{
-  const reloadRole=e.target.closest("[data-wf-restore]")?.form;
+  if (!(e.target instanceof Element)) return;
+
+  const reloadRole=e.target.closest("button[data-wf-restore]")?.closest("form");
   if (reloadRole && !reloadRole.dataset.saving) {
     roleEdits.delete(reloadRole.dataset.domain+"/"+reloadRole.dataset.role); await render(); return;
   }
-  const cancel = e.target.closest("#wf-cancel-design");
+  const cancel = e.target.closest<HTMLButtonElement>("#wf-cancel-design");
   if (cancel) {
     cancel.disabled = true;
     try { await api.cancelDesign(); }
-    catch (error) { message(error.message); cancel.disabled = false; }
+    catch (error) { message(errorText(error)); cancel.disabled = false; }
     return;
   }
-  const example=e.target.closest("[data-wf-example]");
+  const example=e.target.closest<HTMLButtonElement>("[data-wf-example]");
   if (example) {
-    const field=document.querySelector("#wf-objective");
-    const sample=exampleOutcomes[example.dataset.wfExample];
+    const field=dashElement("#wf-objective",HTMLTextAreaElement);
+    const sample=exampleOutcomes[example.dataset.wfExample ?? ""];
     if (!field || !sample) return;
     const exampleText = workflowMode() === "quick" ? sample.text + "\n\n" + sample.sample : sample.text;
     field.value=field.value.trim()?field.value.trimEnd()+"\n"+exampleText:exampleText;
     field.dispatchEvent(new Event("input",{bubbles:true})); field.focus();
     return;
   }
-  const button=e.target.closest("[data-wf-use],[data-wf-revise],[data-wf-edit],[data-wf-reset],#wf-fixture");
+  const button=e.target.closest<HTMLButtonElement>("[data-wf-use],[data-wf-revise],[data-wf-edit],[data-wf-reset],#wf-fixture");
   if (!button) return;
   const id=button.dataset.wfUse || button.dataset.wfRevise;
   if (id) {
@@ -369,19 +386,21 @@ document.addEventListener("click", async e=>{
     else message("This saved prompt could not be loaded.");
     return;
   }
-  const mode=workflowMode(),w=workflows[mode];
+  const mode=workflowMode();
+  if (!mode) return;
+  const w=workflows[mode];
   if (!w || w.busy) return;
   if (button.id==="wf-fixture") {
     button.disabled=true;
     try {
       const id=await api.start({mode:"dataset",datasetId:w.datasetId,candidateIds:[state.fixtureId],graderIds:[],animation:!matchMedia("(prefers-reduced-motion: reduce)").matches});
       if (showCurrentWorkflow(w)) location.hash="run/"+id;
-    } catch(error) { message(error.message); }
+    } catch(error) { message(errorText(error)); }
     finally { button.disabled=false; }
     return;
   }
   if (button.hasAttribute("data-wf-reset")) workflows[mode]=plannerState(mode);
   else if (button.hasAttribute("data-wf-edit")) {w.draft=null;w.error="";}
   await render();
-  document.querySelector("#wf-objective")?.focus();
+  dashElement("#wf-objective",HTMLTextAreaElement)?.focus();
 });

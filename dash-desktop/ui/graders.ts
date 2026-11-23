@@ -1,11 +1,12 @@
 "use strict";
 const graderTypes={contains:"Contains required text",exact:"Exact answer",field:"JSON field matches reference",trajectory:"Agent actions in order",judge:"Local LLM rubric (legacy)",opik:"Opik G-Eval"};
 const graderHints={contains:"Text the output must contain",exact:"Expected answer",field:'{"outputField":"team","referenceField":"team"}',trajectory:"One required tool or action name per line",judge:"Describe what earns full, partial and zero credit.",opik:"Describe the task, evaluation criteria and what distinguishes a good answer."};
-const formField=(label,input)=>'<label class="field"><span>'+esc(label)+'</span>'+input+'</label>';
-const datasetGradeSelections=new Map();
-function datasetGradeSelection(scope) {
-  if (!datasetGradeSelections.has(scope)) datasetGradeSelections.set(scope,new Set(readGraderAttachment(scope)?.ids));
-  return datasetGradeSelections.get(scope);
+const formField=(label:string,input:string)=>'<label class="field"><span>'+esc(label)+'</span>'+input+'</label>';
+const datasetGradeSelections=new Map<string,Set<string>>();
+function datasetGradeSelection(scope:string) {
+  const selected=datasetGradeSelections.get(scope) ?? new Set(readGraderAttachment(scope)?.ids);
+  datasetGradeSelections.set(scope,selected);
+  return selected;
 }
 function selectedGraderIds(){return [...datasetGradeSelection(activeDatasetGraderScope())];}
 function graderPicker(){
@@ -14,16 +15,16 @@ function graderPicker(){
     list.map(g=>'<label class="choice"><input type="checkbox" name="custom-grader" value="'+esc(g.id)+'" '+(chosen.has(g.id)?"checked":"")+'>'+esc(g.name+" v"+g.version+" · "+g.category)+'</label>').join("")+
     link("Open grader library →","graders","link")+'</details>';
 }
-function scoreRows(rows){
+function scoreRows(rows:UiAssessment[]){
   return rows.length?table(["Grader","Candidate / case","Score","Decision","Rationale"],rows.map(r=>[
     esc(r.name+" v"+r.version)+(r.judge?'<small class="block">'+esc(r.judge)+'</small>':''),
     esc([r.candidate,r.caseId].filter(Boolean).join(" / ")||"Provided output"),
     r.value==null?"—":esc(metricNumber(r.value)),r.pass==null?"Unscored":r.pass?"Passed":"Review",esc(r.reason)])):"";
 }
-let gradeFilter="",graderDraft=null;
-function judgeOptions(id){return opt("","Choose a local model",id)+models().map(m=>opt(m.id,m.model+" · "+m.provider,id)).join("");}
+let gradeFilter="",graderDraft:UiGrader|null=null;
+function judgeOptions(id?:string|null){return opt("","Choose a local model",id)+models().map(m=>opt(m.id,m.model+" · "+m.provider,id)).join("");}
 function gradeCreate(){
-  const g=graderDraft ? {...graderDraft,type:graderDraft.type==="judge"?"opik":graderDraft.type} :
+  const g:UiGraderDefinition & {judge?:UiModel|null}=graderDraft ? {...graderDraft,type:graderDraft.type==="judge"?"opik":graderDraft.type} :
     {name:"",category:"",industry:"Cross-industry",criteria:"",type:"opik",threshold:1};
   return '<details class="panel" '+(graderDraft?'open':'')+'><summary>Create or revise a grader</summary><form id="grade-create" class="spacer"><div class="cols">'+
     formField("Grader name",'<input name="name" required maxlength="100" value="'+esc(g.name)+'">')+
@@ -50,41 +51,65 @@ async function gradersPage(){
     '<button class="yellow spacer" '+(list.length?"":"disabled")+'>Run grader</button></form>'+
     (samples.length?bar("Recent evaluations")+'<div class="panel">'+scoreRows(samples)+'</div>':"");
 }
-function caseGrading(run,r,index){
+function caseGrading(run:UiRunDetail,r:UiResult,index:number){
   const rows=(run.assessments||[]).filter(a=>a.caseId===r.caseId && a.candidate===r.candidateId);
   return bar("Grader evaluations")+'<div class="panel">'+scoreRows(rows)+(!r.error?'<form id="grade-case" data-id="'+esc(run.manifest.id)+'" data-index="'+index+'">'+
     formField("Apply a saved grader",gradeSelect())+'<button '+(state.graders?.length?"":"disabled")+'>Grade this output</button></form>':'')+'</div>';
 }
 document.addEventListener("change",e=>{
+  if (!textInput(e.target)) return;
+
   if(e.target.name==="custom-grader"){
-    const picker=e.target.closest("[data-grade-scope]"), chosen=datasetGradeSelection(picker.dataset.gradeScope);
+    const picker=e.target.closest<HTMLElement>("[data-grade-scope]");
+    if (!picker?.dataset.gradeScope || !(e.target instanceof HTMLInputElement)) return;
+    const chosen=datasetGradeSelection(picker.dataset.gradeScope);
     if(e.target.checked)chosen.add(e.target.value);else chosen.delete(e.target.value);
     if (readGraderAttachment(picker.dataset.gradeScope)) writeGraderAttachment(picker.dataset.gradeScope,chosen);
-    picker.querySelector("summary").textContent="Additional graders · "+chosen.size+" selected";
+    $("summary",picker).textContent="Additional graders · "+chosen.size+" selected";
   }
   if(e.target.id==="grade-type"){
-    const f=e.target.form;f.criteria.placeholder=graderHints[e.target.value];f.querySelector("#judge-choice").hidden=!["opik","judge"].includes(e.target.value);
+    const f=e.target.form;
+    if (!f || !isGradeType(e.target.value)) return;
+    requireElement("[name=criteria]",HTMLTextAreaElement,f).placeholder=graderHints[e.target.value];$("#judge-choice",f).hidden=!["opik","judge"].includes(e.target.value);
   }
 });
-document.addEventListener("input",e=>{if(e.target.id==="grade-filter"){gradeFilter=e.target.value;document.querySelectorAll(".grader-row").forEach(r=>r.hidden=!r.dataset.filter.includes(gradeFilter.toLowerCase()));}});
-document.addEventListener("click",e=>{const el=e.target.closest("[data-revise]");if(el){graderDraft=state.graders.find(g=>g.id===el.dataset.revise);render().then(()=>document.querySelector("#grade-create input")?.focus());}});
+document.addEventListener("input",e=>{
+  if (!textInput(e.target)) return;
+  if(e.target.id==="grade-filter"){gradeFilter=e.target.value;document.querySelectorAll<HTMLElement>(".grader-row").forEach(r=>r.hidden=!(r.dataset.filter || "").includes(gradeFilter.toLowerCase()));}});
+document.addEventListener("click",e=>{
+  if (!(e.target instanceof Element)) return;
+  const el=e.target.closest<HTMLButtonElement>("[data-revise]");if(el){graderDraft=state.graders.find(g=>g.id===el.dataset.revise) || null;render().then(()=>dashElement("#grade-create input",HTMLInputElement)?.focus());}});
 document.addEventListener("submit",async e=>{
+  if (!(e.target instanceof HTMLFormElement)) return;
+
   if(!["grade-case","grade-sample","grade-create"].includes(e.target.id))return;
-  e.preventDefault();const f=e.target,values=Object.fromEntries(new FormData(f)),b=f.querySelector("button");b.disabled=true;
+  e.preventDefault();const f=e.target,b=requireElement("button",HTMLButtonElement,f);
+  const field=(name:string)=>formText(f,name);
+  b.disabled=true;
   const title=b.textContent;
   try{
-    if(f.id==="grade-create"){await api.saveGrader(values);graderDraft=null;message("Grader version saved.");}
+    if(f.id==="grade-create"){
+      const type=field("type");
+      if (!isGradeType(type)) throw Error("Choose a grading method.");
+      await api.saveGrader({name:field("name"),criteria:field("criteria"),industry:field("industry"),category:field("category"),type,threshold:Number(field("threshold")),judgeId:field("judgeId")});
+      graderDraft=null; message("Grader version saved.");
+    }
     else {
       b.textContent="Grading…";
-      let request={grader:values.grader};
-      if(f.id==="grade-case"){request.run=f.dataset.id;request.index=Number(f.dataset.index);}
+      let request:UiGradeRequest;
+      const grader=field("grader");
+      if(f.id==="grade-case" && f.dataset.id){request={grader,run:f.dataset.id,index:Number(f.dataset.index)};}
       else {
-        let reference=values.reference || null;
-        try{reference=JSON.parse(reference);}catch{}
-        request.evidence={input:values.input,output:values.output,reference,trajectory:JSON.parse(values.trajectory.trim()||"[]")};
+        const raw=field("reference");
+        let reference:unknown=raw || null;
+        try{reference=JSON.parse(raw);}catch{}
+        const supplied=field("trajectory").trim();
+        const trajectory:unknown=supplied ? JSON.parse(supplied) : undefined;
+        if (supplied && !Array.isArray(trajectory)) throw Error("Agent steps must be a JSON array.");
+        request={grader,evidence:{input:field("input"),output:field("output"),reference,...(Array.isArray(trajectory) && {trajectory})}};
       }
       const result=await api.assess(request);message(result.pass==null?"Unscored · "+result.reason:"Evaluation saved.");
     }
     await render();
-  }catch(error){message(error.message);}finally{b.disabled=false;b.textContent=title;}
+  }catch(error){message(errorText(error));}finally{b.disabled=false;b.textContent=title;}
 });

@@ -17,3 +17,7 @@ A fork would be justified if DASH needed to modify the upstream server. Domain w
 ## Acceptance
 
 A clean build must typecheck both processes. The same synthetic case must keep its grade and its recorded evidence through the real candidate and grading paths. A saved pre-migration evaluation must remain inspectable. Fresh-profile Electron tests must exercise both run types. Synchronizing existing outputs must keep their dataset/prompt versions and avoid another inference call, including after a retry.
+
+## Dependency review
+
+DASH and Opik resolve Zod 4.6.6. The pinned LM Studio SDK 2.1.0 declares a Zod 3 dependency, which resolves to 3.25.76. The published memory-exhaustion advisory covers this transitive version. DASH limits dataset imports to 2 MB and bounds provider output, but those checks do not establish that every SDK input is protected. Keep LM Studio connections local and revisit this dependency when its SDK supports a patched Zod version. [Upstream advisory](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)

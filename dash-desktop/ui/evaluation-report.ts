@@ -1,48 +1,52 @@
 "use strict";
 
-const scorePercent = value => Number.isFinite(value) ? (value * 100).toLocaleString(undefined,{maximumFractionDigits:2})+"%" : "Unscored";
-const scoreMethod = method => ({"deterministic":"Rule-based check","llm-judge":"LLM judge","opik-judge":"Opik G-Eval"}[method] || method);
-function reportCandidateLabel(c, candidates) {
+const scorePercent = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) ? (value * 100).toLocaleString(undefined,{maximumFractionDigits:2})+"%" : "Unscored";
+const scoreMethod = (method: UiReportMetric["method"]) => ({"deterministic":"Rule-based check","llm-judge":"LLM judge","opik-judge":"Opik G-Eval"}[method] || method);
+function reportCandidateLabel(c: UiReportCandidate, candidates: UiReportCandidate[]) {
   return candidates.some(other=>other.id!==c.id && other.label===c.label)?c.id:c.label;
 }
-function metricComparisons(metric, candidates) {
+function metricComparisons(metric: UiReportMetric, candidates: UiReportCandidate[]) {
   return '<div class="er-score-lines">'+candidates.map(c=>{
     const v=metric.values.find(v=>v.candidateId===c.id);
     return '<div class="er-score-line"><span>'+esc(reportCandidateLabel(c,candidates))+'</span><strong>'+esc(scorePercent(v?.score))+'</strong>'+
-      (Number.isFinite(v?.score)?'<progress max="1" value="'+esc(v.score)+'" aria-label="'+esc(c.label+" · "+metric.label)+'"></progress>':'')+
-      '<small>'+esc(v?.passes ?? 0)+' passed · '+esc(v?.scoredCases ?? 0)+' matched'+(Number.isFinite(v?.availableCases) && v.availableCases!==v.scoredCases?' · '+esc(v.availableCases)+' available for this candidate':'')+'</small></div>';
+      (v && Number.isFinite(v.score)?'<progress max="1" value="'+esc(v.score)+'" aria-label="'+esc(c.label+" · "+metric.label)+'"></progress>':'')+
+      '<small>'+esc(v?.passes ?? 0)+' passed · '+esc(v?.scoredCases ?? 0)+' matched'+(v && Number.isFinite(v.availableCases) && v.availableCases!==v.scoredCases?' · '+esc(v.availableCases)+' available for this candidate':'')+'</small></div>';
   }).join("")+'</div>';
 }
-function outcomeBenchmarks(report) {
+function outcomeBenchmarks(report: UiReport) {
   const rows=report.observedOutcomes || [];
   if (!rows.length) return "";
   return '<section class="er-outcomes"><h3>Observed outcomes</h3>'+table(["Measure",...report.candidates.map(c=>reportCandidateLabel(c,report.candidates))],rows.map(row=>
     [esc(row.label),...report.candidates.map(c=>{
       const value=row.values.find(v=>v.candidateId===c.id);
-      return Number.isFinite(value?.count) && value.total>0 ? esc(value.count+" / "+value.total) : "Unmeasured";
+      return value && Number.isFinite(value.count) && value.total>0 ? esc(value.count+" / "+value.total) : "Unmeasured";
     })]))+'</section>';
 }
-function reportAssistance(r) {
+function reportAssistance(r: UiReport) {
   const audit = r.assistance;
   if (!audit) return "";
   const stages = [audit.analyzer, audit.reporter].filter(s => s.model);
   if (!stages.length) return '<p class="muted">'+esc(audit.reason || "")+'</p>';
-  const stageLabel = s => esc(s.name)+' · '+esc(s.model)+' · '+(s.status==="verified"?"verified":"used fixed scoring");
+  const stageLabel = (s: UiReportStage) => esc(s.name)+' · '+esc(s.model)+' · '+(s.status==="verified"?"verified":"used fixed scoring");
   const evidence = audit.citations.map(c => {
     const metric = r.metrics.find(m=>m.id===c.metricId);
     const scores = c.values.map(v=>{
       const model = r.candidates.find(c=>c.id===v.candidateId);
-      return esc(reportCandidateLabel(model,r.candidates))+' '+esc(scorePercent(v.score));
+      return esc(model ? reportCandidateLabel(model,r.candidates) : v.candidateId)+' '+esc(scorePercent(v.score));
     });
-    const leaderIndex = c.observation==="first_higher" ? 0 : c.observation==="second_higher" ? 1 : -1;
-    const finding = leaderIndex>=0 ? reportCandidateLabel(r.candidates[leaderIndex],r.candidates)+" scored higher on this case." :
-      {equal:"The candidates tied on this case.",missing:"A case score is missing.",single:"One candidate was scored."}[c.observation];
-    return '<li><strong>'+esc(metric.label)+'</strong> · '+esc(c.caseId)+'<br>'+esc(finding)+' '+scores.join(' / ')+'</li>';
+    let finding: string;
+    if (c.observation === "first_higher" || c.observation === "second_higher") {
+      const leader = r.candidates[c.observation === "first_higher" ? 0 : 1];
+      finding = leader ? reportCandidateLabel(leader,r.candidates)+" scored higher on this case." : "";
+    } else {
+      finding = { equal: "The candidates tied on this case.", missing: "A case score is missing.", single: "One candidate was scored." }[c.observation];
+    }
+    return '<li><strong>'+esc(metric?.label ?? c.metricId)+'</strong> · '+esc(c.caseId)+'<br>'+esc(finding)+' '+scores.join(' / ')+'</li>';
   });
   return '<details class="er-policy"><summary>Local agent review'+(evidence.length?' · '+evidence.length+' case '+(evidence.length===1?'highlight':'highlights'):'')+'</summary><p>'+
     stages.map(stageLabel).join('<br>')+'</p>'+(evidence.length?'<ul>'+evidence.join("")+'</ul>':'')+'</details>';
 }
-function evaluationReport(run) {
+function evaluationReport(run: UiRunDetail) {
   const r=run.report;
   if (!r || ["queued","running"].includes(run.status)) return "";
   const winner=r.candidates.find(c=>c.id===r.winnerId);
@@ -65,23 +69,26 @@ function evaluationReport(run) {
 }
 document.addEventListener("toggle",e=>{
   const details=e.target;
-  if (!details.matches?.(".er-evidence") || !details.open || details.dataset.loaded) return;
+  if (!(details instanceof HTMLDetailsElement) || !details.matches(".er-evidence") || !details.open || details.dataset.loaded) return;
   const run=current;
-  if (run?.manifest?.id!==details.dataset.reportRun) return;
-  const metric=run.report?.metrics[Number(details.dataset.metricIndex)];
+  if (!run?.report || run.manifest.id!==details.dataset.reportRun) return;
+  const report = run.report;
+  const metric=report.metrics[Number(details.dataset.metricIndex)];
   if (!metric) return;
   const indexes=new Map((run.results || []).map((v,i)=>[JSON.stringify([v.caseId,v.candidateId]),i]));
-  const labels=new Map(run.report.candidates.map(c=>[c.id,reportCandidateLabel(c,run.report.candidates)]));
+  const labels=new Map(report.candidates.map(c=>[c.id,reportCandidateLabel(c,report.candidates)]));
   const rows=(metric.caseScores || []).flatMap(c=>c.values.map(v=>{
     const index=indexes.get(JSON.stringify([c.caseId,v.candidateId]));
     return [index==null?esc(c.caseId):link(esc(c.caseId),"run/"+encodeURIComponent(run.manifest.id)+"/"+index,"link"),
       esc(labels.get(v.candidateId) || v.candidateId), esc(scorePercent(v.score)),
       v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.reason || "No rationale recorded")];
   }));
-  details.querySelector("div").innerHTML=rows.length?table(["Case","Candidate","Score","Result","Evidence"],rows):'<p>No case scores were recorded.</p>';
+  const target = details.querySelector("div");
+  if (!target) return;
+  target.innerHTML=rows.length?table(["Case","Candidate","Score","Result","Evidence"],rows):'<p>No case scores were recorded.</p>';
   details.dataset.loaded="true";
 },true);
-function guardrailDetails(g) {
+function guardrailDetails(g: UiGuardrail | null | undefined) {
   if (!g) return "";
   const values=[
     ["Candidate",g.candidateId],["Case",g.caseId],["Checked input",g.inputTokens],["Active context",g.contextTokens],

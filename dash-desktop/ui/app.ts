@@ -1,15 +1,33 @@
 "use strict";
 const api = window.dash;
-const $ = (s) => document.querySelector(s);
-const esc = (v) =>
-  String(v ?? "").replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ],
-  );
-const pretty = (v) => esc(JSON.stringify(v, null, 2));
+type UiField = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+function textInput(target: unknown): target is UiField {
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+}
+function dashElement<T extends Element>(selector: string, ctor: {new(): T}, root: ParentNode = document): T | null {
+  const node = root.querySelector(selector);
+  return node instanceof ctor ? node : null;
+}
+function requireElement<T extends Element>(selector: string, ctor: {new(): T}, root: ParentNode = document): T {
+  const node = dashElement(selector, ctor, root);
+  if (!node) throw Error("Missing screen control " + selector);
+  return node;
+}
+const $ = (selector:string, root:ParentNode=document) => requireElement(selector,HTMLElement,root);
+function formText(form:HTMLFormElement,name:string):string {
+  const field=form.elements.namedItem(name);
+  return textInput(field) ? field.value : "";
+}
+function errorText(error:unknown):string {return error instanceof Error ? error.message : String(error);}
+function isRecord(value:unknown):value is Record<string,unknown> {return value!==null && typeof value==="object" && !Array.isArray(value);}
+function isRunMode(value:unknown):value is UiMode { return value==="quick" || value==="dataset"; }
+function isGradeType(value:unknown):value is UiGradeType {
+  return typeof value==="string" && Object.hasOwn(graderTypes,value);
+}
+function isNumber(value:unknown):value is number {return typeof value==="number" && Number.isFinite(value);}
+const htmlEscapes:Record<string,string> = {"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"};
+const esc = (v:unknown) => String(v ?? "").replace(/[&<>"']/g, c => htmlEscapes[c]);
+const pretty = (v:unknown) => esc(JSON.stringify(v, null, 2));
 const nav = [
   ["home", "Overview", "home"],
   ["compare", "Quick compare", "compare"],
@@ -22,19 +40,19 @@ const nav = [
   ["providers", "Local runtimes", "device"],
   ["developer", "Developer", "runs"],
 ];
-const svg = (name, cl = "icon") =>
+const svg = (name:string, cl = "icon") =>
   '<svg class="' +
   cl +
   '" aria-hidden="true"><use href="#' +
   name +
   '"/></svg>';
-const btn = (title, act, cl = "") =>
+const btn = (title:string, act:string, cl = "") =>
   '<button class="' + cl + '" data-act="' + act + '">' + title + "</button>";
-const link = (title, to, cl = "button") =>
+const link = (title:string, to:string, cl = "button") =>
   '<a href="#' + to + '" class="' + cl + '">' + title + "</a>";
-const tag = (t, status = false) =>
+const tag = (t:unknown, status = false) =>
   '<span class="tag"' + (status ? ' data-status="' + esc(t) + '"' : "") + '>' + esc(t) + "</span>";
-const heading = (over, title, desc = "") =>
+const heading = (over:string, title:string, desc = "") =>
   '<div class="heading"><span class="above">' +
   esc(over) +
   "</span><h1>" +
@@ -42,9 +60,9 @@ const heading = (over, title, desc = "") =>
   "</h1>" +
   (desc ? "<p>" + esc(desc) + "</p>" : "") +
   "</div>";
-const bar = (title, action = "") =>
+const bar = (title:string, action = "") =>
   '<div class="bar"><h2>' + esc(title) + "</h2>" + action + "</div>";
-const opt = (value, title, chosen) =>
+const opt = (value:unknown, title:unknown, chosen:unknown) =>
   '<option value="' +
   esc(value) +
   '" ' +
@@ -52,26 +70,26 @@ const opt = (value, title, chosen) =>
   ">" +
   esc(title) +
   "</option>";
-const displayTime = (s) =>
+const displayTime = (s:string) =>
   new Date(s).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
   });
-const box = (label, data) =>
+const box = (label:string, data:unknown) =>
   "<h3>" + esc(label) + "</h3><pre>" + pretty(data) + "</pre>";
-let state,
+let state:UiState,
   packId = "earnings",
   datasetId = "",
   token = 0,
-  poll,
-  toastTimer,
+  poll:number|undefined,
+  toastTimer:number|undefined,
   baseline = "",
   baselineCandidate = "",
   currentCandidate = "",
-  current = null;
-function message(s) {
+  current:UiRunDetail|null = null;
+function message(s:string) {
   $("#msg").textContent = s;
   $("#msg").hidden = false;
   clearTimeout(toastTimer);
@@ -108,7 +126,7 @@ function pickers() {
     "</select></label></div>"
   );
 }
-function race(lanes, active = false, footer = "") {
+function race(lanes:{label:string;failed:boolean;done:number;total:number}[], active = false, footer = "") {
   return (
     '<div class="race"><div class="racehead"><span class="cap">Comparison lanes</span>' +
     tag(active ? "Processing" : footer || "Awaiting a run") +
@@ -140,7 +158,7 @@ function race(lanes, active = false, footer = "") {
     "</div></div>"
   );
 }
-function tile(to, icon, title, desc) {
+function tile(to:string, icon:string, title:string, desc:string) {
   return link(
     svg(icon + "-i") +
       "<span><b>" +
@@ -152,7 +170,7 @@ function tile(to, icon, title, desc) {
     "tile",
   );
 }
-function historyList(items) {
+function historyList(items:UiRunSummary[]) {
   return items.length
     ? items
         .map(
@@ -174,7 +192,7 @@ function historyList(items) {
         .join("")
     : '<div class="empty">Your saved runs will appear here.</div>';
 }
-function overviewRuns(items) {
+function overviewRuns(items:UiRunSummary[]) {
   if (!items.length) return '<div class="empty">Your saved runs will appear here.</div>';
   const labels = '<div class="overview-run overview-run-head" aria-hidden="true"><span>Run</span><span>Execution</span><span>Started</span><span>Status</span></div>';
   return labels + items.map(r =>
@@ -190,32 +208,64 @@ function loadedModelCount() {
   const loaded = inventory.filter(m => m.loaded === true).length;
   return loaded || !inventory.some(m => m.loaded == null) ? String(loaded) : "—";
 }
-function overviewStats(power) {
-  const host = power?.host || {};
-  const platform = {darwin:"macOS", win32:"Windows", linux:"Linux"}[host.platform] || host.platform;
-  const platformInfo = [platform, host.arch].filter(Boolean).join(" · ") || state.device;
-  const timestamp = Date.parse(power?.at);
-  const sample = Number.isFinite(power?.watts)
-    ? "Whole-device draw at " + (Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString() : "sampling time")
-    : "Whole-device power unavailable on this host";
-  const lines = [
-    ["Platform", platformInfo], ["OS", host.os], ["Processor", host.cpu],
-    ["Memory", host.memoryGiB ? host.memoryGiB + " GiB" : ""], ["Sensor", power?.source]
+function memorySize(bytes?: number | null): string {
+  if (bytes == null || !Number.isFinite(bytes)) return "Unavailable";
+  const gib = bytes / 2 ** 30;
+  return gib.toLocaleString(undefined, {maximumFractionDigits:2}) + " GiB";
+}
+function cpuPercent(value?: number | null): string {
+  return value == null || !Number.isFinite(value) ? "Unavailable" :
+    value.toLocaleString(undefined, {maximumFractionDigits:2}) + "%";
+}
+function deviceDetails(power:UiPower|null) {
+  const host = power?.host;
+  const platforms: Record<string,string> = {darwin:"macOS",win32:"Windows",linux:"Linux"};
+  const platform = [platforms[host?.platform ?? ""] || host?.platform, host?.arch].filter(Boolean).join(" · ") || state.device;
+  const lines: [string, string][] = [
+    ["Platform", platform], ["Processor", host?.cpu || "Unavailable"],
+    ["DASH memory", memorySize(power?.memory?.appWorkingSetBytes)],
+    ["Host memory", memorySize(power?.memory?.freeBytes) + " free / " + memorySize(power?.memory?.totalBytes ?? (host?.memoryGiB ? host.memoryGiB * 2 ** 30 : null))],
+    ["DASH CPU", cpuPercent(power?.cpu?.appPercent)], ["Host CPU", cpuPercent(power?.cpu?.systemPercent)],
+    ["Data volume", memorySize(power?.disk?.usedBytes) + " used · " + memorySize(power?.disk?.availableBytes) + " available"],
+    ["Device power", isNumber(power?.watts) ? developerMetric(power.watts," W") : "Unavailable"],
   ];
+  const time = power?.at ? Date.parse(power.at) : NaN;
+  return '<b>Device details</b><dl>' + lines.map(([k,v])=>'<dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd>').join("") +
+    '</dl><small>DASH memory sums Electron process working sets. CPU is a share of host capacity. Data volume holds this workspace.</small>' +
+    '<small>'+esc([power?.source, Number.isFinite(time) ? new Date(time).toLocaleTimeString() : ""].filter(Boolean).join(" · "))+'</small>';
+}
+function overviewStats(power:UiPower|null) {
   return '<div class="timing-strip"><div class="power-stat"><button type="button" class="device-stat" popovertarget="device-details" aria-describedby="device-details">'+
-    'Device power<strong>'+(Number.isFinite(power?.watts) ? developerMetric(power.watts," W") : "Unavailable")+'</strong><span aria-hidden="true">ⓘ</span></button>'+
-    '<div id="device-details" popover="auto" role="tooltip"><b>Device details</b><dl>'+
-    lines.filter(([,v])=>v).map(([k,v])=>'<dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd>').join("")+'</dl><small>'+esc(sample)+'</small></div></div>'+
+    'Device power<strong>'+(isNumber(power?.watts) ? developerMetric(power.watts," W") : "Unavailable")+'</strong><span aria-hidden="true">ⓘ</span></button>'+
+    '<div id="device-details" popover="auto" role="tooltip">'+deviceDetails(power)+'</div></div>'+
     '<a href="#providers" title="Models confirmed loaded by the latest LM Studio and Ollama inventory.">Loaded models<strong id="overview-loaded-models">'+loadedModelCount()+'</strong></a>'+
     '<a href="#datasets" title="Versioned snapshots in the local DASH dataset catalog.">Dataset snapshots<strong>'+state.datasets.length+'</strong></a>'+
     '<a href="#history" title="Every saved run in this workspace, including failed runs and grader tests.">Total runs<strong id="overview-total-runs">'+state.runs.length+'</strong></a></div>';
 }
 function bindDeviceDetails() {
-  const stat = document.querySelector(".power-stat");
+  const stat = dashElement(".power-stat",HTMLElement);
   if (!stat) return;
-  const button = stat.querySelector("button"), details = stat.querySelector("[popover]");
+  const button = stat.querySelector("button"), details = dashElement("[popover]",HTMLElement,stat);
+  if (!button || !details) return;
   const show = () => { if (!details.matches(":popover-open")) details.showPopover(); };
   const hide = () => { if (details.matches(":popover-open")) details.hidePopover(); };
+  let generation = 0;
+  let refreshTimer: number | undefined;
+  details.addEventListener("toggle", () => {
+    const current = ++generation;
+    window.clearTimeout(refreshTimer);
+    if (!details.matches(":popover-open")) return;
+    const refresh = async () => {
+      if (!details.isConnected || current !== generation || !details.matches(":popover-open")) return;
+      const reading = await api.power(true).catch(() => null);
+      if (!details.isConnected || current !== generation || !details.matches(":popover-open")) return;
+      details.innerHTML = deviceDetails(reading);
+      const value = button.querySelector("strong");
+      if (value) value.textContent = isNumber(reading?.watts) ? developerMetric(reading.watts," W") : "Unavailable";
+      refreshTimer = window.setTimeout(refresh, 3000);
+    };
+    void refresh();
+  });
   stat.addEventListener("pointerenter", e => { if (e.pointerType === "mouse") show(); });
   stat.addEventListener("pointerleave", () => { if (!button.matches(":focus-visible")) hide(); });
   button.addEventListener("focus", () => { if (button.matches(":focus-visible")) show(); });
@@ -234,12 +284,12 @@ async function home() {
     bar("Recent runs", link("View history →", "history", "link")) +
     '<div class="overview-runs">' + overviewRuns(state.runs.slice(0, 6)) + '</div></div></div>';
 }
-function developerMetric(value, unit = "") {
+function developerMetric(value:unknown, unit = "") {
   return typeof value === "number" && Number.isFinite(value)
     ? esc(value.toLocaleString(undefined, { maximumFractionDigits: 2 }) + unit)
     : "—";
 }
-async function developerPage(id) {
+async function developerPage(id?:string) {
   let server = state.servers.find((s) => s.provider === "lmstudio");
   if (!server || Date.now() - Date.parse(server.checkedAt) > 15_000) {
     const fresh = await api.refresh();
@@ -304,11 +354,11 @@ async function developerPage(id) {
     const cases = run.traces.filter((r) => r.candidateId === c.id);
     const latency = cases
       .map((r) => r.telemetry?.latency_ms)
-      .filter(Number.isFinite)
+      .filter(isNumber)
       .sort((a, b) => a - b);
     const n = latency.length,
       median = n ? (latency[(n - 1) >> 1] + latency[n >> 1]) / 2 : null;
-    const count = (stage) => cases.filter((r) => r.stage === stage).length;
+    const count = (stage:string) => cases.filter((r) => r.stage === stage).length;
     return [
       esc(c.model),
       cases.length,
@@ -442,7 +492,7 @@ function providersPage() {
     "</div>"
   );
 }
-function table(cols, rows) {
+function table(cols:string[], rows:unknown[][]) {
   return (
     '<div class="tablewrap"><table><thead><tr>' +
     cols.map((x) => "<th>" + esc(x) + "</th>").join("") +
@@ -456,19 +506,19 @@ function table(cols, rows) {
     "</tbody></table></div>"
   );
 }
-function measures(run, candidate) {
+function measures(run:UiRunDetail, candidate:UiModel) {
   const recs = run.results.filter((r) => r.candidateId === candidate.id),
     scored = recs.filter((r) => r.score);
   return {
     recs,
     scored,
-    ready: scored.filter((r) => r.score.ready).length,
-    unsafe: scored.filter((r) => r.score.falseAccept).length,
-    review: scored.filter((r) => r.score.review).length,
+    ready: scored.filter((r) => r.score?.ready).length,
+    unsafe: scored.filter((r) => r.score?.falseAccept).length,
+    review: scored.filter((r) => r.score?.review).length,
     errors: recs.filter((r) => r.error).length,
   };
 }
-async function paired(run) {
+async function paired(run:UiRunDetail) {
   const m = run.manifest;
   const choices = state.runs.filter(
     (r) =>
@@ -496,20 +546,13 @@ async function paired(run) {
         b.candidates.find((x) => x.id === baselineCandidate) ||
         b.candidates.find((x) => x.id === c.id) ||
         b.candidates[0];
-      const pairs = run.results
-        .filter((r) => r.candidateId === c.id && r.score)
-        .map((r) => [
-          r,
-          other.results.find(
-            (o) => o.caseId === r.caseId && o.candidateId === ref.id && o.score,
-          ),
-        ])
-        .filter(([, o]) => o);
-      const del = (key) =>
-        pairs.reduce(
-          (n, [r, o]) => n + Number(r.score[key]) - Number(o.score[key]),
-          0,
-        );
+      const pairs = run.results.flatMap(r => {
+        if (r.candidateId !== c.id || !r.score) return [];
+        const baselineScore = other.results.find(o => o.caseId === r.caseId && o.candidateId === ref.id && o.score)?.score;
+        return baselineScore ? [{current:r.score, baseline:baselineScore}] : [];
+      });
+      const del = (key:"pass"|"falseAccept") => pairs.reduce(
+        (sum,pair) => sum + Number(pair.current[key]) - Number(pair.baseline[key]), 0);
       content =
         '<div class="cols"><label class="field"><span>Current candidate</span><select id="currentCandidate">' +
         m.candidates.map((v) => opt(v.id, v.model, c.id)).join("") +
@@ -542,7 +585,7 @@ async function paired(run) {
     "</div>"
   );
 }
-async function runPage(id, record) {
+async function runPage(id:string, record?:string) {
   const run = await api.detail(id),
     m = run.manifest;
   current = run;
@@ -562,7 +605,7 @@ async function runPage(id, record) {
         r.error
           ? "Runtime error"
           : r.score
-            ? r.score.pass
+            ? r.score?.pass
               ? "Passed"
               : "Failed check"
             : "Response",
@@ -651,7 +694,7 @@ async function runPage(id, record) {
           (m.caseIds.length === 1 ? " case" : " cases") +
           " per candidate",
       );
-    if (m.pack.kind !== "reference") out +=
+    if (m.pack && m.pack.kind !== "reference") out +=
       bar("Business outcomes") +
       '<div class="panel">' +
       table(
@@ -669,7 +712,7 @@ async function runPage(id, record) {
             n ? z.ready : "—",
             n ? z.unsafe : "—",
             n ? Math.round((z.review / n) * 100) + "%" : "—",
-            n ? z.scored.filter((r) => r.score.pass).length + " / " + n : "—",
+            n ? z.scored.filter((r) => r.score?.pass).length + " / " + n : "—",
             z.errors,
           ];
         }),
@@ -687,7 +730,7 @@ async function runPage(id, record) {
               esc(
                 r.error
                   ? "Runtime error"
-                  : !r.score ? "Grader evaluation" : r.score.pass
+                  : !r.score ? "Grader evaluation" : r.score?.pass
                     ? "Passed"
                     : "Failed check",
               ),
@@ -696,7 +739,7 @@ async function runPage(id, record) {
           )
         : '<div class="empty">Waiting for case results.</div>') +
       "</div>";
-    if (!live && m.pack.kind !== "reference") out += await paired(run);
+    if (!live && m.pack?.kind !== "reference") out += await paired(run);
   }
   if(run.assessments?.length)out+=bar("Grader evaluations")+'<div class="panel">'+scoreRows(run.assessments)+"</div>";
   if (!m.fixture)
@@ -803,8 +846,8 @@ async function render() {
     if (seq !== token) return;
     const active = document.activeElement;
     const editing = active?.closest(".wf-page") && active.id && active.matches("input,textarea") ? active.id : null;
-    const selection = editing && typeof active.selectionStart==="number" ? [active.selectionStart,active.selectionEnd] : null;
-    const focus = active?.dataset.act;
+    const selection = editing && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && active.selectionStart!==null ? [active.selectionStart,active.selectionEnd] as const : null;
+    const focus = active instanceof HTMLElement ? active.dataset.act : undefined;
     const open = Array.from(
       document.querySelectorAll("details[open] summary"),
       (el) => el.textContent,
@@ -813,34 +856,35 @@ async function render() {
     if (route==="compare") scheduleBudgetPreview();
     if (editing) {
       const field=document.getElementById(editing);
-      if (field && !field.disabled) {
+      if ((field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) && !field.disabled) {
         field.focus({preventScroll:true});
         if (selection) field.setSelectionRange(...selection);
       }
     }
     if (route === "datasets") filterCatalog();
     if (route === "home") bindDeviceDetails();
-    for (const car of document.querySelectorAll(".car[data-progress]"))
+    for (const car of document.querySelectorAll<SVGElement>(".car[data-progress]"))
       car.style.left =
         "calc((100% - 39px) * " + Number(car.dataset.progress) / 100 + ")";
     for (const d of document.querySelectorAll("details"))
-      if (open.includes(d.querySelector("summary").textContent)) d.open = true;
+      if (open.includes(d.querySelector("summary")?.textContent ?? "")) d.open = true;
     if (focus)
       document
-        .querySelector('[data-act="' + CSS.escape(focus) + '"]')
+        .querySelector<HTMLElement>('[data-act="' + CSS.escape(focus) + '"]')
         ?.focus({ preventScroll: true });
     if (
       route === "run" &&
       rec === undefined &&
-      ["queued", "running"].includes(current?.status)
+      ["queued", "running"].includes(current?.status ?? "")
     )
       poll = setTimeout(render, 220);
   } catch (e) {
-    if (seq === token) $("#screen").textContent = e.message;
+    if (seq === token) $("#screen").textContent = errorText(e);
   }
 }
 document.addEventListener("change", (e) => {
   const t = e.target;
+  if (!textInput(t)) return;
   if (t.id === "history-run") { location.hash = "history/" + encodeURIComponent(t.value); return; }
   if (t.id === "developer-run") {
     location.hash = "developer/" + encodeURIComponent(t.value);
@@ -857,16 +901,17 @@ document.addEventListener("change", (e) => {
   render();
 });
 document.addEventListener("submit", async (e) => {
-  if (e.target.id !== "setup") return;
+  if (!(e.target instanceof HTMLFormElement) || e.target.id !== "setup") return;
   e.preventDefault();
   const runMode = workflowMode();
+  if (!runMode) return;
   const w = workflows[runMode];
   if (!w?.approved || w.busy || state.active) return;
   const form = e.target, approved = w.approved;
   const candidateIds = selectedModels(runMode);
   if (runMode === "quick" ? !canStartQuick() : !canStartDataset()) return;
   w.busy = "start";
-  form.querySelector("button[type=submit]").disabled = true;
+  requireElement("button[type=submit]",HTMLButtonElement,form).disabled = true;
   try {
     const grading = runMode === "quick" ? quickGradePayload(quickGradePlan()) : {graderIds:selectedGraderIds()};
     const id = await api.start({
@@ -877,16 +922,16 @@ document.addEventListener("submit", async (e) => {
     baseline = "";
     if (showCurrentWorkflow(w)) location.hash = "run/" + id;
   } catch (error) {
-    w.error = error.message;
-    if (showCurrentWorkflow(w)) message(error.message);
+    w.error = errorText(error);
+    if (showCurrentWorkflow(w)) message(errorText(error));
   } finally {
     w.busy = "";
     if (showCurrentWorkflow(w)) await render();
   }
 });
 document.addEventListener("click", async (e) => {
-  const el = e.target.closest("[data-act]");
-  if (!el) return;
+  const el = e.target instanceof Element ? e.target.closest("button[data-act]") : null;
+  if (!(el instanceof HTMLButtonElement)) return;
   e.preventDefault();
   const act = el.dataset.act;
   const [, id, rec] = trail();
@@ -906,11 +951,11 @@ document.addEventListener("click", async (e) => {
     if (act === "cancel-import") { importDraft = null; await render(); }
     if (act === "import") {
       if (!api.commitImport) throw Error("Reopen DASH to register a dataset with metadata.");
-      const draft = await api.import(document.getElementById("catalog-pack")?.value || packId);
+      const draft = await api.import(dashElement("#catalog-pack",HTMLSelectElement)?.value || packId);
       if (draft) {
         importDraft = draft;
         await render();
-        document.querySelector("#catalog-import [name=family]")?.focus();
+        dashElement("#catalog-import [name=family]",HTMLInputElement)?.focus();
       }
     }
     if (act === "stop") {
@@ -918,7 +963,7 @@ document.addEventListener("click", async (e) => {
       await render();
     }
     if (act === "export" && (await api.export(id))) message("Run exported.");
-    if (act === "rerun") {
+    if (act === "rerun" && current) {
       const r = current.results[Number(rec)],
         m = current.manifest;
       const next = await api.start({
@@ -934,7 +979,7 @@ document.addEventListener("click", async (e) => {
       location.hash = "run/" + next;
     }
   } catch (err) {
-    message(err.message);
+    message(errorText(err));
   } finally {
     el.disabled = false;
   }
@@ -946,7 +991,7 @@ window.addEventListener("hashchange", () => {
   window.scrollTo(0, 0);
   $("#screen").focus({ preventScroll: true });
 });
-(async () => {
+async function bootWorkspace() {
   await render();
   const servers = await api.refresh();
   clearBudgetPreviews();
@@ -958,4 +1003,5 @@ window.addEventListener("hashchange", () => {
   } else if (["home", "providers", "compare", "new", "developer"].includes(route)) {
     await render();
   }
-})();
+}
+void bootWorkspace().catch(error => message(errorText(error)));

@@ -1,6 +1,6 @@
 "use strict";
 
-function datasetCaseDetails(row, pack) {
+function datasetCaseDetails(row:UiCase, pack?:UiPack|null) {
   const prompt = row.messages ? box("Model-visible conversation", row.messages) : row.prompt ?
     box("Case prompt", row.prompt) : box("Shared scenario instruction", pack?.system || "");
   const answer = row.reference ?? row.gold;
@@ -11,7 +11,7 @@ function datasetCaseDetails(row, pack) {
     (row.rubric ? box("Case success criteria",row.rubric) : "") + '</div></details>');
 }
 
-function datasetImportHelp(packId) {
+function datasetImportHelp(packId:string) {
   if (packId !== "reference") return '<small>Use this scenario’s input and gold fields. For your own prompts and SME responses, choose Prompt and reference evaluation.</small>';
   return '<details class="wf-options"><summary>JSONL case format</summary><div class="wf-options-body">' +
     '<p>Each line defines one test. Use a prompt or a chat messages array ending in a user message. Supply a reference answer or case rubric for the local judge. For inputs evaluated entirely by a saved grader, leave both fields out. The judge can also use an SME rationale.</p>' +
@@ -19,7 +19,7 @@ function datasetImportHelp(packId) {
     '</pre><small>Use development or holdout for split. All cases in a file share the same version and split.</small></div></details>';
 }
 
-function caseJudgePicker(w) {
+function caseJudgePicker(w:UiWorkflow) {
   const modelsForJudge=models().filter(m=>m.loaded);
   const preferred=modelsForJudge.find(m=>m.id===w.caseJudgeId) || modelsForJudge.find(m=>/lfm3/i.test(m.model)) || modelsForJudge[0];
   return '<label class="field"><span>Opik G-Eval judge for SME references and case rubrics</span><select name="caseJudgeId" required>'+
@@ -27,10 +27,10 @@ function caseJudgePicker(w) {
     '</select></label><small>The judge scores the answer against each case and explains its decision. A score of 0.80 passes.</small>';
 }
 
-const datasetScorerChoices=new Map();
-function datasetRunPage(w) {
+const datasetScorerChoices=new Map<string,string>();
+function datasetRunPage(w:UiWorkflow) {
   const d=dataset(), scenario=pack(), reference=scenario?.kind==="reference";
-  if (!d) return '<section class="wf-page"><h1>Dataset run</h1>'+link("Import a dataset →","datasets")+'</section>';
+  if (!d || !scenario) return '<section class="wf-page"><h1>Dataset run</h1>'+link("Import a dataset →","datasets")+'</section>';
   const method=datasetScorerChoices.get(d.id) || (d.casesWithoutReference || readGraderAttachment("dataset:"+d.id)?.ids.length ? "selected-graders" : "case-judge");
   const error=w.error?'<p class="wf-error" role="alert">'+esc(w.error)+'</p>':'';
   return '<section class="wf-page"><div class="wf-title"><h1>Dataset run</h1></div>'+error+
@@ -53,7 +53,7 @@ function datasetRunPage(w) {
     fixtureControl(w)+'</section>';
 }
 
-function plannerAttempts(p) {
+function plannerAttempts(p:UiPrompt) {
   if (!p.planningAttempts?.length) return "";
   const review=p.guidanceReview;
   const omitted=review?.omitted ? '<p>'+esc('Draft review removed '+review.omitted+' generated instruction'+(review.omitted===1?'':'s')+' ('+review.reasons.join(', ')+').')+'</p>' : '';
@@ -63,9 +63,10 @@ function plannerAttempts(p) {
 }
 
 function plannerSettingsPanel() {
-  const s=state.plannerFallback || {};
+  const s=state.plannerFallback;
   return '<details class="wf-panel"><summary>Prompt creation · LFM3 and OpenAI fallback</summary>'+
-    '<form id="planner-fallback" class="wf-options-body"><p>LFM3 drafts prompts and suggests metrics locally. If it is unavailable or its answer fails validation, the enabled fallback sends the planning brief to OpenAI.</p>'+
+    '<form id="planner-fallback" class="wf-options-body"><p>DASH starts with local LFM3. Enabling this option allows paid requests to api.openai.com when local prompt preparation, metric suggestions or grader design cannot finish.</p>'+
+    '<details><summary>What a planning request sends</summary><p>The selected OpenAI model receives agent instructions and the task brief, including text pasted into the objective, success measures and criteria. Depending on the stage, the brief includes the scenario contract, field names, token budgets, the expert’s proposed measures, or an earlier approved prompt and aggregate run results.</p></details>'+
     '<label class="choice"><input name="enabled" type="checkbox" '+(s.enabled?'checked':'')+'>Enable direct OpenAI fallback</label>'+
     '<label class="field"><span>OpenAI model ID</span><input name="model" required value="'+esc(s.model || "gpt-4.1-mini")+'"></label>'+
     '<label class="field"><span>API key for this session</span><input name="key" type="password" autocomplete="off" placeholder="'+(s.hasKey?'Key available':'Enter an OpenAI API key')+'"></label>'+
@@ -73,42 +74,53 @@ function plannerSettingsPanel() {
 }
 
 document.addEventListener("click",async e=>{
+  if (!(e.target instanceof Element)) return;
+
   if (e.target.closest("#wf-variant")) { workflows.dataset.variant=true; workflows.dataset.error=""; await render(); }
   if (e.target.closest("#dataset-native")) { workflows.dataset=plannerState("dataset"); await render(); }
 });
 document.addEventListener("input",e=>{
-  if (e.target.form?.id==="dataset-run-form" && ["inputCap","outputCap"].includes(e.target.name))
+  if (!textInput(e.target)) return;
+
+  if (e.target.form?.id==="dataset-run-form" && (e.target.name==="inputCap" || e.target.name==="outputCap"))
     workflows.dataset[e.target.name]=e.target.value;
 });
 document.addEventListener("change",e=>{
+  if (!textInput(e.target)) return;
+
   if (e.target.form?.id!=="dataset-run-form") return;
   if (e.target.name==="datasetScorer") { datasetScorerChoices.set(dataset().id,e.target.value); render(); }
   if (e.target.name==="caseJudgeId") workflows.dataset.caseJudgeId=e.target.value;
 });
 document.addEventListener("submit",async e=>{
+  if (!(e.target instanceof HTMLFormElement)) return;
+
   const f=e.target;
   if (!["planner-fallback","dataset-run-form"].includes(f.id)) return;
   e.preventDefault();
-  const btn=f.querySelector("button[type=submit]") || f.querySelector("button");
-  if (btn.disabled || (f.id==="dataset-run-form" && !canStartDataset())) return;
+  const btn=dashElement("button[type=submit]",HTMLButtonElement,f) || f.querySelector("button");
+  if (!btn || btn.disabled || (f.id==="dataset-run-form" && !canStartDataset())) return;
   btn.disabled=true;
   try {
     if (f.id==="planner-fallback") {
-      const values=Object.fromEntries(new FormData(f));
-      await api.savePlannerFallback({...values, enabled:f.elements.enabled.checked});
+      await api.savePlannerFallback({model:formText(f,"model"),key:formText(f,"key"),enabled:requireElement("[name=enabled]",HTMLInputElement,f).checked});
       await render(); message("Planner preferences saved."); return;
     }
     const d=dataset();
     workflows.dataset.busy="start";
     const ids=selectedModels("dataset");
-    const config={mode:"dataset",datasetId:d.id,candidateIds:ids,graderIds:selectedGraderIds(),animation:!matchMedia("(prefers-reduced-motion: reduce)").matches};
-    if (f.elements.datasetScorer) config.datasetScorer=f.elements.datasetScorer.value;
-    if (config.datasetScorer==="case-judge") { config.datasetScorer="selected-graders"; config.caseJudgeId=f.elements.caseJudgeId.value; }
-    for (const key of ["inputCap","outputCap"]) if (f.elements[key].value) config[key]=Number(f.elements[key].value);
+    const config:UiStartRun={mode:"dataset",datasetId:d.id,candidateIds:ids,graderIds:selectedGraderIds(),animation:!matchMedia("(prefers-reduced-motion: reduce)").matches};
+    const scorer=formText(f,"datasetScorer");
+    if (scorer) config.datasetScorer=scorer;
+    if (config.datasetScorer==="case-judge") { config.datasetScorer="selected-graders"; config.caseJudgeId=formText(f,"caseJudgeId"); }
+    for (const key of ["inputCap","outputCap"] as const) {
+      const value=formText(f,key);
+      if (value) config[key]=Number(value);
+    }
     const run=await api.start(config);
     workflows.dataset.error=""; baseline=""; location.hash="run/"+run;
   } catch (err) {
-    const msg=String(err.message).replace(/^Error invoking remote method .dash:[^ ]+ Error: /,"");
+    const msg=String(errorText(err)).replace(/^Error invoking remote method .dash:[^ ]+ Error: /,"");
     if (f.id==="dataset-run-form") {workflows.dataset.busy="";workflows.dataset.error=msg;await render();}
     else message(msg);
   } finally {

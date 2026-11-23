@@ -1,7 +1,7 @@
 "use strict";
 
 // The family mark identifies the model. Hosting comes from its runtime.
-function modelFamily(id) {
+function modelFamily(id:string) {
   const name = id.toLowerCase();
   if (/(^|[/:-])(lfm\d|liquid(?:ai)?\/)/.test(name)) return "liquid";
   if (/(^|[/:-])gemma/.test(name)) return "gemma-color";
@@ -9,10 +9,10 @@ function modelFamily(id) {
   if (/^(meta|meta-llama)\//.test(name) || /(^|[/:-])llama\d/.test(name)) return "meta-color";
   return null;
 }
-function displayModel(id) {
-  return id.split("/").pop().replace(/[-_:](?=[a-z\d])/gi, " ")
+function displayModel(id:string) {
+  return id.split("/").at(-1)?.replace(/[-_:](?=[a-z\d])/gi, " ")
     .replace(/\b(lfm\d+(?:\.\d+)?|\d+(?:\.\d+)?b|a\d+b|qat|gguf|mlx)\b/gi, s => s.toUpperCase())
-    .replace(/\b[a-z]/g, s => s.toUpperCase());
+    .replace(/\b[a-z]/g, s => s.toUpperCase()) || id;
 }
 function hostingLegend() {
   const locations = [

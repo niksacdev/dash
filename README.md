@@ -28,7 +28,7 @@ On macOS, you can also open `Open DASH.command` after installing dependencies. S
 
 Open **Workspace → Graders**, or design graders from a run setup. Give the grader agent an objective and observable metrics. It proposes a set of distinct checks and explains what each measures. Edit the criteria, threshold, and judge, then confirm the checks you want. Confirmation saves reusable versions in the grader library. Confirming from a run attaches those versions to that run.
 
-The Electron application is written in JavaScript. It uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
+The Electron renderer, preload and evaluation runner are written in TypeScript. DASH uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
 
 Inspect per-case scores and explanations in **Run history**. A winner needs complete scores on the same cases and a lead on at least one rubric with no losses on the others. Ties, mixed results and missing evidence are shown explicitly. [Opik evaluator documentation](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)
 
@@ -46,7 +46,7 @@ For a hosted deployment, set the API URL and `OPIK_WORKSPACE` for your account, 
 
 | Metric | Source |
 | --- | --- |
-| Device power | An instantaneous reading for the host running DASH. On supported Macs the AppleSmartBattery SystemLoad sensor reports milliwatts, converted to watts. Hover, focus, or tap for device and sensor details. Unsupported sensors show **Unavailable**. |
+| Device power | An instantaneous reading for the host running DASH. On supported Macs the AppleSmartBattery SystemLoad sensor reports milliwatts, converted to watts. Hover, focus, or tap to see DASH and host CPU, Electron working-set memory, host free memory and storage on the workspace volume. Unsupported sensors show **Unavailable**. |
 | Loaded models | Latest local runtime inventory. LM Studio reports loaded instances and Ollama reports its active models. Downloaded models only count when a runtime confirms they are loaded. |
 | Dataset snapshots | Versioned entries in the workspace’s SQLite dataset catalog. |
 | Total runs | All saved runs in the workspace, including failed runs and recorded-response tests. |
@@ -55,12 +55,10 @@ Run history preserves prompt versions, selected models, grader versions and meas
 
 ## Development
 
-From `dash-desktop/`:
+From `dash-desktop/`, the compiler checks the renderer and main process separately. To build and run all desktop checks:
 
 ```sh
-npm test
-npm run test:desktop
-npm run test:workflow
+npm run check
 ```
 
 The desktop tests run Electron against isolated temporary profiles. The workflow test simulates model transport and exercises the approval, inference, scoring and report paths. Live model quality and hardware power readings depend on the device and runtime.

@@ -2,6 +2,8 @@
 
 The checked-in [agent manifest](../../dash-desktop/agents/manifest.json) maps stable IDs and release numbers to [Markdown prompts](../../dash-desktop/agents/prompts/). These files supply the instructions DASH actually sends when it designs prompts, suggests a check, designs graders or explains a run. An agent definition can reference source material. DASH configures tool access separately from these references.
 
+These definitions run inside DASH’s existing planning, grading and reporting stages. Changing a prompt changes the instructions for that stage on the next deployment. Adding a new operation or connecting an independently hosted agent requires an execution adapter and an application entry point. The grader workspace can assess previously recorded agent outputs and tool steps. [Agent execution design](../reviews/agent-runs-feasibility.md)
+
 ## Where to edit
 
 | Purpose | Agent IDs |

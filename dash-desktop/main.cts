@@ -1,5 +1,5 @@
-const { app } = require("electron");
-const { openWindow, currentWindow } = require("./desktop.cjs");
+import { app } from "electron";
+import { openWindow, currentWindow } from "./desktop.cjs";
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {

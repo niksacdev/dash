@@ -1,14 +1,14 @@
 "use strict";
-const quickGradingPlans = new Map();
-function newQuickGradingPlan(id) {
-  const attachment=id && readGraderAttachment("prompt:"+id);
+const quickGradingPlans = new Map<string,UiQuickPlan>();
+function newQuickGradingPlan(id:string) {
+  const attachment=readGraderAttachment("prompt:"+id);
   return {options:null, saved:new Set(attachment?.ids), enabled:!!attachment?.generic, designed:!!attachment,
     criteria:"", judgeId:"", threshold:1, error:"", sequence:0};
 }
-function rememberQuickGraders(plan) {
+function rememberQuickGraders(plan:UiQuickPlan) {
   if (plan.designed && workflows.quick.approved) writeGraderAttachment("prompt:"+workflows.quick.approved.id,plan.saved,plan.enabled);
 }
-async function loadQuickGrading(approved) {
+async function loadQuickGrading(approved:UiApproved|null) {
   if (!approved) return;
   const plan = quickGradingPlans.get(approved.id) || newQuickGradingPlan(approved.id);
   quickGradingPlans.set(approved.id, plan);
@@ -31,23 +31,23 @@ async function loadQuickGrading(approved) {
     plan.options=options;
     plan.error="";
   } catch (error) {
-    if (sequence===plan.sequence) plan.error=error.message;
+    if (sequence===plan.sequence) plan.error=errorText(error);
   }
 }
 function quickGradePlan() {
-  return quickGradingPlans.get(workflows.quick.approved?.id);
+  return quickGradingPlans.get(workflows.quick.approved?.id || "");
 }
-function quickGradePayload(plan) {
+function quickGradePayload(plan?:UiQuickPlan) {
   if (!plan) return {graderIds:[]};
   const graderIds=[...plan.saved];
   if (!plan.enabled) return {graderIds};
-  return {graderIds, outcomeRubric:{criteria:plan.criteria.trim(),judgeId:plan.judgeId,threshold:Number(plan.threshold),type:"opik"}};
+  return {graderIds, outcomeRubric:{criteria:plan.criteria.trim(),judgeId:plan.judgeId,threshold:Number(plan.threshold),type:"opik" as const}};
 }
-function quickGradeIssue(plan) {
+function quickGradeIssue(plan?:UiQuickPlan) {
   if (!plan) return "";
   if (plan.error && (plan.enabled || plan.saved.size)) return "Reload grading options or clear the current graders to continue.";
   if (plan.saved.size+Number(plan.enabled)>8) return "Choose up to eight graders.";
-  if (plan.options && [...plan.saved].some(id=>!plan.options.available.some(g=>g.id===id)))
+  if (plan.options && [...plan.saved].some(id=>!plan.options?.available.some(g=>g.id===id)))
     return "A selected grader is unavailable. Refresh grading options and choose its replacement.";
   if (!plan.enabled) return "";
   if (!plan.options?.judges?.some(j=>j.id===plan.judgeId)) return "Choose a connected judge model to score both responses.";
@@ -59,7 +59,7 @@ function quickGradeStatus() {
   const plan=quickGradePlan(), issue=quickGradeIssue(plan);
   if (issue) return issue;
   const count=(plan?.saved.size || 0) + Number(!!plan?.enabled);
-  if (!count) return "Ungraded comparison · responses only";
+  if (!plan || !count) return "Ungraded comparison · responses only";
   const judge=plan.enabled && plan.options?.judges.find(j=>j.id===plan.judgeId);
   const pinnedJudges=new Set((plan.options?.available || []).filter(g=>plan.saved.has(g.id)).map(g=>g.judge?.id).filter(Boolean));
   if (judge) pinnedJudges.add(judge.id);
@@ -67,14 +67,14 @@ function quickGradeStatus() {
   return count+" active "+(count===1?"grader":"graders") + (judge?" · "+judge.model+" judges both responses":" · scoring both responses") +
     (shared?" · a selected candidate is also a judge":"");
 }
-function graderPick(g, plan, reason) {
+function graderPick(g:UiGrader,plan:UiQuickPlan,reason?:string) {
   return '<label class="qc-grade-choice"><input type="checkbox" name="qc-saved-grader" value="'+esc(g.id)+'" '+(plan.saved.has(g.id)?"checked":"")+'><span><strong>'+
     esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc([graderTypes[g.type],g.industry].filter(Boolean).join(" · "))+'</small>'+
     (reason?'<small>'+esc(reason)+'</small>':'')+'</span></label>';
 }
 function quickGradePicker() {
   const plan=quickGradePlan(), options=plan?.options;
-  if (!options || plan.error) return '<section id="qc-grading" class="qc-grading"><h2>Score the responses</h2><p role="status">'+
+  if (!plan || !options || plan.error) return '<section id="qc-grading" class="qc-grading"><h2>Score the responses</h2><p role="status">'+
     esc(plan?.error || "Grading options are loading.")+'</p><button type="button" data-qc-reload>Reload grading options</button>'+(plan?.enabled || plan?.saved.size?'<button type="button" data-qc-clear>Clear graders</button>':'')+'</section>';
   const recommended=options.recommended || [], recommendedIds=new Set(recommended.map(g=>g.id));
   const others=options.available.filter(g=>!recommendedIds.has(g.id));
@@ -99,19 +99,21 @@ function quickGradePicker() {
     (unavailable.length?'<button type="button" data-qc-unavailable>Remove unavailable graders</button>':'')+'</section>';
 }
 function updateQuickGradingControls() {
-  const text=document.getElementById("qc-grade-status"), go=document.querySelector("#quick-models .go-button");
+  const text=document.getElementById("qc-grade-status"), go=dashElement("#quick-models .go-button",HTMLButtonElement);
   if (text) text.textContent=quickGradeStatus();
   if (go) go.disabled=!canStartQuick();
 }
 document.addEventListener("click", async e=>{
+  if (!(e.target instanceof Element)) return;
+
   if (e.target.closest("[data-qc-reload]")) {await render(); return;}
   if (e.target.closest("[data-qc-clear],[data-qc-unavailable]")) {
     const p=quickGradePlan();
     if (!p) return;
     if (e.target.closest("[data-qc-clear]")) {p.saved.clear();p.enabled=false;}
-    else for (const id of p.saved) if (!p.options.available.some(g=>g.id===id)) p.saved.delete(id);
+    else for (const id of p.saved) if (!p.options?.available.some(g=>g.id===id)) p.saved.delete(id);
     rememberQuickGraders(p);
-    document.getElementById("qc-grading").outerHTML=quickGradePicker(); updateQuickGradingControls(); return;
+    $("#qc-grading").outerHTML=quickGradePicker(); updateQuickGradingControls(); return;
   }
   const button=e.target.closest("#qc-rubric-toggle");
   if (!button) return;
@@ -119,19 +121,20 @@ document.addEventListener("click", async e=>{
   if (!plan || workflows.quick.busy) return;
   plan.enabled=!plan.enabled;
   rememberQuickGraders(plan);
-  document.getElementById("qc-grading").outerHTML=quickGradePicker();
+  $("#qc-grading").outerHTML=quickGradePicker();
   document.getElementById("qc-rubric-toggle")?.focus({preventScroll:true});
   updateQuickGradingControls();
 });
-function handleQuickGradingField(target) {
+function handleQuickGradingField(target:EventTarget|null) {
   const plan=quickGradePlan();
-  if (!plan || !target.closest("#qc-grading")) return;
+  if (!textInput(target) || !plan || !target.closest("#qc-grading")) return;
   if (target.name==="qc-saved-grader") {
-    if (target.checked) plan.saved.add(target.value); else plan.saved.delete(target.value);
+    if (target instanceof HTMLInputElement && target.checked) plan.saved.add(target.value); else plan.saved.delete(target.value);
     rememberQuickGraders(plan);
   } else {
-    const key={"qc-criteria":"criteria","qc-threshold":"threshold","qc-judge":"judgeId"}[target.id];
-    if (key) plan[key]=target.value;
+    if (target.id==="qc-criteria") plan.criteria=target.value;
+    else if (target.id==="qc-threshold") plan.threshold=target.value;
+    else if (target.id==="qc-judge") plan.judgeId=target.value;
   }
   updateQuickGradingControls();
 }

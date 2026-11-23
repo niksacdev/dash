@@ -9,8 +9,11 @@ function copy(relative: string, include?: (source: string) => boolean): void {
     filter: include,
   });
 }
-copy("ui", source => ![".ts", ".js"].includes(extname(source)));
-copy("packs");
-copy("test", source => ![".ts", ".cts"].includes(extname(source)));
-if (existsSync(join(root, "agents"))) copy("agents", source => extname(source) !== ".cts");
-if (existsSync(join(root, "lib/opik_judge.py"))) copy("lib/opik_judge.py");
+if (process.argv.includes("--tests-only")) {
+  copy("test", source => ![".ts", ".cts"].includes(extname(source)));
+} else {
+  copy("ui", source => ![".ts", ".js"].includes(extname(source)));
+  copy("packs");
+  if (existsSync(join(root, "agents"))) copy("agents", source => extname(source) !== ".cts");
+  if (existsSync(join(root, "lib/opik_judge.py"))) copy("lib/opik_judge.py");
+}
