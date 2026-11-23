@@ -1,33 +1,48 @@
-const { createHash } = require("node:crypto");
+import { createHash } from "node:crypto";
+import type { LLM, LLMNamespace, LMStudioClient, LLMRespondOpts } from "@lmstudio/sdk";
+import { errorText, isRecord, type Candidate, type ChatTurn, type InferenceResult, type InvokeOptions,
+  type OutputSchema, type TokenCheck, type TokenReceipt } from "./runtime-types.cjs";
 
-let client;
-function lmClient() {
-  const { LMStudioClient } = require("@lmstudio/sdk");
-  client ??= new LMStudioClient({ baseUrl: "ws://127.0.0.1:1234" });
+let client: Promise<LMStudioClient> | undefined;
+function lmClient(): Promise<LMStudioClient> {
+  client ??= import("@lmstudio/sdk").then(({ LMStudioClient }) => new LMStudioClient({ baseUrl: "ws://127.0.0.1:1234" }));
   return client;
 }
+type ModelHandle = Pick<LLM, "identifier" | "applyPromptTemplate" | "countTokens" | "getContextLength" | "respond">;
+const loadedModels = async (): Promise<ModelHandle[]> => (await lmClient()).llm.listLoaded();
 
-const loadedModels = () => lmClient().llm.listLoaded();
-
+interface CheckedInput { model: ModelHandle; fingerprint: string; disableThinking: boolean }
+type CallOptions = Pick<InvokeOptions, "structured" | "onText" | "signal"> & { maxTokens: number };
+interface PredictionOptions {
+  limit: AbortSignal; maxTokens: number; structured?: OutputSchema | null; onText?: (text: string) => void;
+  disableThinking?: boolean; expectedTokens?: number; progress?: () => void;
+}
+class InputCapError extends Error {
+  constructor(message: string, readonly inputTokens: number, readonly contextTokens?: number) { super(message); }
+}
 // In SDK 2.1.0 applyPromptTemplate() has no prediction-options argument.
 // Its formatter reads the instance's config stack. Scope a copy to this one
 // receipt using the SDK's own config converter. Keep the shared handle and
 // the LM Studio session's model defaults untouched. Fail closed on SDK drift.
-function withoutThinking(model) {
-  if (!Array.isArray(model.internalKVConfigStack?.layers) || typeof model.predictionConfigInputToKVConfig !== "function")
+function withoutThinking(model: ModelHandle): ModelHandle {
+  const internal: unknown = model;
+  if (!isRecord(internal) || !isRecord(internal.internalKVConfigStack) || !Array.isArray(internal.internalKVConfigStack.layers) ||
+      typeof internal.predictionConfigInputToKVConfig !== "function")
     throw Error("This LM Studio SDK cannot verify the thinking-disabled prompt template. Update DASH or increase the output cap.");
-  const config = model.predictionConfigInputToKVConfig({ enableThinking: false });
-  return Object.create(model, {
-    internalKVConfigStack: { value: { layers: [...model.internalKVConfigStack.layers, { layerName: "apiOverride", config }] } },
+  const config: unknown = internal.predictionConfigInputToKVConfig({ enableThinking: false });
+  if (!isRecord(config)) throw Error("The LM Studio SDK returned an invalid prediction configuration.");
+  const stack = { layers: [...internal.internalKVConfigStack.layers, { layerName: "apiOverride", config }] };
+  return new Proxy(model, {
+    get(target, key, receiver) { return key === "internalKVConfigStack" ? stack : Reflect.get(target, key, receiver); },
   });
 }
 
-function digest(text) {
+function digest(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
 // The SDK's template and tokenizer RPCs do not accept a cancellation signal.
-function untilAborted(work, signal) {
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason);
@@ -36,12 +51,12 @@ function untilAborted(work, signal) {
   });
 }
 
-function createTokenBudget(listLoaded) {
+export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
   // Only the count and its provenance belong in run history. Keep the actual
   // instance and rendered-text fingerprint private to the main process.
-  const receipts = new WeakMap();
+  const receipts = new WeakMap<TokenReceipt, CheckedInput>();
 
-  async function checkInputBudget({ candidate, messages, cap, signal, measureContext = false, disableThinking = false }) {
+  async function checkInputBudget({ candidate, messages, cap, signal, measureContext = false, disableThinking = false }: TokenCheck): Promise<TokenReceipt | null> {
     if (cap == null && !measureContext) return null;
     if (cap != null && (!Number.isSafeInteger(cap) || cap < 1)) throw Error("Input budget must be a positive whole number of tokens.");
     if (candidate.provider !== "lmstudio")
@@ -50,7 +65,7 @@ function createTokenBudget(listLoaded) {
     const limit = signal ? AbortSignal.any([signal, timeout]) : timeout;
     limit.throwIfAborted();
 
-    let model, formatted, tokens, contextTokens;
+    let model: ModelHandle | undefined, formatted: string | undefined, tokens: number | undefined, contextTokens: number | undefined;
     try {
       const models = await untilAborted(listLoaded(), limit);
       model = models.find(item => item.identifier === candidate.model);
@@ -66,17 +81,14 @@ function createTokenBudget(listLoaded) {
       }
     } catch (error) {
       signal?.throwIfAborted();
-      throw Error(`LM Studio could not count the complete input for ${candidate.model}. Check its connection and chat template, or remove the input cap. ${error.message}`);
+      throw Error(`LM Studio could not count the complete input for ${candidate.model}. Check its connection and chat template, or remove the input cap. ${errorText(error)}`);
     }
     if (!model)
       throw Error(`Load ${candidate.model} in LM Studio before using an input cap, or remove the cap.`);
-    if (!Number.isSafeInteger(tokens) || tokens < 0)
+    if (typeof formatted !== "string" || typeof tokens !== "number" || !Number.isSafeInteger(tokens) || tokens < 0)
       throw Error(`LM Studio returned an invalid input count for ${candidate.model}.`);
     if (cap != null && tokens > cap) {
-      const error = Error(`${candidate.model} needs ${tokens} input tokens after applying its chat template. The cap is ${cap}. Shorten the input or raise the cap.`);
-      error.inputTokens = tokens;
-      error.contextTokens = contextTokens;
-      throw error;
+      throw new InputCapError(`${candidate.model} needs ${tokens} input tokens after applying its chat template. The cap is ${cap}. Shorten the input or raise the cap.`, tokens, contextTokens);
     }
 
     const receipt = Object.freeze({ tokens, ...(measureContext ? { contextTokens } : {}), source: "LM Studio model tokenizer and chat template" });
@@ -84,7 +96,7 @@ function createTokenBudget(listLoaded) {
     return receipt;
   }
 
-  async function invokeBudgeted(candidate, messages, { inputBudget, maxTokens, signal, structured, onText }) {
+  async function invokeBudgeted(candidate: Candidate, messages: ChatTurn[], { inputBudget, maxTokens, signal, structured, onText }: CallOptions & { inputBudget: TokenReceipt }): Promise<InferenceResult> {
     const checked = receipts.get(inputBudget);
     if (!checked || candidate.provider !== "lmstudio" || checked.model.identifier !== candidate.model)
       throw Error("The token check does not match this model. Run the input check again.");
@@ -111,7 +123,7 @@ function createTokenBudget(listLoaded) {
     }
   }
 
-  async function invokePlanner(candidate, messages, { maxTokens, signal, structured }) {
+  async function invokePlanner(candidate: Candidate, messages: ChatTurn[], { maxTokens, signal, structured }: CallOptions): Promise<InferenceResult> {
     signal.throwIfAborted();
     if (!structured) throw Error("The planning stage requires a response schema.");
     const models = await untilAborted(listLoaded(), signal);
@@ -120,11 +132,11 @@ function createTokenBudget(listLoaded) {
     return predict(model, candidate, messages, { limit: signal, maxTokens, structured });
   }
 
-  async function predict(model, candidate, messages, { limit, maxTokens, structured, onText, disableThinking = false, expectedTokens, progress }) {
+  async function predict(model: ModelHandle, candidate: Candidate, messages: ChatTurn[], { limit, maxTokens, structured, onText, disableThinking = false, expectedTokens, progress }: PredictionOptions): Promise<InferenceResult> {
     limit.throwIfAborted();
     const start = performance.now();
-    let output = "", firstTokenMs = null;
-    const options = {
+    let output = "", firstTokenMs: number | null = null;
+    const options: LLMRespondOpts = {
       signal: limit, temperature: 0, maxTokens, contextOverflowPolicy: "stopAtLimit",
       onPromptProcessingProgress: progress,
       onPredictionFragment(fragment) {
@@ -156,8 +168,8 @@ function createTokenBudget(listLoaded) {
       telemetry: {
         latency_ms: Math.round(performance.now() - start),
         first_token_ms: firstTokenMs,
-        provider_first_token_ms: Number.isFinite(stats.timeToFirstTokenSec) ? stats.timeToFirstTokenSec * 1000 : null,
-        input_tokens: stats.promptTokensCount,
+        provider_first_token_ms: stats.timeToFirstTokenSec !== undefined && Number.isFinite(stats.timeToFirstTokenSec) ? stats.timeToFirstTokenSec * 1000 : null,
+        input_tokens: stats.promptTokensCount ?? null,
         output_tokens: stats.predictedTokensCount ?? null,
         tokens_per_second: stats.tokensPerSecond ?? null,
         runtime_stop_reason: stats.stopReason,
@@ -173,8 +185,9 @@ function createTokenBudget(listLoaded) {
 
 // Opik supplies its own chat turns for both G-Eval stages. Measure and dispatch those exact
 // turns through the chosen model's template, including a one-turn scoring request.
-async function invokeJudge(candidate, messages, { maxTokens, signal, structured }, llm = lmClient().llm) {
-  const model = await llm.model(candidate.model, { signal });
+export async function invokeJudge(candidate: Candidate, messages: ChatTurn[], { maxTokens, signal, structured }: CallOptions, llm?: Pick<LLMNamespace, "model">): Promise<InferenceResult> {
+  const local = llm ?? (await lmClient()).llm;
+  const model = await local.model(candidate.model, { signal });
   const active = { ...candidate, model:model.identifier };
   const scoped = createTokenBudget(async () => [model]);
   const checklist = !structured;
@@ -190,13 +203,15 @@ async function invokeJudge(candidate, messages, { maxTokens, signal, structured 
   const inputBudget = await scoped.checkInputBudget({
     candidate:active, messages, measureContext:true, disableThinking:!!candidate.reasoningOff, signal,
   });
+  if (!inputBudget?.contextTokens) throw Error("The runtime did not report its active judge context.");
   const room = inputBudget.contextTokens - inputBudget.tokens;
   if (room < 1) throw Error("The judge input fills the active model context. Choose a judge with a larger context.");
   const response = await scoped.invokeBudgeted(active, messages, {
     inputBudget, maxTokens:Math.min(room, maxTokens, candidate.maxOutputTokens || maxTokens), signal, structured,
   });
   if (checklist && response.finishReason !== "length") {
-    const {steps} = JSON.parse(response.output);
+    const record: unknown = JSON.parse(response.output);
+    const steps = isRecord(record) ? record.steps : null;
     if (!Array.isArray(steps) || !steps.length || steps.some(step=>typeof step!=="string" || !step.trim()))
       throw Error("The local Opik judge returned an invalid evaluation checklist.");
     response.output = steps.join("\n");
@@ -204,4 +219,4 @@ async function invokeJudge(candidate, messages, { maxTokens, signal, structured 
   return response;
 }
 
-module.exports = { ...createTokenBudget(loadedModels), createTokenBudget, invokeJudge };
+export const { checkInputBudget, invokeBudgeted, invokePlanner } = createTokenBudget(loadedModels);
