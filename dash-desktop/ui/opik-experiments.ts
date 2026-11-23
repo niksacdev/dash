@@ -6,7 +6,7 @@ async function opikExperimentPanel(saved: UiRunDetail) {
   const id=saved.manifest.id, read=api.opikExperimentStatus;
   if (!read) return "";
   const state=await read(id);
-  if (!state.configured) return '<section class="panel"><h3>Opik experiments</h3><p>'+esc(state.error || "Set DASH_OPIK_API_URL to your Opik service before opening DASH. Run history lets you choose which saved evaluations to sync.")+'</p></section>';
+  if (!state.configured) return '<section class="panel"><h3>Opik experiments</h3><p>'+esc(state.error || "Start local Opik with npm run setup:local, then reopen DASH. You can sync a saved run to the local dashboard when you choose.")+'</p></section>';
   const running=syncingOpik.has(id) || state.active;
   const finished=["completed","failed","canceled","interrupted"].includes(saved.status);
   const receipt = state.state === "synced" ? state.receipt : null;

@@ -15,6 +15,8 @@ npm ci
 npm start
 ```
 
+To run the Opik service locally with Docker, use `npm run setup:local` before starting DASH. The command configures the local dashboard and API for this user. [Local Opik guide](docs/guides/local-opik.md)
+
 On macOS, you can also open `Open DASH.command` after installing dependencies. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
 
 ### First evaluation in five minutes
@@ -34,13 +36,9 @@ Inspect per-case scores and explanations in **Run history**. A winner needs comp
 
 ### Connect an Opik project
 
-The desktop workbench can run offline. To record a finished run as native Opik experiments, configure the destination before starting DASH. For example, with an existing local Opik server:
+From the desktop directory, run `npm run setup:local` to start the project's Docker services. DASH uses the local dashboard at `http://127.0.0.1:51734`. No Opik account, API key or environment settings are needed. Start and stop the service with `npm run opik:start` and `npm run opik:stop`. Workspace data persists across stops. [Local Opik setup](docs/guides/local-opik.md)
 
-```sh
-DASH_OPIK_API_URL=http://localhost:5173/api OPIK_PROJECT_NAME=DASH npm start
-```
-
-For a hosted deployment, set the API URL and `OPIK_WORKSPACE` for your account, and supply `OPIK_API_KEY` through your environment. `DASH_OPIK_UI_URL` can point to your dashboard. **Run history** shows the destination and lets you sync saved inputs, outputs, and scores. Each candidate gets an experiment pinned to the same Opik dataset version. Revisions of an industry/scenario dataset family stay together, including case additions, edits and removals. Syncing a single-case rerun sends the full authored dataset snapshot and the recorded results for the cases actually run. Sync does not repeat inference. [Opik experiment logging](https://www.comet.com/docs/opik/evaluation/advanced/log_experiments_with_rest_api)
+To use an independently managed deployment, set `DASH_OPIK_API_URL` before starting DASH. You can also specify `DASH_OPIK_UI_URL`, `OPIK_WORKSPACE` and `OPIK_PROJECT_NAME`. Only supply `OPIK_API_KEY` if that deployment requires it. **Run history** shows the destination and lets you sync saved inputs, outputs, and scores. Each candidate gets an experiment pinned to the same Opik dataset version. Revisions of an industry/scenario dataset family stay together, including case additions, edits and removals. Syncing a single-case rerun sends the full authored dataset snapshot and the recorded results for the cases actually run. Sync does not repeat inference. [Opik experiment logging](https://www.comet.com/docs/opik/evaluation/advanced/log_experiments_with_rest_api)
 
 ## What the Overview measures
 
