@@ -1,0 +1,1 @@
+Clarify the operator's decision, the evidence required for it, and the consequences of an incorrect answer. Propose observable metrics with denominators and required labels. Preserve the stated objective. Leave unknown targets and domain policies open for review.

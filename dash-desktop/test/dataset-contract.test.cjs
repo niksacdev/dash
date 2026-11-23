@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { DatabaseSync } = require("node:sqlite");
 const { Bench } = require("../lib/bench.cjs");
 const { PlannerSettings } = require("../lib/planner-settings.cjs");
-const { referencePack, exactReference } = require("../lib/evaluation-cases.cjs");
+const { referencePack, exactReference, graderEvidence } = require("../lib/evaluation-cases.cjs");
 const { parseDataset } = require("../lib/packs.cjs");
 const { opikJudgeRequest } = require("./opik-judge-fixture.cjs");
 const turns = [{role:"user",content:"Inspect lot K7."},{role:"assistant",content:"Which limits apply?"},{role:"user",content:"10.00 to 10.03 mm. The sample measures 10.04 mm."}];
@@ -21,6 +21,8 @@ test("a chat dataset can run against its own case rubric with an empty grader li
         assert.equal(o.structured.properties.score.maximum,10);
         const evidence=evaluation.evidence;
         assert.deepEqual(evidence.input,turns);
+        assert.equal(evidence.inputSource,"recorded-dispatch");
+        assert.equal(Object.hasOwn(evidence,"trajectory"),false);
         assert.equal(evidence.sme_rationale,record.sme_rationale);
         assert.equal(evidence.rubric,record.rubric);
         judgeCalls++; return {output:'{"score":10,"reason":"Identified the out-of-tolerance sample."}'};
@@ -89,4 +91,43 @@ test("exact reference strings use Opik and structured references preserve JSON s
   assert.equal((await exactReference({reference:"HOLD"},"hold")).pass,false);
   assert.equal((await exactReference({reference:{a:1,b:2}},'{"b":2,"a":1}')).pass,true);
   assert.equal((await exactReference({reference:[1,2]},"[2,1]")).pass,false);
+});
+
+test("grading prefers recorded dispatch, identifies older inputs, and excludes host actions", () => {
+  const manifest={pack:referencePack}, row={case_id:"evidence",prompt:"Original case text"};
+  const actual=[{role:"user",content:"The exact representation dispatched under the token budget"}];
+  const result={output:"hold",dispatchedMessages:actual,trace:{steps:[{action:"Invoke local model"}]}};
+  const evidence=graderEvidence(manifest,row,result);
+  assert.deepEqual(evidence.input,actual);
+  assert.equal(evidence.inputSource,"recorded-dispatch");
+  assert.equal(Object.hasOwn(evidence,"trajectory"),false);
+  const legacy={output:result.output,trace:result.trace};
+  assert.deepEqual(graderEvidence(manifest,row,legacy).input,[{role:"user",content:row.prompt}]);
+  assert.equal(graderEvidence(manifest,row,legacy).inputSource,"reconstructed-case");
+  assert.equal(graderEvidence({...manifest,fixture:true},row,legacy).inputSource,"fixture-case");
+});
+
+test("action graders leave missing traces unscored and score only supplied agent actions", async t => {
+  const candidate={id:"ollama/qa",provider:"ollama",model:"qa",loaded:true};
+  const bench=new Bench(":memory:",{discover:async()=>[{models:[candidate]}],invoke:async()=>({output:"hold"})},async()=>async()=>null);
+  t.after(()=>bench.db.close());
+  await bench.refresh();
+  const datasetId=bench.import("reference","Tool evidence",JSON.stringify({case_id:"1",dataset_version:"1",split:"development",prompt:"Inspect lot K7."}));
+  const graderId=bench.graders.save({name:"Observed lookup and hold",category:"Operations",industry:"Manufacturing",type:"trajectory",criteria:"lookup\nhold",threshold:1},[]);
+  const runId=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId]});
+  await bench.active.done;
+  const result=bench.detail(runId);
+  assert.ok(result.results[0].trace.steps.some(step=>step.action==="Invoke ollama"));
+  const assessment=result.assessments[0];
+  assert.equal(assessment.pass,null);
+  assert.equal(assessment.value,null);
+  assert.equal(assessment.inputSource,"recorded-dispatch");
+  assert.match(assessment.reason,/No candidate tool trajectory/);
+  const evidence={input:"Inspect lot K7.",reference:null,output:"hold"};
+  const grade=trajectory=>bench.graders.record(bench.graders.get(graderId),{...evidence,...(trajectory===undefined?{}:{trajectory})},{},bench.adapters,new AbortController().signal);
+  assert.equal((await grade(undefined)).value,null);
+  assert.equal((await grade([])).value,0);
+  assert.equal((await grade([{}, {action:"hold"}])).value,null);
+  assert.equal((await grade([{tool:"hold"},{tool:"lookup"}])).value,0);
+  assert.equal((await grade([{tool:"lookup"},{action:"hold"}])).value,1);
 });

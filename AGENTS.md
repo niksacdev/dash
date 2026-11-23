@@ -29,6 +29,7 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 - Verify changes through their real entry points. Cover domain regressions with synthetic cases, exercise SDK serialization against an isolated service, and run Electron checks against a fresh test profile. Record which paths used real models, simulated transports, or a live service.
 - Use the repository's typecheck, build, tests and documentation-link check. GitHub Actions should exercise the same commands that contributors run locally. Update setup instructions with build changes.
 - Work on a feature branch and commit each coherent, verified increment. Keep mechanical moves separate from behavioral changes when practical. Push the branch, open or update its pull request, and verify CI on its current head. Use the PR for review before merging. Record decisions affecting architecture, data ownership, scoring or reproducibility in [docs/adr](docs/adr/). Include the user-visible effect, verification evidence and any remaining limitations.
+- For a dependent series, agree the batch order, use the preceding PR as the next base, and check GitHub's actual merge status before adding a commit. After a squash merge, verify the remaining diff against the new base. Finish the agreed batches before starting another feature.
 - Use the [documentation index](docs/START_HERE.md) for the original artifacts and product reviews. Maintain a single source for each dataset fixture and preserve original design/specification files when moving them.
 
 ## Continuous learning

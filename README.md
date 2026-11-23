@@ -15,6 +15,8 @@ npm ci
 npm start
 ```
 
+To run the Opik service locally with Docker, use `npm run setup:local` before starting DASH. The command configures the local dashboard and API for this user. [Local Opik guide](docs/guides/local-opik.md)
+
 On macOS, you can also open `Open DASH.command` after installing dependencies. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
 
 ### First evaluation in five minutes
@@ -28,25 +30,21 @@ On macOS, you can also open `Open DASH.command` after installing dependencies. S
 
 Open **Workspace → Graders**, or design graders from a run setup. Give the grader agent an objective and observable metrics. It proposes a set of distinct checks and explains what each measures. Edit the criteria, threshold, and judge, then confirm the checks you want. Confirmation saves reusable versions in the grader library. Confirming from a run attaches those versions to that run.
 
-The Electron application is written in JavaScript. It uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
+The Electron renderer, preload and evaluation runner are written in TypeScript. DASH uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
 
 Inspect per-case scores and explanations in **Run history**. A winner needs complete scores on the same cases and a lead on at least one rubric with no losses on the others. Ties, mixed results and missing evidence are shown explicitly. [Opik evaluator documentation](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)
 
 ### Connect an Opik project
 
-The desktop workbench can run offline. To record a finished run as native Opik experiments, configure the destination before starting DASH. For example, with an existing local Opik server:
+From the desktop directory, run `npm run setup:local` to start the project's Docker services. DASH uses the local dashboard at `http://127.0.0.1:51734`. No Opik account, API key or environment settings are needed. Start and stop the service with `npm run opik:start` and `npm run opik:stop`. Workspace data persists across stops. [Local Opik setup](docs/guides/local-opik.md)
 
-```sh
-DASH_OPIK_API_URL=http://localhost:5173/api OPIK_PROJECT_NAME=DASH npm start
-```
-
-For a hosted deployment, set the API URL and `OPIK_WORKSPACE` for your account, and supply `OPIK_API_KEY` through your environment. `DASH_OPIK_UI_URL` can point to your dashboard. **Run history** shows the destination and lets you sync saved inputs, outputs, and scores. Each candidate gets an experiment pinned to the same Opik dataset version. Revisions of an industry/scenario dataset family stay together, including case additions, edits and removals. Syncing a single-case rerun sends the full authored dataset snapshot and the recorded results for the cases actually run. Sync does not repeat inference. [Opik experiment logging](https://www.comet.com/docs/opik/evaluation/advanced/log_experiments_with_rest_api)
+To use an independently managed deployment, set `DASH_OPIK_API_URL` before starting DASH. You can also specify `DASH_OPIK_UI_URL`, `OPIK_WORKSPACE` and `OPIK_PROJECT_NAME`. Only supply `OPIK_API_KEY` if that deployment requires it. **Run history** shows the destination and lets you sync saved inputs, outputs, and scores. Each candidate gets an experiment pinned to the same Opik dataset version. Revisions of an industry/scenario dataset family stay together, including case additions, edits and removals. Syncing a single-case rerun sends the full authored dataset snapshot and the recorded results for the cases actually run. Sync does not repeat inference. [Opik experiment logging](https://www.comet.com/docs/opik/evaluation/advanced/log_experiments_with_rest_api)
 
 ## What the Overview measures
 
 | Metric | Source |
 | --- | --- |
-| Device power | An instantaneous reading for the host running DASH. On supported Macs the AppleSmartBattery SystemLoad sensor reports milliwatts, converted to watts. Hover, focus, or tap for device and sensor details. Unsupported sensors show **Unavailable**. |
+| Device power | An instantaneous reading for the host running DASH. On supported Macs the AppleSmartBattery SystemLoad sensor reports milliwatts, converted to watts. Hover, focus, or tap to see DASH and host CPU, Electron working-set memory, host free memory and storage on the workspace volume. Unsupported sensors show **Unavailable**. |
 | Loaded models | Latest local runtime inventory. LM Studio reports loaded instances and Ollama reports its active models. Downloaded models only count when a runtime confirms they are loaded. |
 | Dataset snapshots | Versioned entries in the workspace’s SQLite dataset catalog. |
 | Total runs | All saved runs in the workspace, including failed runs and recorded-response tests. |
@@ -55,12 +53,10 @@ Run history preserves prompt versions, selected models, grader versions and meas
 
 ## Development
 
-From `dash-desktop/`:
+From `dash-desktop/`, the compiler checks the renderer and main process separately. To build and run all desktop checks:
 
 ```sh
-npm test
-npm run test:desktop
-npm run test:workflow
+npm run check
 ```
 
 The desktop tests run Electron against isolated temporary profiles. The workflow test simulates model transport and exercises the approval, inference, scoring and report paths. Live model quality and hardware power readings depend on the device and runtime.

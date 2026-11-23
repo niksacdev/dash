@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleDetection": "legacy",
+    "types": [],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "rootDir": "ui",
+    "outDir": "dist/ui"
+  },
+  "include": ["ui/**/*.ts"]
+}
