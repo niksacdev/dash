@@ -8,7 +8,13 @@
   --border: light-dark(#cedbe4, #364451);
   --control-border: light-dark(#8597a7, #698092);
   --brand: light-dark(#be2446, #c13940);
-  --brand-hover: light-dark(#9e1939, #b12b32);
+  --button-fill: #ffcf00;
+  --button-hover: #ffdf55;
+  --button-active: #e8b700;
+  --button-ink: #252116;
+  --button-border: #806300;
+  --button-disabled: #ded4b0;
+  --button-disabled-ink: #534c38;
   --accent: light-dark(#276579, #88cfda);
   --accent-strong: light-dark(#164d61, #ace4eb);
   --selected: light-dark(#e4f2f5, #233d49);
@@ -59,9 +65,7 @@ textarea {
 }
 button,
 .button {
-  border: 1px solid var(--control-border);
-  color: var(--ink);
-  background: var(--surface-soft);
+  border: 1px solid var(--button-border);
   border-radius: 5px;
   min-height: 37px;
   padding: 8px 14px;
@@ -73,22 +77,25 @@ button,
   justify-content: center;
   gap: 6px;
 }
-button:hover,
-.button:hover {
-  background-color: var(--selected);
+button, .button, :where(#appearance label > span, .wf-domain label > span) {
+  color: var(--button-ink);
+  background-color: var(--button-fill);
 }
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
+:where(#appearance label > span, .wf-domain label > span) { border: 1px solid var(--button-border); }
+button:enabled:hover, .button:hover, :where(#appearance, .wf-domain) label:hover input:enabled + span {
+  background-color: var(--button-hover);
 }
-.yellow {
-  background: var(--brand);
-  color: #fff;
-  border-color: transparent;
+button:enabled:active, .button:active, :where(#appearance, .wf-domain) label:active input:enabled + span {
+  background-color: var(--button-active);
 }
-.yellow:hover, .go-button:hover:enabled { background: var(--brand-hover); color: white; }
-.quiet {
-  background: transparent;
+button[aria-pressed="true"], :where(#appearance, .wf-domain) input:checked + span {
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+button:disabled, :where(#appearance, .wf-domain) input:disabled + span {
+  color: var(--button-disabled-ink);
+  background-color: var(--button-disabled);
+  border-color: var(--button-disabled-ink);
+  cursor: not-allowed;
 }
 .link {
   color: var(--accent);
@@ -205,15 +212,10 @@ header {
 #appearance label { position: relative; cursor: pointer; }
 #appearance label > span {
   display: flex; align-items: center; justify-content: center; gap: 5px;
-  min-height: 27px; padding: 0 9px; border-radius: 16px; color: var(--muted);
+  min-height: 27px; padding: 0 9px; border-radius: 16px;
 }
 #appearance .icon { width: 14px; height: 14px; }
 #appearance b { font-size: 12px; font-weight: 550; }
-#appearance label:hover span { color: var(--ink); }
-#appearance input:checked + span {
-  background: var(--panel); color: var(--ink); box-shadow: 0 0 0 1px var(--control-border);
-}
-#appearance input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 1px; }
 @media (max-width: 680px) {
   .header-actions { gap: 6px; }
   #appearance b { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
@@ -521,7 +523,6 @@ details summary {
   border-radius: 6px;
   z-index: 5;
 }
-button:focus-visible,
 a:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
@@ -529,6 +530,14 @@ input:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 3px;
+}
+button:focus-visible, a.button:focus-visible, :where(#appearance, .wf-domain) input:focus-visible + span {
+  outline: 2px solid #252116;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 5px #fff, inset 0 0 0 1px var(--button-ink);
+}
+button[aria-pressed="true"]:focus-visible, :where(#appearance, .wf-domain) input:checked:focus-visible + span {
+  box-shadow: 0 0 0 5px #fff, inset 0 0 0 2px var(--button-ink);
 }
 a.link:hover {
   text-decoration: underline;
@@ -644,15 +653,14 @@ progress::-webkit-progress-value {background:var(--brand);border-radius:2px}
 .grid-slot:not(.occupied) .grid-car {opacity:.27}
 .remove-model {margin-left:auto;min-height:36px;min-width:36px;padding:0}.launch-strip {align-items:stretch;gap:14px;margin:15px 0}
 .launch-strip>.field {flex:1;margin:0}.launch-strip textarea {min-height:80px}.launch-side {width:165px;display:grid;gap:6px}.launch-side .field {margin:0}
-.go-button {min-height:44px;color:white;background:var(--brand);border:0;font:italic 850 21px/1 Arial;letter-spacing:.03em}
-.go-button:disabled {background:light-dark(#e4eaee,#2b3844);color:var(--muted);opacity:1}
+.go-button {min-height:44px;font:italic 850 21px/1 Arial;letter-spacing:.03em}
 .roster-group {display:grid;grid-template-columns:110px 1fr;border-top:1px solid var(--border);padding:9px 0;gap:12px}
 .group-name {align-self:start;gap:7px;padding-block:12px}.group-name strong {font-size:13px}.group-name small {font:11px var(--mono);color:var(--muted)}
 .roster-list {display:grid;grid-template-columns:repeat(auto-fill,minmax(min(195px,100%),1fr));gap:5px}
-.roster-model {min-width:0;min-height:54px;text-align:left;justify-content:flex-start;background:var(--panel);border:1px solid var(--border);border-radius:7px;padding:6px 9px;gap:9px}
+.roster-model {min-width:0;min-height:54px;text-align:left;justify-content:flex-start;border-radius:7px;padding:6px 9px;gap:9px}
 .roster-model .model-logo {width:28px;height:28px;border-radius:4px}.roster-model .model-logo img {width:21px;height:21px}
-.roster-model b {font-size:12px;line-height:1.2}.roster-model small {font-size:10px;margin-top:3px}.roster-model i {margin-left:auto}
-.roster-model[aria-pressed=true]{background:var(--selected);border-color:var(--accent);color:var(--accent-strong)}.roster-empty {align-self:center}
+.roster-model b {font-size:12px;line-height:1.2}.roster-model small {font-size:10px;margin-top:3px;color:inherit}.roster-model i {margin-left:auto}
+.roster-empty {align-self:center}
 .visually-hidden {position:absolute;clip-path:inset(50%);width:1px;height:1px;overflow:hidden}
 @media(max-width:790px){.starting-grid{grid-template-columns:1fr}.roster-group{grid-template-columns:1fr;gap:0}.group-name{padding:2px 0 6px}}
 @media(max-width:680px){.launch-strip{flex-direction:column}.launch-side{width:100%;grid-template-columns:1fr 90px}}

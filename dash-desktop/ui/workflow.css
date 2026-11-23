@@ -24,9 +24,6 @@ body:has(.wf-page) #screen {margin:0;max-width:none;padding:clamp(16px,2.2vw,32p
 .wf-panel .field input,.wf-panel .field textarea {width:100%;padding:11px 12px}
 .wf-measures {margin:0 0 16px;padding:13px 0 0;border-top:1px solid var(--border)}
 .wf-measure-head {display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:0 0 10px}
-.wf-measure-head button {color:var(--accent-strong);border-color:light-dark(#8bb4c0,#5e8594);background:var(--selected)}
-.wf-measure-head button:hover:enabled {background:light-dark(#cce4eb,#314d5b)}
-.wf-measure-head button:focus-visible {outline:2px solid var(--focus);outline-offset:2px}
 .wf-measure-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,245px),1fr));gap:12px}
 .wf-measures .field {margin:0}
 .wf-measures .wf-hint {display:block;margin-top:6px}
@@ -40,9 +37,7 @@ body:has(.wf-page) #screen {margin:0;max-width:none;padding:clamp(16px,2.2vw,32p
 .wf-domain>div {display:flex;gap:6px;flex-wrap:wrap}
 .wf-domain label {cursor:pointer;position:relative}
 .wf-domain input {position:absolute;opacity:0;width:1px;height:1px}
-.wf-domain span {display:inline-flex;align-items:center;min-height:36px;padding:6px 12px;border:1px solid var(--control-border);border-radius:4px;color:var(--muted);font-size:13px}
-.wf-domain input:checked+span {color:var(--ink);background:var(--selected);border-color:var(--accent)}
-.wf-domain input:focus-visible+span {outline:2px solid var(--focus);outline-offset:2px}
+.wf-domain span {display:inline-flex;align-items:center;min-height:36px;padding:6px 12px;border-radius:4px;font-size:13px}
 .wf-actions {border-top:1px solid var(--border);padding-top:14px;margin-top:6px}
 .wf-hint,.wf-progress,.wf-actions small,.wf-approved small,.wf-run-plan>small,.wf-options small {color:var(--muted);font-size:13px;line-height:1.5}
 .wf-error {padding:12px 14px;background:var(--danger-bg);border-left:3px solid var(--danger);color:var(--danger-ink);margin-bottom:12px;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -85,7 +80,7 @@ body:has(.wf-page) #screen {margin:0;max-width:none;padding:clamp(16px,2.2vw,32p
 }
 .wf-examples {display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:-4px 0 18px}
 .wf-examples small {font-size:12px;color:var(--muted);margin-right:4px}
-.wf-examples button {padding:4px 10px;min-height:30px;font-size:12px;background:transparent;color:var(--accent);border-color:var(--control-border)}
+.wf-examples button {padding:4px 10px;min-height:30px;font-size:12px}
 .wf-page .wf-role-grid .wf-options-body {padding:8px 0 0}
 @media (pointer:coarse) {.wf-examples button {min-height:44px}}
 .wf-panel #wf-prompt,.wf-panel #wf-review-metrics {field-sizing:content;min-height:5.4rem;max-height:min(40vh,22rem)}
