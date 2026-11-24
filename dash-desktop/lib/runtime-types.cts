@@ -75,8 +75,8 @@ export interface TokenCheck {
 }
 export type CheckInputBudget = (request: TokenCheck) => Promise<TokenReceipt | null>;
 export type PlanningProgress =
-  | {phase:"processing-prompt";percent:number}
-  | {phase:"generating";approximateOutputTokens:number};
+  | {phase:"processing-prompt";percent:number;inputTokens?:number}
+  | {phase:"generating";approximateOutputTokens:number|null};
 export interface InvokeOptions {
   onPlanningProgress?: (progress:PlanningProgress) => void;
   strictSchema?:boolean;

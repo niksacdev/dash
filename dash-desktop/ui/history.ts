@@ -50,10 +50,15 @@ function performanceCharts(s: UiPerformance & {readError?:string}) {
       label:c.model,value:c.p50,display:c.p50===null?"Unmeasured":metricNumber(c.p50/1000)+" s median",
       note:c.timed && c.p95 !== null ? "95th percentile "+metricNumber(c.p95/1000)+" s · "+c.timed+" measured" : "No recorded timings"
     }))));
-    cards.push(chartPanel("Output tokens","Average generated tokens per response with provider usage.",s.candidates.map(c=>({
-      label:c.model,value:c.output,display:c.output===null?"Unmeasured":metricNumber(c.output)+" tokens",
-      note:c.outputCount+" measured"+(c.input===null?"":" · "+metricNumber(c.input)+" mean input tokens ("+c.inputCount+" measured)")
-    }))));
+    for (const [field,title,description,count] of [
+      ["input","Input tokens","Average prompt tokens per response with reported input usage.","inputCount"],
+      ["output","Output tokens","Average generated tokens per response with reported output usage.","outputCount"],
+    ] as const) {
+      cards.push(chartPanel(title,description,s.candidates.map(c=>{
+        const value=c[field];
+        return {label:c.model,value,display:value===null?"Unreported":metricNumber(value)+" tokens",note:c[count]+" measured"};
+      })));
+    }
     cards.push(chartPanel("DASH host power","Mean of the measured case averages on the device running DASH. Hosted inference server power is unavailable.",s.candidates.map(c=>({
       label:c.model,value:c.watts,display:c.watts==null?"Unmeasured":metricNumber(c.watts)+" W",
       note:(c.powerCount || 0)+" measured responses"

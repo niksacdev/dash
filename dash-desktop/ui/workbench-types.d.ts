@@ -88,7 +88,7 @@ interface UiManifest {
   tokenBudget?:UiTokenCaps;guardrailFailure?:UiGuardrail|null;invocations?:{candidateId:string;adapter:string;template?:string|null}[];
 }
 type UiRunProgress = {kind:"unchanged"}|{kind:"refresh"}|{kind:"append";candidateId:string;text:string};
-interface UiRunDetail {liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;text?:string;grading?:{name:string;version:number}}|null}
+interface UiRunDetail {liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;caseId?:string;text?:string;checkedInputTokens?:number;grading?:{name:string;version:number}}|null}
 interface UiDiagnostic {status:string;fixture:boolean;candidates:Pick<UiModel,"model"|"id">[];traces:{
   candidateId:string;caseId:string;index:number;telemetry?:UiTelemetry|null;stage:string;note:string;traceId:string;started:string;finished?:string;finishReason?:string|null;adapter?:string|null}[]}
 interface UiPower {at:string;watts:number|null;source:string|null;
@@ -111,7 +111,7 @@ interface PlanningUsage {
 }
 interface UiPlanningAttempt {
   startedAt?:number; elapsedMs?:number; discoveryMs?:number; firstTokenMs?:number; tokensPerSecond?:number;
-  progress?:{phase:"processing-prompt";percent:number}|{phase:"generating";approximateOutputTokens:number};
+  progress?:{phase:"processing-prompt";percent:number}|{phase:"generating";approximateOutputTokens:number|null};
   stage:string; model:string; provider?:string; revision?:string|null; attempt?:number;
   status:"running"|"succeeded"|"failed"|"canceled"; reason?:string; requestId?:string; queryId?:string; usage?:PlanningUsage;
 }

@@ -334,8 +334,8 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
     const choice = !native && Array.isArray(d.choices) && isRecord(d.choices[0]) ? d.choices[0] : null;
     if (choice && typeof choice.finish_reason === "string") finishReason = choice.finish_reason;
     if (!native && isRecord(d.usage)) {
-      inputTokens = count(d.usage.prompt_tokens);
-      outputTokens = count(d.usage.completion_tokens);
+      inputTokens = count(d.usage.prompt_tokens) ?? inputTokens;
+      outputTokens = count(d.usage.completion_tokens) ?? outputTokens;
     }
     const delta = native ? d.message : choice?.delta;
     const chunk = isRecord(delta) ? delta.content : null;

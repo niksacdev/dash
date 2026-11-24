@@ -31,7 +31,7 @@ function heldResponse(parts:(Uint8Array|string)[],status=200) {
 
 test("compatible completion consumes usage before DONE and releases an open stream",async t=>{
   const held=heldResponse(['data: {"choices":[{"delta":{"con','tent":"ready"}}]}\n',
-    'data: {"choices":[{"finish_reason":"stop"}]}\ndata: {"usage":{"prompt_tokens":6,"completion_tokens":1}}\n',
+    'data: {"choices":[{"finish_reason":"stop"}]}\ndata: {"usage":{"prompt_tokens":6}}\ndata: {"usage":{"completion_tokens":1}}\n',
     'data: [DONE]\ndata: invalid extra frame\n']);
   t.after(held.dispose);
   t.mock.method(globalThis,"fetch",async()=>held.response);

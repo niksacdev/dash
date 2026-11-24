@@ -37,13 +37,15 @@ function planningQueryRow(call:UiPlanningAttempt) {
   const phase=call.progress?.phase==="processing-prompt" ? "Reading prompt · "+call.progress.percent+"%" :
     call.progress?.phase==="generating" ? "Generating" : planningOutcome[call.status];
   const elapsed=running ? planningClock(call.startedAt) : call.elapsedMs!=null ? planningSeconds(call.elapsedMs) : "";
-  const liveOutput=running && call.progress?.phase==="generating" ? "≈"+call.progress.approximateOutputTokens.toLocaleString() : pending;
+  const liveOutput=running && call.progress?.phase==="generating" && call.progress.approximateOutputTokens!=null ?
+    "≈"+call.progress.approximateOutputTokens.toLocaleString() : pending;
+  const awaitingInput=running && call.provider!=="lmstudio" ? "Awaiting final usage" : pending;
   return '<div class="ai-query" data-status="'+esc(call.status)+'"><div class="ai-query-head">' +
     (running ? '<span class="ai-pulse" aria-hidden="true"><i></i><i></i><i></i></span>' : '') +
     '<strong>'+esc(call.stage)+'</strong><span class="ai-model">'+esc([location,model].filter(Boolean).join(" · "))+'</span>' +
     '<small>'+esc(phase || call.status)+(call.attempt && call.attempt>1 ? ' · Try '+esc(call.attempt) : '')+'</small></div>' +
     (running ? activityMeter(phase, call.progress?.phase==="processing-prompt" ? {value:call.progress.percent,max:100} : undefined) : '')+
-    '<dl class="ai-usage"><div><dt>Input tokens</dt><dd>'+esc(input?.toLocaleString() ?? pending)+'</dd></div>' +
+    '<dl class="ai-usage"><div><dt>Input tokens</dt><dd>'+esc(input?.toLocaleString() ?? awaitingInput)+'</dd></div>' +
     '<div><dt>Output tokens</dt><dd>'+esc(output?.toLocaleString() ?? liveOutput)+'</dd></div>' +
     '<div><dt>API cost</dt><dd>'+esc(cost)+'</dd></div>'+
     (elapsed?'<div><dt>Elapsed</dt><dd>'+elapsed+'</dd></div>':'')+

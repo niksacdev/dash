@@ -125,7 +125,7 @@ test("planning constrains generation on the loaded instance and forwards the sta
   const signal = new AbortController().signal;
   const observed:unknown[]=[];
   const r = await f.invokePlanner(candidate, messages, { maxTokens: 400, signal, structured: schema, onPlanningProgress:update=>observed.push(update) });
-  assert.deepEqual(observed,[{phase:"processing-prompt",percent:50},{phase:"generating",approximateOutputTokens:3}]);
+  assert.deepEqual(observed,[{phase:"processing-prompt",percent:50,inputTokens:40},{phase:"generating",approximateOutputTokens:3}]);
   assert.equal(r.output, "WO-402");
   assert.equal(f.calls.length, 1);
   assert.equal(responseSchema(responseCall(f.calls,0).options), schema);
