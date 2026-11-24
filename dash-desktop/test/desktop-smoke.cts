@@ -6,6 +6,7 @@ import * as path from "node:path";
 import assert from "node:assert/strict";
 import {mock} from "node:test";
 import {z} from "zod";
+import loadTransport = require("../lib/lmstudio-load.cjs");
 import {Bench} from "../lib/bench.cjs";
 import {OpikExperiments} from "../lib/opik-experiments.cjs";
 import power = require("../lib/power.cjs");
@@ -57,23 +58,23 @@ async function checkLocalRuntime(window:BrowserWindow, js:RendererEval, wait:(so
   client.attach();
   const original=globalThis.fetch;
   const key="liquid/lfm3-smoke";
-  let loaded=false,posts=0;
+  let loaded=false,loads=0;
   let finishLoad=()=>{};
   const pendingLoad=new Promise<void>(resolve=>{finishLoad=resolve;});
+  const load=mock.method(loadTransport,"loadSdkModel",async(modelKey:string)=>{
+    assert.equal(modelKey,key);
+    loads++;await pendingLoad;loaded=true;
+    return {modelKey:key,identifier:key};
+  });
   globalThis.fetch=async (input,options)=>{
+    assert.notEqual(options?.method,"POST");
     const url=new URL(input instanceof Request ? input.url : input);
     if (url.href==="http://127.0.0.1:1234/api/v1/models") return Response.json({models:[
-      {key,type:"llm",loaded_instances:loaded?[{id:"desk-worker",config:{context_length:2048}}]:[]},
+      {key,type:"llm",loaded_instances:loaded?[{id:key,config:{context_length:2048}}]:[]},
       {key:"gemma-smoke",type:"llm",loaded_instances:[]}]});
     if (url.href==="http://127.0.0.1:1234/v1/models") return Response.json({data:[{id:"compatible-catalog-only"}]});
     if (url.href==="http://127.0.0.1:11434/api/tags") throw Error("Ollama is offline");
-    assert.equal(url.href,"http://127.0.0.1:1234/api/v1/models/load");
-    assert.equal(options?.method,"POST");
-    assert.deepEqual(JSON.parse(String(options.body)),{model:key});
-    posts++;
-    await pendingLoad;
-    loaded=true;
-    return Response.json({type:"llm",status:"loaded",instance_id:"desk-worker"});
+    throw Error("Unexpected HTTP request.");
   };
   try {
     await js("location.hash='providers'");
@@ -88,7 +89,7 @@ async function checkLocalRuntime(window:BrowserWindow, js:RendererEval, wait:(so
     await js("document.querySelector('[data-act=load-local-model]').click()");
     await wait(badge("Loading")+"?.textContent==='Loading'");
     finishLoad();
-    await wait(badge("Loaded and ready")+"?.closest('.runtime-model').textContent.includes('desk-worker')");
+    await wait(badge("Loaded and ready")+"?.closest('.runtime-model').textContent.includes('liquid/lfm3-smoke')");
     assert.equal(await js(badge("Loaded and ready")+".closest('.runtime-model').querySelector('button')"),null);
     for (const theme of ["dark","light"]) {
       await js(`document.querySelector('#appearance input[value="${theme}"]').closest('label').click()`);
@@ -99,9 +100,9 @@ async function checkLocalRuntime(window:BrowserWindow, js:RendererEval, wait:(so
         "The loaded-and-ready label should be green in "+theme+" appearance");
       await captureScreenshot(client,"runtimes-"+theme+".png");
     }
-    assert.equal(posts,1);
+    assert.equal(loads,1);
   } finally {
-    finishLoad();
+    finishLoad();load.mock.restore();
     client.detach();
     globalThis.fetch=original;
     await js("window.dash.refresh()");

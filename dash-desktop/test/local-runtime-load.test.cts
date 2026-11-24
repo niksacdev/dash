@@ -1,4 +1,5 @@
 import test from "node:test";
+import loadTransport = require("../lib/lmstudio-load.cjs");
 import assert from "node:assert/strict";
 import {Bench} from "../lib/bench.cjs";
 import {designGraderPlan} from "../lib/grader-designer.cjs";
@@ -11,7 +12,6 @@ const key="liquid/lfm3-1.7b";
 const alias="desk-planner";
 const local="http://127.0.0.1:1234";
 const catalog=local+"/api/v1/models";
-const loadUrl=catalog+"/load";
 const llm=(loaded=false)=>({type:"llm",key,loaded_instances:loaded?[{id:alias,config:{context_length:2048}}]:[]});
 function address(value:Parameters<typeof fetch>[0]) {return value instanceof Request ? value.url : String(value);}
 
@@ -37,25 +37,26 @@ test("LM Studio lists native-only downloads and a planner's real active alias, e
 });
 
 test("the explicit load coalesces duplicate clicks, uses the canonical key, and verifies the actual instance",async t=>{
-  let posts=0,reads=0,loaded=false;
+  let loads=0,reads=0,loaded=false;
+  t.mock.method(loadTransport,"loadSdkModel",async(modelKey:string)=>{
+    assert.equal(modelKey,key);
+    loads++;loaded=true;
+    return {modelKey:key,identifier:key};
+  });
   t.mock.method(globalThis,"fetch",async (input:Parameters<typeof fetch>[0],options?:RequestInit)=>{
-    const url=address(input);
-    assert.equal(options?.redirect,"error");
-    if (url===catalog) { reads++; return Response.json({models:[llm(loaded)]}); }
-    assert.equal(url,loadUrl);assert.equal(options?.method,"POST");
-    assert.deepEqual(JSON.parse(String(options.body)),{model:key});
-    posts++;loaded=true;
-    return Response.json({type:"llm",status:"loaded",instance_id:alias});
+    assert.equal(address(input),catalog);assert.equal(options?.redirect,"error");assert.equal(options?.method,undefined);
+    reads++;return Response.json({models:[{...llm(),loaded_instances:loaded?[{id:key}]:[]}]});
   });
   const a=loadLocalModel(key),b=loadLocalModel(key);
   assert.equal(a,b);
   await assert.rejects(loadLocalModel("other"),/current LM Studio load/);
-  assert.deepEqual(await a,{status:"loaded",instanceId:alias});
-  assert.deepEqual(await loadLocalModel(key),{status:"already-loaded",instanceId:alias});
-  assert.equal(posts,1);assert.equal(reads,3);
+  assert.deepEqual(await a,{status:"loaded",instanceId:key});
+  assert.deepEqual(await loadLocalModel(key),{status:"already-loaded",instanceId:key});
+  assert.equal(loads,1);assert.equal(reads,3);
 });
 
-test("only a downloaded, unique native LLM key with known load state authorizes a POST",async t=>{
+test("only a downloaded, unique native LLM key with known load state authorizes an SDK load",async t=>{
+  const invocation=t.mock.method(loadTransport,"loadSdkModel",()=>assert.fail("Unexpected SDK load"));
   let rows:unknown[]=[];
   const transport=t.mock.method(globalThis,"fetch",async (input:Parameters<typeof fetch>[0],options?:RequestInit)=>{
     assert.equal(address(input),catalog);assert.notEqual(options?.method,"POST");return Response.json({models:rows});
@@ -68,7 +69,9 @@ test("only a downloaded, unique native LLM key with known load state authorizes 
       [{...llm(),type:undefined}],[{type:"llm",key}],[{...llm(),key:"different",loaded_instances:[{id:key}]}]]) {
     await assert.rejects(loadLocalModel(key));
   }
-  assert.equal(transport.mock.callCount(),7);
+  rows=[llm(),{...llm(),key:"another/model",loaded_instances:[{id:key}]}];
+  await assert.rejects(loadLocalModel(key),/using this instance name/);
+  assert.equal(transport.mock.callCount(),8);assert.equal(invocation.mock.callCount(),0);
 });
 
 test("native cloud keys and remote metadata are excluded from the roster and cannot authorize a local load",async t=>{
@@ -78,9 +81,9 @@ test("native cloud keys and remote metadata are excluded from the roster and can
     {...llm(),key:"publisher/linked-planner",remote_model:"remote-id",loaded_instances:[{id:"ordinary-alias"}]},
     {...llm(),key:"publisher/plain",loaded_instances:[{id:"alias-cloud"}]},
   ];
-  let posts=0;
+  const invocation=t.mock.method(loadTransport,"loadSdkModel",()=>assert.fail("Unexpected SDK load"));
   t.mock.method(globalThis,"fetch",async(input:Parameters<typeof fetch>[0],options?:RequestInit)=>{
-    if(options?.method==="POST") {posts++;throw Error("Unexpected POST");}
+    assert.notEqual(options?.method,"POST");
     const url=address(input);
     if(url===catalog) return Response.json({models:rows});
     if(url===local+"/v1/models") return Response.json({data:[{id:"ordinary-alias"}]});
@@ -92,26 +95,29 @@ test("native cloud keys and remote metadata are excluded from the roster and can
   assert.deepEqual(server.models,[]);
   assert.deepEqual(server.instances,[]);
   for (const row of rows) await assert.rejects(loadLocalModel(row.key),/downloaded chat model/);
-  assert.equal(posts,0);
+  assert.equal(invocation.mock.callCount(),0);
 });
 
-test("after an ambiguous load acknowledgement DASH checks inventory once and never repeats the POST",async t=>{
-  let reads=0,posts=0,settled=false,acknowledged=false;
+test("a lost SDK acknowledgement or mismatched handle only triggers read-only confirmation",async t=>{
+  let reads=0,loads=0,settled=false,mode:"disconnect"|"wrong-instance"|"wrong-key"="disconnect";
   t.mock.method(globalThis,"fetch",async(input:Parameters<typeof fetch>[0])=>{
-    if (address(input)===catalog) {
-      reads++;
-      return Response.json({models:[llm(reads%2===0 && settled)]});
-    }
-    assert.equal(address(input),loadUrl);posts++;
-    if (acknowledged) return Response.json({type:"llm",status:"loaded",instance_id:"different-instance"});
-    throw Error("Lost acknowledgement");
+    assert.equal(address(input),catalog);reads++;
+    return Response.json({models:[llm(reads%2===0 && settled)]});
+  });
+  t.mock.method(loadTransport,"loadSdkModel",async()=>{
+    loads++;
+    if(mode==="wrong-instance")return {modelKey:key,identifier:"another-instance"};
+    if(mode==="wrong-key")return {modelKey:"another-model",identifier:alias};
+    throw Error("private provider message");
   });
   assert.deepEqual(await loadLocalModel(key),{status:"unconfirmed"});
   settled=true;
   assert.deepEqual(await loadLocalModel(key),{status:"loaded",instanceId:alias});
-  acknowledged=true;
+  mode="wrong-instance";
   assert.deepEqual(await loadLocalModel(key),{status:"unconfirmed"});
-  assert.equal(reads,6);assert.equal(posts,3);
+  mode="wrong-key";
+  assert.deepEqual(await loadLocalModel(key),{status:"unconfirmed"});
+  assert.equal(reads,8);assert.equal(loads,4);
 });
 
 test("a loaded local planner's invalid output and transport failure each have their own recovery",async()=>{
