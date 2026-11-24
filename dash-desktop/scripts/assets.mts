@@ -12,6 +12,9 @@ function copy(relative: string, include?: (source: string) => boolean): void {
 // A regular build must never ship old test code. The test build compiles it afterwards.
 rmSync(join(root, "dist", "test"), { recursive: true, force: true });
 copy("ui", source => ![".ts", ".js"].includes(extname(source)));
+for (const file of ["LICENSE", "NOTICE"]) {
+  cpSync(join(root, "..", file), join(root, "dist", file));
+}
 copy("packs");
 copy("agents", source => extname(source) !== ".cts");
 if (existsSync(join(root, "lib/opik_judge.py"))) copy("lib/opik_judge.py");

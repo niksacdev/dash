@@ -77,4 +77,10 @@ The desktop tests run Electron against isolated temporary profiles. The workflow
 | [Documentation index](docs/START_HERE.md) | Workbench guide, specifications, design references, product reviews and original artifacts |
 | [CONTRIBUTING.md](.github/CONTRIBUTING.md) | Branch, commit, verification and pull request workflow |
 
-DASH is distributed under the repository’s [MIT license](LICENSE). Included model marks have their own [attribution](dash-desktop/ui/assets/model-logos/LICENSE.txt).
+## License
+
+DASH-owned code, documentation and bundled domain packs (including prompts, graders and synthetic cases) are licensed under the [Apache License 2.0](LICENSE). When redistributing these materials, include the license and retain the relevant [attribution notices](NOTICE). The desktop build includes both files in `dash-desktop/dist/`.
+
+Your own datasets and model responses retain their applicable terms. Sharing scores does not require a DASH badge. A full run export can also contain bundled cases or prompts, which retain their applicable license. Third-party components keep their own licenses. The bundled model logos include [LobeHub’s MIT notice](dash-desktop/ui/assets/model-logos/LICENSE.txt).
+
+Copies obtained under the earlier [MIT license](https://github.com/niksacdev/dash/blob/cd71d3a3de38300421eb6bba76da7e5dc3221a5b/LICENSE) remain available under those terms.

@@ -1,6 +1,6 @@
 # 0011. Persist the model outcome before optional work
 
-**Status** Proposed
+**Status** Accepted
 
 This extends the [offline run policy](0002-opik-and-offline-runs.md). A candidate can return a complete reply while a sensor is slow or unavailable. A transport can also disconnect after producing partial output. Operators need durable evidence of which case finished and which request may still have executed.
 

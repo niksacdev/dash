@@ -19,6 +19,10 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0010 · Independent pre-commit review](0010-precommit-review.md) | Accepted | Nik required independent reviewers for all DASH commits. Extends 0009. | [#12](https://github.com/niksacdev/dash/pull/12) |
 | 2026-11-24 | [0011 · Durable model outcomes](0011-checkpoint-model-outcomes.md) | Proposed | Extend 0002 so telemetry failures and unknown dispatches preserve measured evidence. | [#12](https://github.com/niksacdev/dash/pull/12) |
 | 2026-11-24 | [0012 · Domain dataset families](0012-domain-dataset-families.md) | Proposed | Extend 0001 and 0008 with consistent domain scoping for local family ancestry. | [#12](https://github.com/niksacdev/dash/pull/12) |
+| 2026-11-24 | [0011 · Durable model outcomes](0011-checkpoint-model-outcomes.md) | Accepted | PR #12 merged the confirmed-response and interrupted-dispatch policy into main. | [#12](https://github.com/niksacdev/dash/pull/12) |
+| 2026-11-24 | [0012 · Domain dataset families](0012-domain-dataset-families.md) | Accepted | PR #12 merged domain-scoped snapshot ancestry and its catalog migration into main. | [#12](https://github.com/niksacdev/dash/pull/12) |
+| 2026-11-24 | [0013 · Project license](0013-project-license.md) | Proposed | Consider Apache 2.0 for attribution on redistribution of DASH-owned materials. First project licensing decision. | [#13](https://github.com/niksacdev/dash/pull/13) |
+| 2026-11-24 | [0013 · Project license](0013-project-license.md) | Accepted | Under Nik’s delegated licensing decision, adopt Apache 2.0 and include the project and third-party notices in the desktop build. | [#13](https://github.com/niksacdev/dash/pull/13) |
 
 ## Maintaining the history
 
