@@ -57,10 +57,28 @@ test("a process restart or missing cumulative counters leaves only app CPU unkno
   }
 });
 
-test("a stalled optional measurement times out without blocking the other channels", async () => {
-  const {sample}=fake({filesystem:()=>new Promise(()=>{})});
-  const s=await sample();
-  assert.equal(s.disk.totalBytes,null);
-  assert.equal(s.watts,12.5);
-  assert.equal(s.cpu.systemPercent,25);
+test("a stalled native measurement shares its timeout and recovers when the operation settles", async () => {
+  let starts=0;
+  let unblock:()=>void=()=>{throw Error("Native read has not started");};
+  const volume={blocks:10n,bsize:1n,bfree:2n,bavail:2n};
+  const f=fake({filesystem:async()=>{
+    if (++starts===1) await new Promise<void>(resolve=>{unblock=resolve;});
+    return volume;
+  }});
+  const first=await f.sample();
+  assert.equal(first.disk.totalBytes,null);
+  assert.equal(first.watts,12.5);
+  assert.equal(first.cpu.systemPercent,25);
+  for (let i=0;i<8;i++) {
+    f.advance(3000);
+    const sample=await Promise.race([f.sample(),new Promise<null>(resolve=>setImmediate(()=>resolve(null)))]);
+    assert.ok(sample,"Subsequent polls reuse the expired deadline without adding another timer or waiting for the native read");
+    assert.equal(sample.disk.totalBytes,null);
+  }
+  assert.equal(starts,1);
+  unblock();
+  await new Promise<void>(resolve=>setImmediate(resolve));
+  f.advance(3000);
+  assert.equal((await f.sample()).disk.totalBytes,10);
+  assert.equal(starts,2);
 });

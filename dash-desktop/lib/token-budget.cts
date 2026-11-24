@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { LLM, LLMNamespace, LMStudioClient, LLMRespondOpts } from "@lmstudio/sdk";
-import { errorText, isRecord, type Candidate, type ChatTurn, type InferenceResult, type InvokeOptions,
+import { ConfirmedInputMismatch, errorText, isRecord, type Candidate, type ChatTurn, type InferenceResult, type InvokeOptions,
   type OutputSchema, type TokenCheck, type TokenReceipt } from "./runtime-types.cjs";
 
 let client: Promise<LMStudioClient> | undefined;
@@ -160,9 +160,7 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     const stats = result.stats;
     if (["failed", "modelUnloaded", "userStopped"].includes(stats.stopReason))
       throw Error(`LM Studio stopped the prediction (${stats.stopReason}).`);
-    if (expectedTokens != null && stats.promptTokensCount !== expectedTokens)
-      throw Error(`LM Studio reported ${stats.promptTokensCount ?? "unknown"} input tokens after verifying ${expectedTokens}. The run cannot be scored. Check the model's runtime and template.`);
-    return {
+    const response: InferenceResult = {
       output: result.nonReasoningContent,
       reportedFinishReason: stats.stopReason,
       finishReason: ["maxPredictedTokensReached", "contextLengthReached"].includes(stats.stopReason) ? "length" : "stop",
@@ -179,6 +177,9 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
         model_instance_id: model.identifier,
       },
     };
+    if (expectedTokens != null && response.telemetry.input_tokens !== expectedTokens)
+      throw new ConfirmedInputMismatch(response, expectedTokens);
+    return response;
   }
 
   return { checkInputBudget, invokeBudgeted, invokePlanner };

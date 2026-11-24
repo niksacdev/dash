@@ -16,8 +16,16 @@ Every DASH commit should receive an independent security, reliability and qualit
 
 Reviewers reproduced a lost final response during sensor failure, a transport disconnect mistaken for a confirmed completion, and repeated unchanged multi-megabyte polling. They also found a path where a remote error could persist echoed credentials. These findings determine the scope of the first hardening pass. The [engineering review workflow](../guides/precommit-review.md) applies the same scrutiny to future changes anywhere in DASH.
 
+## Vendor behavior to verify on upgrades
+
+- A local LM Studio prediction can return a complete answer with a token count that differs from the preflight receipt. Keep the measured answer and usage, mark the budget check failed, and exclude it from business scoring. Exercise the SDK's fragment callback behavior when a checkpoint fails.
+- Check Opik synchronization against two isolated endpoints. If the configured endpoint returns a redirect, the destination named by the redirect must receive zero requests. Run the SDK with debug logging enabled and verify its initialization output omits the test key.
+- Try to apply a historical grader whose evaluator is unavailable. Preserve the prior grade and record a missing score on the new attempt. Creating a new revision explicitly selects the installed evaluator.
+
 ## Observations on the maintenance baseline
 
 With an isolated synthetic 200-case run, 199 completed answers of 8 KiB each, an unchanged poll previously serialized 1,999,595 bytes. The new progress query returned 20 bytes and issued no SQLite queries on an unchanged tick. Full detail still loads when a durable change needs to be displayed. A synthetic sensor that never settled retained 32 callbacks after 32 polls on the previous path. The fix retained one callback for the single outstanding read.
 
 Two alternating runs of all three strict type-check commands on the same Apple Silicon machine took 4.11 and 5.06 seconds on TypeScript 6.0.3 and 0.67 and 0.96 seconds on TypeScript 7.0.2. These figures describe local compiler invocations under a shared workload. Candidate inference was simulated for the polling experiment. The tests give no estimate of long-term heap growth under production load.
+
+A separate live smoke test used the already loaded local LFM3 1.7B and an in-memory DASH database. A synthetic Manufacturing case asked for a disposition on a 10.6 mm bearing with a 10.2 mm maximum. The model returned `HOLD` and passed exact-reference grading. The LM Studio preflight and actual usage both reported 61 input tokens. The runtime reported 69 output tokens and an `eosFound` stop reason. Fault-injection checks for mismatched counters, disconnects and failed checkpoints use simulated transports.

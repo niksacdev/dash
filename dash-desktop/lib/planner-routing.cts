@@ -1,5 +1,6 @@
 import {isRecord} from "../agents/registry.cjs";
 import type {RuntimeAdapters, RuntimeInventory, LocalCandidate, ChatTurn, OutputSchema} from "./runtime-types.cjs";
+import {readProviderJson} from "./provider-response.cjs";
 import type {FallbackConfig} from "./planner-settings.cjs";
 export type PlannerAdapters = Pick<RuntimeAdapters,"discover"|"invoke">;
 export interface PlannerOptions {fetch?:typeof fetch;openaiFallback?:()=>FallbackConfig|null|Promise<FallbackConfig|null>}
@@ -66,11 +67,13 @@ async function directOpenAI(fetcher:typeof fetch, model:string, apiKey:string, m
     body:JSON.stringify({ model, messages, store:false, response_format:{type:"json_object"}, max_completion_tokens:Math.max(1024, maxTokens * 3) }),
   });
   if (!response.ok) {
+    await response.body?.cancel().catch(()=>{});
     const problem:Record<number,string> = {401:"OpenAI rejected the session key", 403:"OpenAI denied access to the configured model",
       404:"OpenAI could not find the configured model", 429:"OpenAI reported a rate or credit limit"};
     throw new EndpointFailure(problem[response.status] || "OpenAI returned HTTP " + response.status);
   }
-  const body:unknown = await response.json();
+  // parseOutput permits 24,000 characters of model text. Bound the JSON envelope before decoding it.
+  const body = await readProviderJson(response,256_000);
   if (!isRecord(body) || !Array.isArray(body.choices)) throw new EndpointFailure("OpenAI returned an invalid planning envelope.");
   const choice:unknown = body.choices[0];
   if (!isRecord(choice) || !isRecord(choice.message)) throw new EndpointFailure("OpenAI returned no planning message.");

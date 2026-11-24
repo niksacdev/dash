@@ -96,6 +96,8 @@ const decisionQuestion=z.object({model:z.string(),state:z.string(),questions:z.o
 function decisionAnswer(model:string,probability:number){
   return {model,answers:{criterion:{type:"noul",noul:probability}},usage:{input_tokens:12,output_tokens:0}};
 }
+const streamedQuick:{armed:boolean; send?:(part:0|1|2)=>void}={armed:false};
+
 // Intercept HTTP at the transport boundary. Discovery, request formatting,
 // streaming response parsing and all Electron IPC handlers remain in use.
 globalThis.fetch = async (url, options = {}) => {
@@ -136,6 +138,17 @@ globalThis.fetch = async (url, options = {}) => {
   calls.push({ stage, body, brief });
   const content = stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
   if (target.pathname === "/api/chat") {
+    if (streamedQuick.armed && stage==="candidate") {
+      streamedQuick.armed=false;
+      return new Response(new ReadableStream<Uint8Array>({start(controller) {
+        const parts=[content.slice(0,4),content.slice(4,8),content.slice(8)];
+        streamedQuick.send=part=>{
+          const event={message:{content:parts[part]},done:part===2,...(part===2 && {done_reason:"stop",prompt_eval_count:21,eval_count:12})};
+          controller.enqueue(new TextEncoder().encode(JSON.stringify(event)+"\n"));
+          if (part===2) controller.close();
+        };
+      }}));
+    }
     return new Response(JSON.stringify({ message: { content }, done: true, done_reason: "stop", prompt_eval_count: 21, eval_count: 12 }) + "\n");
   }
   if (target.pathname === "/api/v1/chat") {
@@ -299,7 +312,20 @@ async function smoke() {
   await click('[data-remove="ollama/qa-short-context"]');
   await click(pick("ollama"));
   await wait(() => exists('[data-qc-budget="ollama/'+models.ollama+'"][data-budget-status="unverified"]'), "Compatible lane budget preview");
+  streamedQuick.armed=true;
   await click("#setup .go-button");
+  await wait(()=>Promise.resolve(!!streamedQuick.send),"Quick stream opened");
+  const sendPart=streamedQuick.send;
+  assert.ok(sendPart);
+  const liveField='[data-live-candidate="ollama/'+models.ollama+'"]';
+  const expectedContent=JSON.stringify(modelOutput("candidate",null,models.ollama));
+  sendPart(0);
+  await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,4))),"First visible response fragment");
+  await js("document.querySelector("+q(liveField)+").dataset.qaIdentity='original'");
+  sendPart(1);
+  await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,8))),"Incremental response fragment");
+  assert.equal(await js("document.querySelector("+q(liveField)+").dataset.qaIdentity"),"original","A token update must retain the visible run view");
+  sendPart(2);
   const quick = await completedRun(1);
   assert.equal(quick.mode, "quick");
   assert.equal(quick.prompt, approvedText);
@@ -741,6 +767,25 @@ async function smoke() {
     assert.ok(semantic.graders.some(g=>g.type==="opik-metric" && g.id===relevance));
     const grade=await js("window.dash.detail("+q(semantic.id)+").then(r=>r.assessments.find(a=>a.graderId==="+q(relevance)+").value)");
     assert.equal(grade,.9);
+
+    // Five explicit graders fit within the selection limit. Automatic defaults make nine saved pins.
+    const scenarioGraders=["inspection-drawing","inspection-reading","inspection-disposition","inspection-handoff"].map(shippedId);
+    const largeParentId=await text("window.dash.start("+q({
+      mode:"dataset",datasetId:inspectionId,caseId:"shaft-superseded-revision",candidateIds:["ollama/"+models.ollama],
+      graderIds:[...scenarioGraders,v2],animation:false,
+    })+")");
+    const largeParent=await completedRun(8);
+    assert.equal(largeParent.id,largeParentId);
+    assert.equal(largeParent.graders.length,9);
+    await route("graders");
+    await click('[data-grade-default="'+relevance+'"]');
+    await wait(()=>exists('[data-grade-default="'+relevance+'"][aria-pressed=false]'),"Workspace default changed since parent ran");
+    await route("run/"+largeParent.id+"/0");
+    await click("[data-act=rerun]");
+    const repeated=await completedRun(9);
+    assert.equal(repeated.parentId,largeParent.id);
+    assert.deepEqual(repeated.caseIds,largeParent.caseIds);
+    assert.deepEqual(repeated.graders,largeParent.graders);
   } finally {
     decisionOrigin="";
     server.closeAllConnections();server.close();

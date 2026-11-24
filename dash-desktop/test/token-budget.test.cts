@@ -1,6 +1,8 @@
 import { test, type TestContext } from "node:test";
 import assert = require("node:assert/strict");
 import { LMStudioClient, type LLMRespondOpts, type LLMPredictionStats } from "@lmstudio/sdk";
+import { Bench } from "../lib/bench.cjs";
+import { inventory, present, withoutPower } from "./runtime-fixtures.cjs";
 import { createTokenBudget, invokeJudge } from "../lib/token-budget.cjs";
 import { isRecord, type ChatTurn, type LocalCandidate } from "../lib/runtime-types.cjs";
 
@@ -188,4 +190,50 @@ test("Opik checklist and verdict use the measured one-turn chat template and fit
   const score: unknown = JSON.parse(verdict.output);
   assert.ok(isRecord(score));
   assert.equal(score.score,10);
+});
+
+test("a completed SDK reply with different token usage retains evidence but earns no business score", async t => {
+  let calls = 0;
+  const loaded = { ...candidate, loaded:true };
+  const {model, llm} = sdkFixture(t, loaded.model, {
+    template: chat=>JSON.stringify(chat), count:()=>31, context:128,
+    respond() {
+      calls++;
+      return {nonReasoningContent:"WO-402", stats:{promptTokensCount:33,predictedTokensCount:3,stopReason:"eosFound"}};
+    },
+  });
+  const budget = createTokenBudget(async()=>[model]);
+  const bench = new Bench(":memory:", {
+    discover: async()=>[inventory([loaded])],
+    checkInputBudget: budget.checkInputBudget,
+    invoke: (c, turns, options)=>budget.invokeBudgeted(c, turns, {
+      ...options, inputBudget:present(options.inputBudget), maxTokens:present(options.maxTokens),
+    }),
+  }, withoutPower);
+  t.after(()=>bench.db.close());
+  await bench.refresh();
+  const datasetId=bench.import("reference","Receipt mismatch",JSON.stringify({
+    case_id:"order",dataset_version:"1",split:"development",prompt:"Identify the order.",reference:"WO-402",
+  }));
+  const id=bench.start({mode:"dataset",datasetId,candidateIds:[loaded.id],datasetScorer:"exact-reference"});
+  await present(bench.active).done;
+  const run=bench.detail(id), result=run.results[0];
+  assert.equal(calls,1);
+  assert.equal(run.status,"failed");
+  assert.equal(result.output,"WO-402");
+  assert.equal(result.inputBudget?.tokens,31);
+  assert.equal(result.telemetry?.input_tokens,33);
+  assert.equal(result.telemetry?.output_tokens,3);
+  assert.equal(result.finishReason,"stop");
+  assert.equal(result.reportedFinishReason,"eosFound");
+  assert.ok(result.trace.finished);
+  assert.equal(result.dispatchState,undefined);
+  assert.match(present(result.error),/reported 33 input tokens after verifying 31/);
+  assert.equal(result.score,null);
+  const diagnosticIds = new Set(run.manifest.graders?.filter(g=>g.library?.automatic).map(g=>g.id));
+  assert.ok(run.assessments.length>0);
+  assert.ok(run.assessments.every(a=>diagnosticIds.has(a.graderId)));
+  // The judge cannot use an unverifiable checklist or verdict.
+  await assert.rejects(invokeJudge(loaded,messages,{signal,maxTokens:24,structured:schema},llm),/after verifying 31/);
+  assert.equal(calls,2);
 });

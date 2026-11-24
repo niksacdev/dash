@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { z } from "zod";
+import { logger, setLoggerLevel } from "opik";
 import { buildReport } from "../lib/run-report.cjs";
 import { OpikExperiments } from "../lib/opik-experiments.cjs";
 import type { GraderSpec } from "../lib/grader-types.cjs";
@@ -83,6 +84,83 @@ test("Opik status remains offline and unconfigured unless the DASH destination i
     const enabled=new OpikExperiments(bench(db,{...run,status:"running"}),{env:{DASH_OPIK_API_URL:"http://127.0.0.1/api"},makeApi:()=>assert.fail("running")});
     return assert.rejects(enabled.sync(run.manifest.id),/finish before syncing/);
   } finally{db.close();}
+});
+
+test("the real Opik DEBUG transport masks DASH keys and preserves logger configuration",async t=>{
+  const key="SYNTHETIC_DEBUG_SESSION_KEY", records:string[]=[];
+  const {type,minLevel,maskValuesOfKeys,attachedTransports}=logger.settings;
+  t.after(()=>Object.assign(logger.settings,{type,minLevel,maskValuesOfKeys,attachedTransports}));
+  logger.settings.type="hidden";
+  setLoggerLevel("DEBUG");
+  logger.settings.attachedTransports=[];
+  logger.attachTransport(record=>records.push(JSON.stringify(record)));
+  let receivedKey=false;
+  const server=http.createServer((req,res)=>{
+    receivedKey=req.headers.authorization===key;
+    res.writeHead(503,{"Content-Type":"application/json"});
+    res.end("{}");
+  });
+  server.listen(0,"127.0.0.1");
+  await once(server,"listening");
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const address=server.address();
+  assert.ok(address && typeof address!=="string");
+  const db=new DatabaseSync(":memory:"), run=savedRun();
+  t.after(()=>db.close());
+  const env={DASH_OPIK_API_URL:"http://127.0.0.1:"+address.port+"/api",OPIK_API_KEY:key};
+  await assert.rejects(new OpikExperiments(bench(db,run),{env}).sync(run.manifest.id),/503/);
+  assert.equal(receivedKey,true,"The SDK still authenticates the authorized request");
+  assert.ok(records.some(line=>line.includes("Initializing OpikClient with config")));
+  assert.ok(records.every(line=>!line.includes(key)),"No DEBUG transport entry should contain the session key");
+  assert.equal(logger.settings.maskValuesOfKeys,maskValuesOfKeys);
+});
+
+test("native Opik sync keeps redirected writes inside the confirmed destination",async t=>{
+  let otherRequests=0, otherBytes=0;
+  const other=http.createServer(async(req,res)=>{
+    otherRequests++;
+    for await (const chunk of req) otherBytes+=Buffer.byteLength(chunk);
+    res.writeHead(204);res.end();
+  });
+  other.listen(0,"127.0.0.1");
+  await once(other,"listening");
+  t.after(()=>{other.closeAllConnections();other.close();});
+  const otherAddress=other.address();
+  assert.ok(otherAddress && typeof otherAddress!=="string");
+  let status=307;
+  const writeStatuses:number[]=[],writeBytes:number[]=[];
+  const source=http.createServer(async(req,res)=>{
+    if (req.method==="POST") {
+      let bytes=0;
+      for await (const chunk of req) bytes+=Buffer.byteLength(chunk);
+      writeBytes.push(bytes);
+      writeStatuses.push(status);
+      res.writeHead(status,{location:"http://127.0.0.1:"+otherAddress.port+"/different-workspace"});
+    } else if (req.url?.startsWith("/api/v1/private/projects")) {
+      res.writeHead(200,{"Content-Type":"application/json"});
+      res.end('{"content":[]}');return;
+    } else res.writeHead(404,{"Content-Type":"application/json"});
+    res.end("{}");
+  });
+  source.listen(0,"127.0.0.1");
+  await once(source,"listening");
+  t.after(()=>{source.closeAllConnections();source.close();});
+  const endpoint=source.address();
+  assert.ok(endpoint && typeof endpoint!=="string");
+  const run=savedRun();
+  for (status of [307,308]) {
+    const db=new DatabaseSync(":memory:");
+    try{
+      const svc=new OpikExperiments(bench(db,run),{env:{DASH_OPIK_API_URL:"http://127.0.0.1:"+endpoint.port+"/api",OPIK_API_KEY:"synthetic-only"}});
+      await assert.rejects(svc.sync(run.manifest.id),/Opik did not confirm this step/);
+      const state=svc.status(run.manifest.id);
+      assert.ok(state.configured && state.state==="partial");
+    }finally{db.close();}
+  }
+  assert.deepEqual(writeStatuses,[307,308]);
+  assert.ok(writeBytes.every(bytes=>bytes>0),"Both original requests carried a serialized native write");
+  assert.equal(otherRequests,0);
+  assert.equal(otherBytes,0);
 });
 
 test("actual SDK syncs saved traces and scores into native version-pinned experiments and resumes a lost write acknowledgement",async t=>{
@@ -335,6 +413,17 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   await new OpikExperiments(bench(db,failed),{env}).sync("failed-at-dispatch");
   assert.match(lastTrace().metadata.input_provenance,/dispatch may have failed/);
   assert.equal(spans.size,spanCount);
+  const remote:Candidate={provider:"compatible",kind:"model",id:"hosted-qa",model:"qa",section:"Hosted",
+    keyRequired:true,endpoint:"https://model.example.invalid/v1"};
+  const privateMessage="SYNTHETIC_HISTORICAL_PROVIDER_DIAGNOSTIC";
+  const oldHosted:TestRun={...failed,manifest:{...failed.manifest,id:"legacy-provider-error",candidates:[remote]},
+    results:[{...failed.results[0],candidateId:remote.id,error:privateMessage,dispatchedMessages:[{role:"user",content:"Synthetic input"}]}]};
+  await new OpikExperiments(bench(db,oldHosted),{env}).sync(oldHosted.manifest.id);
+  const exportedError=lastTrace().output.error;
+  assert.equal(exportedError,"Model endpoint did not return a confirmed successful response.");
+  const hostedSpan=present([...spans.values()].at(-1));
+  assert.doesNotMatch(JSON.stringify([lastTrace(),hostedSpan]),new RegExp(privateMessage));
+  assert.deepEqual(hostedSpan.output,lastTrace().output);
   const interruptedCase: RunResult={...saved.results[0],caseId:"lot",dispatchState:"interrupted",output:"Partial reply",score:null,
     error:"DASH closed after dispatch.",telemetry:null,dispatchedMessages:[{role:"user",content:"Inspect lot 8"}],
     trace:{...saved.results[0].trace,finished:undefined}};

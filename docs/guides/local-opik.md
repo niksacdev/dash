@@ -14,7 +14,7 @@ npm run setup:local
 npm start
 ```
 
-Wait for **Local dashboard and API ready**. On subsequent launches, DASH reads the local connection saved by setup. If DASH was open during first setup, reopen it. An explicitly configured `DASH_OPIK_API_URL` takes precedence.
+Wait for **Local dashboard and API ready**. On subsequent launches, DASH reads the local connection saved by setup. If DASH was open during first setup, reopen it. An explicitly configured `DASH_OPIK_API_URL` takes precedence. For a separate Opik service, use HTTPS for both the API and dashboard URLs. Configure the final API URL exposed by your reverse proxy. A redirect interrupts synchronization and leaves the saved run available for retry. HTTP is supported on `localhost`, `127.0.0.1` and `[::1]`. Keep credentials in `OPIK_API_KEY`. The SDK masks the configured key in its initialization logs even when debug logging is enabled.
 
 Open **Run history**, choose a completed run, and review the destination and data scope in **Opik experiments**. Select **Sync saved run to Opik**, then **Open Opik dashboard**. The local dashboard is at [127.0.0.1:51734](http://127.0.0.1:51734). The workspace is `default` and project is `DASH`.
 

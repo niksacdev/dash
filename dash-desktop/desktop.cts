@@ -75,6 +75,8 @@ function initialize():void {
   bind("refresh",()=>bench.refresh());
   bind("dataset",raw=>bench.dataset(identifier(raw)));
   bind("detail",raw=>bench.detail(identifier(raw)));
+  const cursorNumber=z.number().int().nonnegative().safe();
+  bind("runProgress",(id,revision,offset)=>bench.runProgress(identifier(id),cursorNumber.parse(revision),cursorNumber.parse(offset)));
   bind("guidePrompt",value=>bench.active ? {status:"busy"} : guide.suggest(value));
   bind("cancelGuide",()=>guide.cancel());
   const onStage=(stage:UiPlanningEvent)=>win?.webContents.send("dash:planningStage",stage);

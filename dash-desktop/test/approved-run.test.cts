@@ -116,3 +116,60 @@ test("refining from a run gives the agents measured counts and preserves its ori
   await completion(bench);
   assert.equal(bench.detail(replay).manifest.approvedPromptId, p.id);
 });
+
+test("live polling sends only new Quick text or a changed run revision", async t=>{
+  const {bench,ids}=harness(t);
+  await bench.refresh();
+  const draft=await bench.designPrompt({mode:"quick",domain:"Manufacturing",objective:"Review this lot."});
+  const approved=bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
+  let enter:(options:InvokeOptions)=>void=()=>{throw Error("Gate not initialized");};
+  const dispatch=new Promise<InvokeOptions>(resolve=>{enter=resolve;});
+  let release:()=>void=()=>{throw Error("Gate not initialized");};
+  const hold=new Promise<void>(resolve=>{release=resolve;});
+  const invoke=bench.adapters.invoke;
+  bench.adapters.invoke=async(candidate,messages,options)=>{
+    if (candidate.id===ids[0]) {enter(options);await hold;}
+    return invoke(candidate,messages,options);
+  };
+  const id=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id});
+  const done=completion(bench);
+  try {
+    const options=await dispatch;
+    const revision=present(bench.detail(id).liveRevision);
+    assert.deepEqual(bench.runProgress(id,revision,0),{kind:"unchanged"});
+    options.onText?.("partial");
+    assert.deepEqual(bench.runProgress(id,revision,0),{kind:"append",candidateId:ids[0],text:"partial"});
+    assert.deepEqual(bench.runProgress(id,revision,7),{kind:"unchanged"});
+    options.onText?.("partial answer");
+    assert.deepEqual(bench.runProgress(id,revision,7),{kind:"append",candidateId:ids[0],text:" answer"});
+    assert.deepEqual(bench.runProgress(id,revision,900),{kind:"refresh"});
+    assert.deepEqual(bench.runProgress(id,revision-1,0),{kind:"refresh"});
+  } finally {release();await done;}
+  assert.deepEqual(bench.runProgress(id,0,0),{kind:"refresh"});
+  assert.equal(bench.detail(id).liveRevision,null);
+});
+
+test("idle dataset polls do not repeat previous responses or expose the current case stream", async t=>{
+  const {bench,ids}=harness(t);
+  await bench.refresh();
+  const d=present(bench.list().datasets.find(d=>d.pack==="manufacturing"));
+  let enter:()=>void=()=>{throw Error("Gate not initialized");};
+  const dispatch=new Promise<void>(resolve=>{enter=resolve;});
+  let release:()=>void=()=>{throw Error("Gate not initialized");};
+  const hold=new Promise<void>(resolve=>{release=resolve;});
+  let calls=0;
+  bench.adapters.invoke=async(_candidate,_messages,options)=>{
+    if (++calls===2) {options.onText?.("unpublished case output");enter();await hold;}
+    return reply("recorded response".repeat(256),{},"stop");
+  };
+  const id=bench.start({mode:"dataset",datasetId:d.id,candidateIds:[ids[0]]});
+  const done=completion(bench);
+  try {
+    await dispatch;
+    const run=bench.detail(id), revision=present(run.liveRevision);
+    assert.equal(run.results.length,1);
+    assert.ok((run.results[0].output?.length ?? 0)>4000);
+    for(let i=0;i<8;i++) assert.deepEqual(bench.runProgress(id,revision,0),{kind:"unchanged"});
+  } finally {release();await done;}
+  assert.equal(bench.detail(id).status,"completed");
+});

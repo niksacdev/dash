@@ -16,9 +16,9 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0005 · Decision-model graders](0005-decision-model-graders.md) | Accepted | PR #10 integrated the reviewed decision grader into main. | [#10](https://github.com/niksacdev/dash/pull/10) |
 | 2026-11-24 | [0006 · Grader library](0006-grader-library.md) | Accepted | PR #10 integrated immutable general, industry and customer revisions into main. | [#10](https://github.com/niksacdev/dash/pull/10) |
 | 2026-11-24 | [0008 · Opik dataset ownership](0008-opik-dataset-identity.md) | Accepted | PR #10 integrated native project and family ownership validation into main. | [#10](https://github.com/niksacdev/dash/pull/10) |
-| 2026-11-24 | [0010 · Independent pre-commit review](0010-precommit-review.md) | Accepted | Nik required independent reviewers for all DASH commits. Extends 0009. | [Quality review](https://github.com/niksacdev/dash/compare/main...feat/repository-quality) |
-| 2026-11-24 | [0011 · Durable model outcomes](0011-checkpoint-model-outcomes.md) | Proposed | Extend 0002 so telemetry failures and unknown dispatches preserve measured evidence. | [Quality review](https://github.com/niksacdev/dash/compare/main...feat/repository-quality) |
-| 2026-11-24 | [0012 · Domain dataset families](0012-domain-dataset-families.md) | Proposed | Extend 0001 and 0008 with consistent domain scoping for local family ancestry. | [Quality review](https://github.com/niksacdev/dash/compare/main...feat/repository-quality) |
+| 2026-11-24 | [0010 · Independent pre-commit review](0010-precommit-review.md) | Accepted | Nik required independent reviewers for all DASH commits. Extends 0009. | [#12](https://github.com/niksacdev/dash/pull/12) |
+| 2026-11-24 | [0011 · Durable model outcomes](0011-checkpoint-model-outcomes.md) | Proposed | Extend 0002 so telemetry failures and unknown dispatches preserve measured evidence. | [#12](https://github.com/niksacdev/dash/pull/12) |
+| 2026-11-24 | [0012 · Domain dataset families](0012-domain-dataset-families.md) | Proposed | Extend 0001 and 0008 with consistent domain scoping for local family ancestry. | [#12](https://github.com/niksacdev/dash/pull/12) |
 
 ## Maintaining the history
 
