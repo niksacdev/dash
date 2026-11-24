@@ -137,6 +137,11 @@
       "path": "prompts/workflow-implementer-assignment-v2.md"
     },
     {
+      "id": "workflow-structured-output",
+      "version": 1,
+      "path": "prompts/workflow-structured-output.md"
+    },
+    {
       "id": "workflow-metric-auditor",
       "version": 2,
       "path": "prompts/workflow-metric-auditor-v2.md"

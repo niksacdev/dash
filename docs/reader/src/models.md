@@ -40,6 +40,12 @@ Open **Why these metrics?** after **Suggest Metrics**. Each entry gives the prop
 
 Edit the measures before drafting. In prompt review, open **Why this prompt?** to see the original objective and the instruction added to make the requested behavior observable. The explanation describes the draft. Check edited wording before approval. A score appears only when a grader can evaluate an actual response. [Create or reuse a grader](graders.md)
 
+## Request structured JSON
+
+In Quick compare, enable **Structured output (JSON)** before drafting when you need specific fields. For example, enter “From the observation ‘Bearing BX-17 measured 10.04 mm’, return the part ID and its measured diameter in millimeters.” Review the JSON task input and the response schema before approval. Use a number for the measured diameter so a downstream check can compare it numerically. Allow null when a source may omit the value.
+
+Both models receive the approved input and field contract. Inspect each original response and its conformance result alongside the content grades. A response containing the wrong diameter can satisfy the schema. Give dimensional accuracy its own grader. Free-form tasks can leave the checkbox off. Versioned dataset runs use the contract defined for their scenario.
+
 ## When a budget blocks a run
 
 An explicit input cap requires a runtime that can verify the rendered prompt’s token count. A loaded LM Studio instance can supply that count and its active context. If preflight blocks the run, inspect the requested cap and active context. Shorten the prompt, choose a larger context, or revise the budget before starting again. A response that reached its output cap remains available to inspect. [Detailed budget behavior](https://github.com/niksacdev/dash/blob/main/docs/guides/workbench.md#evaluate-a-business-outcome)

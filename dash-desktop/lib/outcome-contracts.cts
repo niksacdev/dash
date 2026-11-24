@@ -1,3 +1,4 @@
+import {decodeQuickOutputSchema, decodeQuickTaskInput, type QuickOutputSchema, type QuickTaskInput} from "./quick-structure.cjs";
 import {z} from "zod";
 import {isRecord,isDomain,decodeAgentPin,type AgentPin,type Domain} from "../agents/registry.cjs";
 import {decodeRoleSnapshot,type RoleSnapshot} from "./domain-profiles.cjs";
@@ -6,7 +7,7 @@ import {persistedAudit,rationaleSchema,type MetricAudit,type PromptRationale} fr
 export type PlanningPurpose = "draft" | "suggest";
 export type RunMode = "quick"|"dataset";
 export interface DesignRequest {
-  mode:RunMode; requestId?:string; objective:string; metrics?:string; domain?:string; inputCap?:number|null; outputCap?:number|null;
+  mode:RunMode; structuredOutput?:boolean; requestId?:string; objective:string; metrics?:string; domain?:string; inputCap?:number|null; outputCap?:number|null;
   datasetId?:string|null; parentId?:string|null; suggestionId?:string|null; sourceRunId?:string|null;
   measures?:{metrics:string[];criteria:string[]}|null;
 }
@@ -40,15 +41,20 @@ export function cap(value:unknown,name:string):number|null {
 }
 export function decodeRequest(raw:unknown):DesignRequest {
   if (!isRecord(raw) || (raw.mode!=="quick" && raw.mode!=="dataset")) throw Error("Choose Quick compare or Dataset run.");
+  if (raw.structuredOutput !== undefined && typeof raw.structuredOutput !== "boolean")
+    throw Error("Structured outputs must be enabled or disabled.");
+  if (raw.structuredOutput && raw.mode !== "quick") throw Error("A dataset uses its pinned scenario output contract.");
   const measures=raw.measures;
   if (measures!=null && !isRecord(measures)) throw Error("Invalid selected measures.");
-  return {mode:raw.mode,requestId:optional(raw.requestId,"Planning request ID",64),objective:required(raw.objective,"Business outcome",12000),metrics:optional(raw.metrics,"Business metrics",2000),
+  return {mode:raw.mode,structuredOutput:raw.structuredOutput,requestId:optional(raw.requestId,"Planning request ID",64),objective:required(raw.objective,"Business outcome",12000),metrics:optional(raw.metrics,"Business metrics",2000),
     domain:optional(raw.domain,"Planning domain",100),inputCap:cap(raw.inputCap,"Input budget"),outputCap:cap(raw.outputCap,"Output budget"),
     datasetId:optional(raw.datasetId,"Dataset snapshot",256)||null,parentId:optional(raw.parentId,"Parent prompt",256)||null,
     sourceRunId:optional(raw.sourceRunId,"Source run",256)||null,suggestionId:optional(raw.suggestionId,"Suggestion ID",256)||null,
     measures:measures==null?null:{metrics:lines(measures.metrics,"Selected metrics",2000,0),criteria:lines(measures.criteria,"Success criteria",2000,0)}};
 }
 interface PromptCore {
+  outputSchema?:QuickOutputSchema;
+  input?:QuickTaskInput;
   metricCriteria?:{metric:string;criterion:string}[];
   mode:RunMode; prompt:string; objective:string; title:string; domain:Domain; metrics:string[]; requirements:string[];
   datasetId:string|null; packId:string|null; contractHash:string|null; inputCap:number|null; outputCap:number|null;
@@ -95,10 +101,12 @@ export function decodeApprovedPrompt(raw:unknown):ApprovedPrompt {
   const agents=raw.agents, workflowAgents=raw.workflowAgents;
   if (agents!=null && !Array.isArray(agents)) throw Error("Invalid saved domain agent revisions.");
   if (workflowAgents!=null && !Array.isArray(workflowAgents)) throw Error("Invalid saved workflow agent revisions.");
-  const {metricAudit,promptRationale,auditAgent,auditDesigner,auditCoverage,metricCriteria,...record}=raw;
+  const {metricAudit,promptRationale,auditAgent,auditDesigner,auditCoverage,metricCriteria,outputSchema,input,...record}=raw;
+  if ((outputSchema===undefined)!==(input===undefined)) throw Error("The saved structured prompt is missing its JSON input or output schema.");
+  if (outputSchema!==undefined && raw.mode!=="quick") throw Error("A dataset prompt cannot override its scenario output contract.");
   const coverage=z.object({cases:z.int().nonnegative(),referenceCases:z.int().nonnegative(),rubricCases:z.int().nonnegative()}).refine(c=>c.referenceCases<=c.cases && c.rubricCases<=c.cases);
   const identity=z.object({provider:z.string(),model:z.string(),revision:z.string().nullable()});
-  return {...record,...(metricCriteria!==undefined && {metricCriteria:z.array(z.object({metric:z.string().max(2000),criterion:z.string().max(2000)})).max(8).parse(metricCriteria)}),...(auditCoverage!==undefined && {auditCoverage:coverage.parse(auditCoverage)}),...(metricAudit!==undefined && {metricAudit:persistedAudit.parse(metricAudit)}),
+  return {...record,...(outputSchema!==undefined && {outputSchema:decodeQuickOutputSchema(outputSchema),input:decodeQuickTaskInput(input,raw.prompt)}),...(metricCriteria!==undefined && {metricCriteria:z.array(z.object({metric:z.string().max(2000),criterion:z.string().max(2000)})).max(8).parse(metricCriteria)}),...(auditCoverage!==undefined && {auditCoverage:coverage.parse(auditCoverage)}),...(metricAudit!==undefined && {metricAudit:persistedAudit.parse(metricAudit)}),
     ...(promptRationale!==undefined && {promptRationale:rationaleSchema.parse(promptRationale)}),
     ...(auditAgent!==undefined && {auditAgent:decodeAgentPin(auditAgent)}),...(auditDesigner!==undefined && {auditDesigner:identity.parse(auditDesigner)}),planningAttempts:savedPlanningCalls(raw.planningAttempts),...(Array.isArray(agents) && {agents:agents.map(decodeRoleSnapshot)}),
     ...(Array.isArray(workflowAgents) && {workflowAgents:workflowAgents.map(decodeAgentPin)}),id:raw.id,familyId:raw.familyId,version:raw.version,mode:raw.mode,domain:raw.domain,prompt:raw.prompt,objective:raw.objective,

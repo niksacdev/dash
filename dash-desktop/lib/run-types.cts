@@ -1,3 +1,4 @@
+import type { StructuredOutputCheck } from "./quick-structure.cjs";
 import type { Candidate, ChatTurn, InferenceTelemetry } from "./runtime-types.cjs";
 import type { Guardrail } from "./guardrail.cjs";
 import type { StoredPower } from "./run-decode.cjs";
@@ -33,6 +34,7 @@ export type StoredGuardrail=Omit<Guardrail,LaterGuardrailFields> & Partial<Pick<
 export type StoredMetadata=Omit<DatasetMetadata,"industry"> & {industry?:string};
 export interface TraceStep {at:string; action:string; guardrail?:StoredGuardrail;}
 export interface RunResult {
+  structuredOutputCheck?:StructuredOutputCheck;
   candidateId:string; caseId:string; output:string|null; error:string|null; score:CaseScore|null; gradingError?:string; finishReason?:string|null; reportedFinishReason?:string|null;
   trace:{id:string;runId:string;candidateId:string;caseId:string;started:string;finished?:string;steps:TraceStep[]};
   telemetry:(Partial<InferenceTelemetry> & {device_power?:StoredPower|null})|null;

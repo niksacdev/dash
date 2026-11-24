@@ -35,7 +35,7 @@ async function hasTemplateError(response: Response): Promise<boolean> {
     return reportsTemplateFailure(msg);
   } catch { return false; }
 }
-async function request(provider: LocalProvider, route: string, options: RequestInit = {}): Promise<Response> {
+async function request(provider: LocalProvider, route: string, options: RequestInit = {}, strictSchema=false): Promise<Response> {
   let response:Response;
   try {
     response=await fetch(servers[provider] + route, { ...options, redirect:"error" });
@@ -49,6 +49,7 @@ async function request(provider: LocalProvider, route: string, options: RequestI
     let advice=httpGuidance(response.status);
     if (options.method==="POST" && [400,422].includes(response.status) && route.includes("chat")) {
       if (await hasTemplateError(response)) advice=templateAdvice;
+      else if (strictSchema) advice="Check that the selected model accepts JSON Schema, or approve a plain-text revision.";
     } else await response.body?.cancel().catch(()=>{});
     throw httpFailure(response.status, titles[provider] + " " + route + " returned HTTP " + response.status + ". " + advice);
   }
@@ -244,14 +245,14 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
     },
   };
 }
-export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, onText, apiKey, inputBudget, planning, onPlanningProgress, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
+export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, strictSchema, onText, apiKey, inputBudget, planning, onPlanningProgress, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
   if (inputBudget != null)
     return invokeBudgeted(candidate, messages, { inputBudget, maxTokens, signal, structured, onText });
   if (judging && candidate.provider === "lmstudio")
     return invokeJudge(candidate, messages, { maxTokens, signal, structured });
   if (planning && candidate.provider === "lmstudio")
     return invokePlanner(candidate, messages, { maxTokens, signal, structured, onPlanningProgress });
-  if (structured && candidate.provider === "lmstudio" && candidate.nativeChat && messages.length === 2 && messages[0].role === "system" && messages[1].role === "user")
+  if (structured && !strictSchema && candidate.provider === "lmstudio" && candidate.nativeChat && messages.length === 2 && messages[0].role === "system" && messages[1].role === "user")
     return nativeDataset(candidate, messages, signal, maxTokens);
   const native = candidate.provider === "ollama";
   const body = native
@@ -269,7 +270,7 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
         model: candidate.model,
         messages,
         stream: true,
-        ...(structured ? {response_format:{type:"json_schema", json_schema:{name:"case_output", schema:structured}}} : {}),
+        ...(structured ? {response_format:{type:"json_schema", json_schema:{name:"case_output", schema:structured,...(strictSchema && {strict:true})}}} : {}),
         stream_options: { include_usage: true },
         temperature: settings.temperature,
         max_tokens: maxTokens,
@@ -288,10 +289,11 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
       options.signal.throwIfAborted();
       throw new ProviderFailure("Model endpoint connection failed. Check its configuration and activity before starting another request.");
     }
-  } else r=await request(candidate.provider,native?"/api/chat":"/v1/chat/completions",options);
+  } else r=await request(candidate.provider,native?"/api/chat":"/v1/chat/completions",options,strictSchema);
   if (!r.ok) {
     await r.body?.cancel().catch(()=>{});
-    throw httpFailure(r.status,"Model endpoint returned HTTP " + r.status);
+    const formatHint=strictSchema && [400,415,422].includes(r.status) ? ". Check that the selected model accepts JSON Schema, or approve a plain-text revision." : "";
+    throw httpFailure(r.status,"Model endpoint returned HTTP " + r.status + formatHint);
   }
   let output = "",
     first: number | null = null,

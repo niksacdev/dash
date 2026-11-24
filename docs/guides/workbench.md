@@ -10,6 +10,8 @@ Select two models and review the proposed outcome rubric, judge and pass thresho
 
 **Dataset run** starts from a saved snapshot. Choose the models and run the cases. Each bundled scenario supplies the instructions, schema and grader. **Test a prompt variant** lets you compare an approved revision on the same structured cases. Candidates receive only the authored request and case evidence. Grading can use a held-out SME answer, rationale or rubric. Case reruns use the original snapshot and grader versions.
 
+For an extraction or classification with named fields, use [structured JSON in Quick compare](../reader/src/models.md#request-structured-json). Review and approve the task input and output schema before choosing models.
+
 Quick compare previews the approved prompt’s measured input and available output budget as models take their lanes. The guardrail checks every candidate and case again before dispatch. On loaded LM Studio models it measures the full templated input and active context, then reserves output space. With an automatic budget it targets up to 8,192 output tokens within verified capacity. For short Quick answers with an explicit cap of up to 1,024 tokens, DASH requests thinking off when the loaded LM Studio model supports it and counts the resulting template. The run records the actual allocation and any provider-reported output ceiling. For a connection without an exact tokenizer check, an explicit input cap blocks dispatch. Explicit output caps also work with Ollama and compatible endpoints. Truncated output is retained for inspection.
 
 ## Explore the bundled datasets

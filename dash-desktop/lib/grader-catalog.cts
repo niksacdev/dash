@@ -142,7 +142,8 @@ export async function scoreCatalogRule(key:string,e:GraderEvidence,version=1):Pr
     return {value:score.value, reason:score.value ? "The answer contains text." : "The returned answer was empty or contained only whitespace.",evaluator:evaluator+" · "+sdk+" · RegexMatch"};
   }
   if (key==="json-valid") {
-    if (!e.caseContext || !isRecord(e.caseContext.pack.outputSchema) || !Object.keys(e.caseContext.pack.outputSchema).length)
+    const contract=e.quickOutputSchema ?? e.caseContext?.pack.outputSchema;
+    if (!isRecord(contract) || !Object.keys(contract).length)
       return unscored("This run has no explicit JSON output contract.");
     const score=await json.score({output:e.output});
     return {value:score.value,reason:score.value ? "The answer parses as JSON." : "The answer is invalid JSON.",evaluator:evaluator+" · "+sdk+" · IsJson"};

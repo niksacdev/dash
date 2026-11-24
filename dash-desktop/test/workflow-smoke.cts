@@ -89,7 +89,9 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   if (stage === "implementer") {
     const brief=z.looseObject({objective:z.string().min(1)}).parse(raw);
     assert.equal(brief.expertBrief,undefined,"Held-out grader criteria stay with the evaluators");
-    return { prompt: guidance, reason:"Asking for a citation lets the grader locate the inspection evidence." };
+    return { prompt: guidance, reason:"Asking for a citation lets the grader locate the inspection evidence.",
+      ...(typeof brief.formatInstructions==="string" && {fields:[{name:"decision",type:"string",nullable:false}],
+        inputs:[{name:"lot",value:"K7"}]}) };
   }
   if (stage === "analyzer") {
     const brief = z.object({evidence:z.array(z.object({id:z.string()})).min(1)}).parse(raw);
@@ -163,7 +165,8 @@ globalThis.fetch = async (url, options = {}) => {
   const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" || stage === "native-relevance" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
   calls.push({ stage, body, brief });
   if (stage==="route" && holdRouting) await holdRouting();
-  const content = stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
+  const structuredCandidate=stage==="candidate" && !!props.lotCode;
+  const content = structuredCandidate ? JSON.stringify(body.model===models.ollama ? {decision:"review",lotCode:"K7"} : {decision:"review"}) : stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
   if (target.pathname === "/api/chat") {
     if (streamedQuick.armed && stage==="candidate") {
       streamedQuick.armed=false;
@@ -252,7 +255,57 @@ async function smoke() {
     await wait(() => db.prepare("SELECT count(*) n FROM runs WHERE status='completed'").get()?.n === count, "Expected " + count + " completed runs");
     return decodeManifest(db.prepare("SELECT manifest FROM runs ORDER BY rowid DESC LIMIT 1").get()?.manifest);
   }
+  async function verifyStructuredQuick() {
+    await route("compare");
+    await wait(()=>js("!!document.querySelector('#wf-structured,[data-wf-reset]')"),"Quick planner or an approved prompt");
+    if(await exists("[data-wf-reset]"))await click("[data-wf-reset]");
+    await wait(()=>exists("#wf-structured"),"Structured output option");
+    assert.equal(await js("document.querySelector('#wf-structured').checked"),false);
+    await click('[data-wf-example="manufacturing"]');
+    await click("#wf-structured");
+    await fill("#wf-output-cap","150");
+    await click("#wf-design");
+    await wait(()=>exists("#wf-json-input"),"Review the generated JSON contract");
+    const input=z.object({task:z.string(),inputs:z.record(z.string(),z.string())}).parse(JSON.parse(await text("document.querySelector('#wf-json-input').value")));
+    assert.equal(input.inputs.lot,"K7");
+    assert.match(input.task,/10.04 mm/);
+    const reviewed={...input,inputs:{...input.inputs,reading:"10.04 mm"}};
+    const contract={type:"object",properties:{decision:{type:"string"},lotCode:{type:"string"}},required:["decision","lotCode"],additionalProperties:false};
+    await fill("#wf-json-input",JSON.stringify(reviewed));
+    await fill("#wf-json-schema","{");
+    await click("#wf-approve");
+    await wait(()=>js("document.querySelector('[role=alert]')?.textContent.includes('Enter valid JSON')"),"Show which JSON document needs correction");
+    await fill("#wf-json-schema",JSON.stringify(contract));
+    await click("#wf-approve");
+    await wait(()=>exists("#setup .go-button"),"Approved structured prompt");
+    const approved=records().at(-1);
+    assert.deepEqual(approved?.input,reviewed);
+    assert.deepEqual(approved?.outputSchema,contract);
+    const start=calls.length;
+    await click('[data-model="lmstudio/'+models.lmstudio+'"]');
+    await click('[data-model="ollama/qa-short-context"]');
+    await wait(()=>exists('[data-qc-budget="ollama/qa-short-context"][data-budget-status="blocked"]'),"Short context blocks this JSON contract");
+    assert.equal(await js("document.querySelector('#setup .go-button').disabled"),true);
+    await click('[data-remove="ollama/qa-short-context"]');
+    await click('[data-model="ollama/'+models.ollama+'"]');
+    await click("#setup .go-button");
+    await wait(()=>exists(".wf-structure-result"),"Per-model JSON conformance");
+    const summary=await text("document.querySelector('.wf-structure-result').innerText");
+    assert.match(summary,/Conforms/);
+    assert.match(summary,/Does not conform/);
+    assert.match(summary,/Missing required field: lotCode/);
+    const dispatched=calls.slice(start).filter(call=>call.stage==="candidate");
+    assert.equal(dispatched.length,2);
+    for(const {body} of dispatched){
+      assert.deepEqual(JSON.parse(body.messages.at(-1)?.content ?? ""),reviewed);
+      assert.deepEqual(body.format ?? body.response_format?.json_schema.schema,contract);
+    }
+  }
   await wait(() => exists(".hero"), "Overview");
+  if(process.argv.includes("--structured-quick")){
+    try {await verifyStructuredQuick();}finally{db.close();}
+    return;
+  }
   const wc = win.webContents;
   wc.setBackgroundThrottling(false);
   wc.debugger.attach("1.3");
@@ -1264,11 +1317,13 @@ async function smoke() {
     decisionOrigin="";
     server.closeAllConnections();server.close();
   }
+  await verifyStructuredQuick();
   db.close();
 }
 
 app.whenReady().then(smoke).then(() => {
-  console.log("Workflow smoke passed: mobile planning, mapped Quick graders, mixed verdict and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader consent, catalog forks, pinned prior revisions across two runs, native metric defaults and version-specific run links.");
+  if(process.argv.includes("--structured-quick"))console.log("Structured Quick smoke passed: opt-in, input and schema approval, token preflight, matching dispatch and distinct per-model format results.");
+  else console.log("Workflow smoke passed: mobile planning, mapped Quick graders, mixed verdict and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader consent, catalog forks, pinned prior revisions across two runs, native metric defaults, version-specific run links and structured Quick conformance.");
   rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   app.exit(0);
 }).catch(err => {

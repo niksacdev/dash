@@ -1,3 +1,4 @@
+import {quickStructuredMessages} from "./quick-structure.cjs";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord, validTurns } from "./run-types.cjs";
@@ -38,8 +39,12 @@ export function validateCase(row:Record<string,unknown>, pack:ScenarioPack) {
   if (typeof row.reference === "string" && !row.reference.trim()) throw Error("The reference answer is empty");
 }
 
-export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:string|null;prompt?:string|null}, row:Partial<CaseRow>):ChatTurn[] {
-  if (!manifest.pack) return [{role:"user", content:manifest.prompt ?? ""}];
+export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:string|null;prompt?:string|null;approvedPrompt?:RunManifest["approvedPrompt"]}, row:Partial<CaseRow>):ChatTurn[] {
+  if (!manifest.pack) {
+    const approved=manifest.approvedPrompt;
+    if (approved?.input && approved.outputSchema) return quickStructuredMessages(approved.input,approved.outputSchema);
+    return [{role:"user", content:manifest.prompt ?? ""}];
+  }
   const mapped = row.messages?.map(({role,content})=>({role,content}));
   if (manifest.pack.kind === "reference") {
     if (mapped) return mapped;
@@ -58,6 +63,7 @@ export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:Run
   const approved = manifest.mode === "quick" ? manifest.approvedPrompt : null;
   const mapped=graderId && manifest.measureGraders?.find(row=>row.graderId===graderId);
   return {
+    ...(catalogContext && approved?.outputSchema && {quickOutputSchema:approved.outputSchema}),
     ...(catalogContext && {finishReason:result.reportedFinishReason ?? null}),
     ...(catalogContext && manifest.pack && manifest.pack.kind !== "reference" && {caseContext:{pack:manifest.pack,row}}),
     ...(approved && {evaluationBrief:{objective:approved.objective, metrics:mapped ? [mapped.metric] : approved.auditAgent ? approved.metrics.filter(metric=>!isExternalOutcomeMetric(metric)) : approved.metrics, criteria:mapped ? (mapped.criterion ? [mapped.criterion] : []) : approved.requirements}}),
