@@ -19,7 +19,8 @@ function allowedChoices(schema:unknown,goal:string) {
 
 test("the designer proposes a minimal plan, then confirmation saves reusable versions atomically", async t => {
   const judge:LocalCandidate = {kind:"model",id:"ollama/lfm3-test",provider:"ollama",model:"lfm3-test",loaded:true,revision:"test-r1"};
-  const servers = [inventory([judge])];
+  const selected:LocalCandidate={kind:"model",id:"ollama/qa-evaluator",provider:"ollama",model:"qa-evaluator",loaded:true,revision:"test-r2"};
+  const servers = [inventory([judge,selected])];
   const proposed = [
     {name:"Hold wording",choice:"NEW:contains",criteria:"The response must contain the exact word HOLD",reason:"The contract specifies this literal.",threshold:1},
     {name:"Evidence quality",choice:"NEW:judge",anchors,criteria:"Full credit requires the measured diameter and the tolerance. Partial credit for one; zero if both are absent.",reason:"Equivalent explanations are acceptable.",threshold:0.8},
@@ -57,7 +58,7 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
   assert.deepEqual(proposal.checks.map(g=>g.measures),[["Exact disposition"],["Evidence quality"]]);
   assert.equal(customerCount(),0);
   const choices=proposal.checks.map((g,index)=>({index,action:"create",
-    definition:{name:g.name,category:g.category,criteria:g.criteria,threshold:g.threshold,judgeId:judge.id}}));
+    definition:{name:g.name,category:g.category,criteria:g.criteria,threshold:g.threshold,judgeId:selected.id}}));
   assert.throws(()=>confirmGraderPlan(b,{draftId:proposal.draftId,choices:choices.map(c=>({...c,definition:{...c.definition,judgeId:null}}))}),/judge/i);
   assert.equal(customerCount(),0,"Partial confirmations must roll back");
   const approval={draftId:proposal.draftId,choices};
@@ -68,9 +69,11 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
   const scores=await Promise.all(b.graders.select(ids).map(g=>b.graders.assess(g,evidence,adapters,AbortSignal.timeout(10000))));
   assert.deepEqual(scores.map(s=>[s.value,s.pass]),[[1,true],[0.8,true]]);
   assert.ok(scores.every(s=>s.evaluator?.startsWith("opik-js@")));
-  assert.deepEqual(judged,[judge.id,judge.id]);
+  assert.deepEqual(judged,[selected.id,selected.id]);
+  const saved=b.graders.get(ids[1]);
+  assert.deepEqual([saved.judge?.id,saved.judge?.revision,saved.producer?.model.model],[selected.id,selected.revision,judge.model]);
   assert.throws(()=>confirmGraderPlan(b,{...approval,choices:[choices[0]]}),/already been approved/);
-  const revised=b.graders.save({...choices[1].definition,type:"opik",industry:"Manufacturing",threshold:.9,intent:"revise",sourceGraderId:ids[1]},[judge]);
+  const revised=b.graders.save({...choices[1].definition,type:"opik",industry:"Manufacturing",threshold:.9,judgeId:judge.id,intent:"revise",sourceGraderId:ids[1]},[judge]);
   assert.equal(b.graders.get(revised).version,2);
   assert.equal(b.graders.get(ids[1]).threshold,0.8);
 });
@@ -115,7 +118,7 @@ test("the designer reuses a matching industry revision, protects references and 
     const source=present(payload.catalog.find(g=>g.name==="Requested financial fact"));
     return reply(JSON.stringify({M1:{choice:invented?"G9999":action==="derive"?"ADAPT:"+source.option:source.option,
       reason:"The approved outcome requires the reported accounting basis.",
-      ...(action==="derive" && {name:"Our EPS basis",anchors:{...anchors,evidence:"reference"},criteria:"Check whether the answer distinguishes diluted GAAP EPS from adjusted EPS.",threshold:1})}}));
+      ...(action==="derive" && {name:"Our EPS basis",anchors:{...anchors,evidence:"response"},criteria:"Check whether the answer distinguishes diluted GAAP EPS from adjusted EPS.",threshold:1})}}));
   }});
   t.after(()=>bench.db.close());bench.servers=[inv];
   const dataset=present(bench.list().datasets.find(d=>d.pack==="earnings"));
@@ -128,6 +131,8 @@ test("the designer reuses a matching industry revision, protects references and 
   action="derive";
   const second=await designGraderPlan(bench,request);
   const choice={index:0,action:"derive",definition:{name:"Our EPS review",criteria:"Credit a supported diluted GAAP EPS value and explicit basis.",category:"Basis accuracy",threshold:1,judgeId:model.id}};
+  assert.deepEqual(second.checks[0].requiredEvidence,["reference"],"A planner's response-only anchor cannot erase the source financial rule's label");
+  assert.throws(()=>confirmGraderPlan(bench,{draftId:second.draftId,choices:[{...choice,definition:{...choice.definition,evidenceView:"answer-only"}}]}),/requires a reference/);
   const [id]=confirmGraderPlan(bench,{draftId:second.draftId,choices:[choice]});
   const fork=bench.graders.get(id);assert.notEqual(id,s.id);assert.equal(fork.type,"opik");
   assert.equal(fork.library?.parentRevisionId,s.id);assert.equal(fork.library?.scope,"customer");
@@ -212,7 +217,7 @@ test("new grader defaults can be edited within evidence and industry constraints
   }))});
   t.after(()=>b.db.close());b.servers=servers;
   const plan=await designGraderPlan(b,{objective:'The response must include the literal "HOLD".'});
-  assert.deepEqual(plan.editableMethods,["contains","opik"]);
+  assert.deepEqual(plan.editableMethods,["contains","opik","decision"]);
   const check={index:0,action:"create",definition:{name:"Hold label",category:"Disposition",criteria:"HOLD",threshold:1,type:"contains",industry:"Manufacturing"}};
   const confirm=(definition:Record<string,unknown>)=>confirmGraderPlan(b,{draftId:plan.draftId,choices:[{...check,definition}]});
   assert.throws(()=>confirm({...check.definition,type:"field"}),/evidence/);

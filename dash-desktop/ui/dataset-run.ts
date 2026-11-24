@@ -41,7 +41,8 @@ function referenceScoringIssue() {
   const explicitlySelected=(datasetGradingChoices?.available || []).filter(g=>selected.has(g.id));
   const graders=[...(datasetGradingChoices?.automatic || []),...explicitlySelected];
   const meaningful=graders.filter(g=>!(g.type==="catalog" && ["response-present","completion","json-valid"].includes(g.ruleKey || "")));
-  if(d.casesWithRubric && !explicitlySelected.some(g=>["judge","opik","decision"].includes(g.type)))
+  if(d.casesWithRubric && !explicitlySelected.some(g=>g.type==="judge" || (g.type==="opik" && (g.evidenceView ?? "case")==="case") ||
+    (g.type==="decision" && (g.decisionView ?? "case")==="case")))
     return "Choose a rubric-aware judge to score the case-specific instructions.";
   if(d.casesWithoutReference && !meaningful.some(g=>g.type==="opik" && g.requiredEvidence?.length ?
     !g.requiredEvidence.includes("trajectory") && datasetGradingChoices?.hasReferences :

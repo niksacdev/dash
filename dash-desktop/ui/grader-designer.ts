@@ -49,26 +49,33 @@ function gradeDesignerScopeSelector(busy:boolean) {
     (state.datasets.length?'<optgroup label="Dataset snapshots">'+state.datasets.map(d=>opt("dataset:"+d.id,
       (d.metadata?.family || d.name)+" · "+d.version+" · "+(d.metadata?.industry || d.pack),workspaceGradeScope)).join("")+'</optgroup>':'')+'</select>');
 }
+function editableJudgeCheck(el:Element):UiEditableGrader|undefined {
+  const row=el.closest<HTMLElement>("[data-gd-check]"),panel=el.closest<HTMLElement>("[data-gd-scope]");
+  return row && panel?.dataset.gdScope?gradeDesignerDraft(panel.dataset.gdScope,panel.hasAttribute("data-gd-workspace")).checks[Number(row.dataset.gdCheck)]:undefined;
+}
 function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],scope:string) {
-  const source=g.source, reuse=g.action==="reuse", judge=g.action==="derive" || ["opik","judge"].includes(g.type);
+  const source=g.source, reuse=g.action==="reuse", binary=!reuse && g.type==="decision", judge=!binary && (g.action==="derive" || ["opik","judge"].includes(g.type));
   const editableIndustry=!g.source && scope==="custom" && !gradeDesignerDraft(scope,true).planner?.approved;
   const field=(key:string,label:string,body:string)=>formField(label,body.replace("GD_FIELD",'data-gd-field="'+key+'"'));
-  const rubric=field("criteria",judge?"Scoring rubric":"Scoring rule",'<textarea class="gd-rubric" GD_FIELD maxlength="6000">'+esc(g.criteria)+'</textarea>');
-  const basis=source ? '<p><strong>'+esc(source.scope+' grader · '+source.name+' v'+source.version)+'</strong></p><p class="gd-source-rule">'+esc(source.criteria)+'</p><small>'+esc('Pass threshold · '+g.threshold+' / 1')+'</small>'+
+  const rubric=field("criteria",binary?"One yes/no question · yes means pass":judge?"Scoring rubric":"Scoring rule",'<textarea class="gd-rubric" GD_FIELD maxlength="6000">'+esc(g.criteria)+'</textarea>');
+  const basis=source ? '<p><strong>'+esc(source.scope+' grader · '+source.name+' v'+source.version)+'</strong></p><p class="gd-source-rule">'+esc(source.criteria)+'</p><small>'+esc(source.threshold==null?'':'Saved pass threshold · '+source.threshold+' / 1')+'</small>'+
+    (source.model && !source.hosted?'<p>Saved scoring model · '+esc(source.model)+'</p>':'')+
     (source.hosted ? '<p>Uses OpenRouter · '+esc(source.model)+'. Running this grader requires confirmation before case evidence is sent.</p>' : '') : '';
   return '<article class="gd-check" data-gd-check="'+i+'"><label class="gd-inclusion"><input type="checkbox" data-gd-field="included" '+(g.included?"checked":"")+'><span>'+
-    esc(g.name || "Proposed grader")+'</span></label><fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
+    esc((reuse?source?.name:g.name) || "Proposed grader")+'</span></label><fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
     basis+(source ? field("action","After approval",'<select GD_FIELD>'+opt("reuse","Use this exact version",g.action)+opt("derive","Create a customer rubric from this version",g.action)+'</select>') : '<p>New customer grader</p>')+
     (reuse ? '' : rubric+'<div class="cols">'+field("name","Grader name",'<input GD_FIELD maxlength="100" value="'+esc(g.name)+'">')+
     field("category","Category",'<input GD_FIELD maxlength="100" value="'+esc(g.category)+'">')+'</div><div class="cols">'+
     field("industry","Applies to industry",'<select GD_FIELD '+(editableIndustry?'':'disabled')+'>'+[...new Set([g.industry,"Cross-industry","Financial Services","Manufacturing","General"])].map(v=>opt(v,v,g.industry)).join("")+'</select>')+
-    field("type","Method",'<select GD_FIELD '+(g.source?'disabled':'')+'>'+(g.source?opt("opik",graderTypes.opik,"opik"):methods.map(v=>opt(v,graderTypes[v],g.type)).join(""))+'</select>')+'</div>'+
-    field("threshold","Pass threshold (0–1)",'<input GD_FIELD type="number" min="0" max="1" step="any" value="'+esc(g.threshold)+'">')+
-    (judge?field("evidenceView","Evidence shown to the judge",'<select GD_FIELD>'+opt("case","Task, answer and available case evidence",g.evidenceView || "case")+
-      (g.requiredEvidence?.length?'':opt("answer-only","Answer only",g.evidenceView))+'</select>'):'')+
+    field("type","Scoring method",'<select GD_FIELD>'+(g.source?(["opik","decision"] as const):methods).map(v=>opt(v,graderTypes[v],g.type)).join("")+'</select>')+'</div>'+
+    field("threshold",binary?"Pass when P(yes) is at or above":"Pass threshold (0–1)",'<input GD_FIELD type="number" min="0" max="1" step="any" value="'+esc(g.threshold)+'">')+
+    (judge?field("evidenceView","Evidence shown to the judge",'<select GD_FIELD>'+decisionViewOptions(g.evidenceView || "case",!!g.requiredEvidence?.length)+'</select>'):'')+
     (judge && g.requiredEvidence?.length?'<small>Cases without '+g.requiredEvidence.map(kind=>kind==="reference"?'a reference':'observed agent steps').join(" or ")+' stay unscored.</small>':'')+
-    (judge?field("judgeId","Local judge model",'<select GD_FIELD>'+opt("","Choose a connected model",g.judgeId)+gradeDesignerLocalJudges().map(m=>opt(m.id,
-      m.model+' · '+m.provider+(m.loaded?' · loaded':''),g.judgeId)).join("")+'</select>'):''))+'</fieldset></article>';
+    (binary?nativeJudgeFields(g.native ?? nativeDraft(),false)+
+      field("decisionFail","Fail when P(yes) is at or below",'<input GD_FIELD type="number" min="0" max="1" step="any" value="'+esc(g.native?.failAt ?? "0.2")+'">')+
+      '<small>Probabilities between the cutoffs stay unscored.</small>'+field("decisionView","Evidence shown to the decision model",'<select GD_FIELD>'+decisionViewOptions(g.decisionView ?? "case",!!g.requiredEvidence?.length)+'</select>'):
+      judge?field("judgeId","Judge model · local scoring runtime",'<select GD_FIELD>'+judgeOptions(g.judgeId)+'</select>'):
+      '<small>This rule runs directly. No judge model is needed.</small>'))+'</fieldset></article>';
 }
 function gradeDesignerPreparation(scope:string,d:UiGraderDraft,workspace:boolean) {
   const record=gradeScopeRecord(scope), w=d.planner;
@@ -218,10 +225,19 @@ function reviewChoices(draft:UiGraderDraft):UiReviewChoice[] {
     const name=g.name.trim(),category=g.category.trim(),criteria=g.criteria.trim(),threshold=Number(g.threshold);
     if(!name || !category || !criteria) throw Error("Enter a name, metric and criteria for each selected grader.");
     if(!Number.isFinite(threshold) || threshold<=0 || threshold>1) throw Error("Set each pass threshold above zero and at most one.");
-    const judge=g.action==="derive" || ["judge","opik"].includes(g.type);
+    const type=g.action==="derive"?g.type==="decision"?"decision":"opik":draft.editableMethods.find(m=>m===g.type);
+    const base={name,category,criteria,threshold,industry:g.industry,type};
+    if(type==="decision"){
+      const d=g.native;
+      if(!d?.model || !d.models?.includes(d.model))throw Error("Find and choose a native decision model for "+name+".");
+      const failAt=Number(d.failAt);
+      if(!d.failAt.trim() || !(failAt>=0 && failAt<threshold))throw Error("Set the fail cutoff below the pass cutoff for "+name+".");
+      result.push({index,action:g.action,definition:{...base,decision:{provider:"local",endpoint:d.endpoint.trim(),protocol:d.protocol,model:d.model,failAt},decisionView:g.decisionView ?? "case"}});
+      return;
+    }
+    const judge=type==="opik" || g.type==="judge";
     if(judge && !gradeDesignerLocalJudges().some(m=>m.id===g.judgeId))throw Error("Choose a connected local judge for "+name+".");
-    const type=g.action==="create" ? draft.editableMethods.find(m=>m===g.type) : undefined;
-    result.push({index,action:g.action,definition:{name,category,criteria,threshold,industry:g.industry,...(type && {type}),...(judge && {judgeId:g.judgeId,evidenceView:g.evidenceView ?? "case"})}});
+    result.push({index,action:g.action,definition:{...base,...(judge && {judgeId:g.judgeId,evidenceView:g.evidenceView ?? "case"})}});
   });
   if (!result.length)throw Error("Select at least one proposed check.");
   return result;
@@ -254,13 +270,40 @@ function updateDesignerField(t:EventTarget|null) {
     return;
   }
   const item=t.closest<HTMLElement>("[data-gd-check]"), key=t.dataset.gdField;
+  if(item && t.dataset.native){
+    const g=draft.checks[Number(item.dataset.gdCheck)],d=g?.native,panel=t.closest<HTMLElement>("[data-native-judge]");
+    if(!d || !panel)return;
+    if(t.dataset.native==="selected")d.model=t.value;
+    else if(t.dataset.native==="protocol" || t.dataset.native==="endpoint"){
+      if(t.dataset.native==="protocol"){if(t.value===d.protocol)return;d.protocol=t.value==="mlx-vlm"?"mlx-vlm":"systemone";}
+      else {if(t.value===d.endpoint)return;d.endpoint=t.value;}
+      d.model="";d.models=[];resetNativeDiscovery(panel);
+    }
+    return;
+  }
   if (!item || !key) return;
   const g=draft.checks[Number(item.dataset.gdCheck)];
   if (!g) return;
   if (key==="included" && t instanceof HTMLInputElement) g.included=t.checked;
-  else if(key==="action" && g.source && (t.value==="reuse" || t.value==="derive")) g.action=t.value;
-  else if(key==="type" && !g.source){const method=draft.editableMethods.find(m=>m===t.value);if(method)g.type=method;}
-  else if(key==="evidenceView" && (t.value==="answer-only" || t.value==="case"))g.evidenceView=t.value;
+  else if(key==="action" && g.source && (t.value==="reuse" || t.value==="derive") && g.action!==t.value){
+    g.action=t.value;
+    if(g.action==="derive" && !g.derivationStarted){g.type="opik";g.derivationStarted=true;}
+  }
+  else if(key==="type" && t.value!==g.type){
+    const method=(g.source?(["opik","decision"] as const):draft.editableMethods).find(m=>m===t.value);
+    if(!method)return;
+    if(method==="decision"){
+      g.rubricCriteria=g.criteria;g.rubricThreshold=g.threshold;
+      g.criteria=g.binaryCriteria ?? "";g.threshold=0.8;g.native ??=nativeDraft();
+      g.decisionView ??=g.requiredEvidence?.length?"case":g.evidenceView==="answer-only"?"answer-only":"task-answer";
+    }else if(g.type==="decision"){
+      g.binaryCriteria=g.criteria;g.criteria=g.rubricCriteria ?? "";g.threshold=g.rubricThreshold ?? 1;
+    }
+    g.type=method;
+  }
+  else if(key==="decisionFail" && g.native)g.native.failAt=t.value;
+  else if(key==="decisionView" && (t.value==="case" || t.value==="task-answer" || t.value==="answer-only"))g.decisionView=t.value;
+  else if(key==="evidenceView" && (t.value==="answer-only" || t.value==="task-answer" || t.value==="case"))g.evidenceView=t.value;
   else if (key==="industry" && !g.source)g.industry=t.value;
   else if (key==="criteria" || key==="category" || key==="threshold" || key==="judgeId" || key==="name") g[key]=t.value;
   if (key==="name") $(".gd-inclusion span",item).textContent=g.name || "Proposed grader";
@@ -324,9 +367,9 @@ async function proposeGraderChecks(scope:string,d:UiGraderDraft) {
     if (result.planningAttempts) d.activity.calls=result.planningAttempts;
   } finally { graderPlanningRequests.delete(requestId); }
   const judges=gradeDesignerLocalJudges();
-  const preferred=judges.find(m=>m.loaded && m.provider===result.designer?.provider && m.model===result.designer.model) || judges.find(m=>m.loaded);
+  const preferred=judges.find(m=>m.loaded);
   d.editableMethods=result.editableMethods;
-  d.checks=result.checks.map(g=>({...g,included:!g.source?.hosted,judgeId:preferred?.id || ""}));
+  d.checks=result.checks.map(g=>({...g,included:!g.source?.hosted,derivationStarted:g.action==="derive",judgeId:preferred?.id || ""}));
   d.covered=result.covered;d.gaps=result.gaps;d.draftId=result.draftId;d.automatic=result.automatic;d.summary=result.summary;d.designer=result.designer;d.hasPlan=true;
 }
 

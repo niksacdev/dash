@@ -461,7 +461,9 @@ export class Bench {
       });
       if (!original && datasetScorer === "selected-graders" && !eligibleBusinessGrader)
         throw Error("Choose a grader that can evaluate the saved case responses with the available evidence.");
-      if (rows.some(r=>r.rubric) && !selected.some(g=>["judge","opik","decision"].includes(g.type)))
+      if (rows.some(r=>r.rubric) && !selected.some(g=>g.type==="judge" ||
+        (g.type==="opik" && (original || (g.evidenceView ?? "case")==="case")) ||
+        (g.type==="decision" && (g.decisionView ?? "case")==="case")))
         throw Error("Choose a local LLM or Opik judge, or a decision grader, to evaluate the case-level rubrics.");
     } else datasetScorer = pack ? "scenario" : null;
     const caps = original?.tokenBudget ?? (approved || {inputCap,outputCap});

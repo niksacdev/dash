@@ -3,7 +3,8 @@ import {PlanningRoute,type PlannerAdapters,type PlanningAttempt} from "./planner
 import {isRecord,type RuntimeInventory} from "./runtime-types.cjs";
 import {loadAgent,agentPin,isDomain} from "../agents/registry.cjs";
 import type {DatabaseSync} from "node:sqlite";
-import {graderProducer,rubricEvidenceView,type GraderSpec} from "./grader-types.cjs";
+import {decisionConfig} from "./decision-model.cjs";
+import {graderProducer,rubricEvidenceView,graderEvidenceView,graderRequiredEvidence,type GraderSpec} from "./grader-types.cjs";
 import {randomUUID,createHash} from "node:crypto";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
@@ -33,15 +34,15 @@ const assignmentSchema=z.union([
   z.strictObject({...baseAssignment,name:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),anchors:anchorSchema.optional()}),
 ]);
 const sourceSchema=z.object({id:textId,name:z.string(),version:z.number().int().positive(),scope:z.enum(["general","industry","customer"]),
-  criteria:z.string(),hosted:z.boolean(),model:z.string().nullable()});
+  criteria:z.string(),threshold:z.number().optional(),hosted:z.boolean(),model:z.string().nullable()});
 const proposedSchema=z.object({measures:z.array(z.string()).max(8).optional(),name:z.string(),category:z.string(),industry:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),
   type:z.enum(["contains","exact","field","trajectory","judge","opik","decision","catalog","opik-metric"]),reason:z.string(),
   evidenceView:rubricEvidenceView.optional(),requiredEvidence:z.array(z.enum(["reference","trajectory"])).optional(),action:z.enum(["reuse","derive","create"]),source:sourceSchema.nullable()});
 type Proposed=z.infer<typeof proposedSchema>;
 const coveredMeasureSchema=z.object({measure:z.string(),reason:z.string(),grader:z.object({id:textId,name:z.string(),version:z.number().int().positive()})});
 const draftSchema=z.object({request:designRequest,producer:graderProducer.optional(),checks:z.array(proposedSchema).max(8),covered:z.array(coveredMeasureSchema).optional()});
-const editableMethod=z.enum(["opik","contains","exact","field","trajectory"]);
-const reviewFields=z.strictObject({evidenceView:rubricEvidenceView.optional(),type:editableMethod.optional(),industry:z.string().trim().min(1).max(100).optional(),name:z.string().trim().min(1).max(100),category:z.string().trim().min(1).max(100),
+const editableMethod=z.enum(["opik","decision","contains","exact","field","trajectory"]);
+const reviewFields=z.strictObject({decision:decisionConfig.optional(),decisionView:rubricEvidenceView.optional(),evidenceView:rubricEvidenceView.optional(),type:editableMethod.optional(),industry:z.string().trim().min(1).max(100).optional(),name:z.string().trim().min(1).max(100),category:z.string().trim().min(1).max(100),
   criteria:z.string().trim().min(1).max(6000),threshold:z.number().gt(0).lte(1),judgeId:textId.nullable().optional()});
 const index=z.number().int().min(0).max(7);
 const confirmationSchema=z.strictObject({draftId:z.string().uuid(),choices:z.array(z.discriminatedUnion("action",[
@@ -116,8 +117,8 @@ function choicesFor(bench:DesignerBench,request:Request,industry:string):Catalog
 }
 function reviewedSource(g:GraderSpec) {
   const hosted=g.type==="decision" && g.decision.provider==="openrouter";
-  return {id:g.id,name:g.name,version:g.version,scope:g.library?.scope ?? "customer",criteria:g.criteria,
-    hosted,model:hosted && g.type==="decision" ? g.decision.model : null};
+  return {id:g.id,name:g.name,version:g.version,scope:g.library?.scope ?? "customer",criteria:g.criteria,threshold:g.threshold,
+    hosted,model:g.type==="decision" ? g.decision.model : g.judge ? g.judge.provider+" · "+g.judge.model : null};
 }
 function hasRequiredEvidence(g:GraderSpec,brief:ReturnType<typeof gradingBrief>):boolean {
   if(g.type==="opik" && g.requiredEvidence?.some(e=>e==="reference" ? brief.referenceCoverage==="none" : brief.target!=="agent"))return false;
@@ -272,7 +273,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
         let check:Proposed;
         if(source && !editing){
           check={action:"reuse",source:reviewedSource(source),name:source.name,category:source.category,industry:brief.industry,
-            type:source.type,criteria:source.criteria,threshold:source.threshold,reason:rationale,...(source.type==="opik" && {evidenceView:source.evidenceView,requiredEvidence:source.requiredEvidence})};
+            type:source.type,criteria:source.criteria,threshold:source.threshold,reason:rationale,...(source.type==="opik" && {evidenceView:source.evidenceView}),...((source.type==="opik" || source.type==="decision") && {requiredEvidence:source.requiredEvidence})};
         }else{
           if(!("criteria" in pick))throw Error("A new or adapted check needs its name, criteria and pass threshold.");
           const method=editing?"judge":methodSchema.parse(pick.choice.slice(4));
@@ -315,6 +316,13 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
           } else if(anchors)throw Error("Select a rubric to use semantic scoring anchors.");
           check={action:editing?"derive":"create",source:source?reviewedSource(source):null,name,category:metric.slice(0,100),
             industry:brief.industry,type:method==="judge"?"opik":method,criteria,threshold:pick.threshold,reason:rationale,...(method==="judge" && {evidenceView:answerContent && !requiredEvidence?.length?"answer-only":"case"}),...(requiredEvidence?.length && {requiredEvidence})};
+        }
+        if(source){
+          const required=[...new Set([...graderRequiredEvidence(source),...(check.requiredEvidence ?? [])])];
+          const scope=graderEvidenceView(source);
+          if(required.length && scope && scope!=="case")throw Error("The proposed check needs evidence hidden from its source grader. Create a new rubric to review a different evidence policy.");
+          if(required.length){check.requiredEvidence=required;check.evidenceView="case";}
+          else if(scope)check.evidenceView=scope;
         }
         const identity=check.action==="reuse"?JSON.stringify(["reuse",check.source?.id]):
           JSON.stringify([check.action,check.source?.id,check.name,check.type,check.criteria,check.threshold,check.industry,check.category]);
@@ -367,7 +375,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
     const draftId=randomUUID();draftTable(bench.db);
     bench.db.prepare("DELETE FROM grader_design_drafts WHERE created < ?").run(Date.now()-7*24*60*60*1000);
     bench.db.prepare("INSERT INTO grader_design_drafts(id,created,draft) VALUES(?,?,?)").run(draftId,Date.now(),JSON.stringify(draftSchema.parse({request,checks:result.checks,covered:result.covered,...(route.designer && {producer:{agent:agentPin(agent),model:route.designer}})})));
-    return {draftId,...result,planningAttempts:route.attempts,editableMethods:methods.map(m=>m==="judge"?"opik" as const:m),automatic:localDefaults.map(g=>g.name),designer:route.designer,agent:agentPin(agent),industry:brief.industry};
+    return {draftId,...result,planningAttempts:route.attempts,editableMethods:[...methods.map(m=>m==="judge"?"opik" as const:m), "decision" as const],automatic:localDefaults.map(g=>g.name),designer:route.designer,agent:agentPin(agent),industry:brief.industry};
   } finally {bench.designing=false;}
 }
 export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
@@ -385,11 +393,11 @@ export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
     const draft=draftSchema.parse(JSON.parse(row.draft)),brief=gradingBrief(bench,draft.request),literal=literalRules(brief);
     const options=choicesFor(bench,draft.request,brief.industry);
     const available=options.available.filter(g=>hasRequiredEvidence(g,brief) && !options.automatic.some(a=>a.id===g.id));
-    const models=bench.servers.flatMap(s=>s.models);
+    const models=bench.servers.filter(s=>s.online).flatMap(s=>s.models);
     const ids=choices.map(choice=>{
       const check=draft.checks[choice.index];
       if(!check)throw Error("This proposal is outside the reviewed plan.");
-      const source=check.source && available.find(g=>g.id===check.source?.id);
+      const source=check.source ? available.find(g=>g.id===check.source?.id) : undefined;
       if(check.source && !source)throw Error("The source grader is no longer applicable. Propose a new plan.");
       if(choice.action==="reuse"){
         if(!source)throw Error("This proposal has no pinned source to reuse.");
@@ -401,14 +409,26 @@ export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
       const industryLocked=!!(source || draft.request.promptId || draft.request.datasetId);
       if ((industryLocked && industry!==brief.industry) || (!industryLocked && !["General","Cross-industry"].includes(industry) && !isDomain(industry)))
         throw Error("Keep the grader applicable to the reviewed domain and source.");
-      if(source && type!=="opik")throw Error("Customize this source as an Opik rubric or reuse its exact version.");
+      if(source && type!=="opik" && type!=="decision")throw Error("Choose a scoring rubric, a binary decision, or reuse the exact version.");
       const {name,category,criteria,threshold,judgeId}=choice.definition;
-      if(type==="catalog" || type==="decision" || type==="opik-metric")throw Error("Choose a supported new customer rubric.");
+      const required=[...new Set([...graderRequiredEvidence(source),...(check.requiredEvidence ?? [])])];
+      const scope=graderEvidenceView(source) ?? check.evidenceView;
+      if(type==="decision"){
+        const config=choice.definition.decision, view=choice.definition.decisionView;
+        if(!config || config.provider!=="local" || config.fallbackModel || !view || judgeId)
+          throw Error("Choose a discovered local decision model and its evidence before saving.");
+        if(criteria===check.criteria && check.type!=="decision")
+          throw Error("Write one yes/no criterion before switching the proposed grader to a decision model.");
+        return bench.graders.save({intent:source?"derive":"create",...(source && {sourceGraderId:source.id}),
+          type,name,category,criteria,threshold,industry,decision:config,decisionView:view,confirmNative:true,requiredEvidence:required},models,null,draft.producer);
+      }
+      if(choice.definition.decision || choice.definition.decisionView)throw Error("Decision settings require the native decision grading method.");
+      if(type==="catalog" || type==="opik-metric")throw Error("Choose a supported new customer rubric.");
       const method=type==="opik"?"judge":type;
       if(!supportedMethods(brief,literal).includes(method))throw Error("Choose a method supported by the available evidence.");
       checkCriteria(method,criteria,brief,literal);
       return bench.graders.save({intent:source?"derive":"create",...(source && {sourceGraderId:source.id}),
-        type,name,category,criteria,threshold,judgeId,industry,...(type==="opik" && check.requiredEvidence && {requiredEvidence:check.requiredEvidence}),...(type==="opik" && {evidenceView:choice.definition.evidenceView ?? check.evidenceView})},models,null,draft.producer);
+        type,name,category,criteria,threshold,judgeId,industry,...(type==="opik" && {requiredEvidence:required}),...(type==="opik" && {evidenceView:choice.definition.evidenceView ?? scope})},models,null,draft.producer);
     });
     if(new Set(ids).size!==ids.length)throw Error("Remove duplicate graders before confirming.");
     db.prepare("UPDATE grader_design_drafts SET ids=?,approval=? WHERE id=?").run(JSON.stringify(ids),signature,draftId);

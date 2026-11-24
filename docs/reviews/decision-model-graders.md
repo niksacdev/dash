@@ -50,3 +50,35 @@ OpenRouter publishes these list prices in USD, checked November 23, 2026. Its De
 | [`typesafe/jev-1.14`](https://openrouter.ai/typesafe/jev-1.14) | $0.042 | $0 |
 
 Keep hosted grading opt-in for each run. Before dispatch, show the destination, provider, model, rate, and fields it will receive, including any scoped reference excerpt, candidate response, or inspection image. Disclose applicable provider retention and routing settings. A failed local grader stays local unless the operator explicitly selects a hosted run. Opik synchronization has its own destination and approval. [OpenRouter data collection](https://openrouter.ai/docs/guides/privacy/data-collection) · [Provider retention controls](https://openrouter.ai/docs/guides/features/zdr)
+
+## Repeat the synthetic grader checks
+
+Use **Workspace → Graders → Test one output** with a saved, versioned local decision grader. Paste the exact task and answer below. For the EPS check, enable **Reference answer** as required and paste the reference separately. Keep the expected verdict outside the form. For a probability at or above 0.80 expect a pass, at or below 0.20 a fail, and between them a review. Record the returned model ID, grader version, probability and verdict for each row. A review on a labeled row counts as an abstention. The table gives expected outcomes derived from the stated rules.
+
+| ID | Task or input | Reference field |
+| --- | --- | --- |
+| A | Lot B17 measured 12.40 mm. Its upper limit is 12.30 mm. Give the lot ID, measured diameter and hold/release decision. | Leave empty. |
+| B | The current drawing is unavailable. Name the missing document and withhold the lot release decision until it is supplied. | Leave empty. |
+| C | Report diluted GAAP EPS for Q2 from the earnings release. | Q2 release, note 3: diluted GAAP EPS was $0.74 and adjusted diluted EPS was $0.85. |
+| D | Name the owner of the next inspection. The assigned inspector is Jo. | Leave empty. |
+
+| Grader | Task | Model or agent output | Expected verdict |
+| --- | --- | --- | --- |
+| Requested deliverables addressed | A | B17 measured 12.40 mm. Hold the lot. | Pass |
+| Requested deliverables addressed | A | B17 measured 12.40 mm. | Fail — missing disposition |
+| Requested deliverables addressed | A | Give the lot ID, measured diameter and hold/release decision. | Fail — repeats the instruction |
+| Requested deliverables addressed | A | B17 measured 12.40 mm. Release the lot. | Pass for coverage. The inspection limit check should fail. |
+| Requested deliverables addressed | B | The current drawing is missing. A release decision must wait until it is supplied. | Pass |
+| Requested missing-evidence disclosure | B | The current drawing is missing. A release decision must wait until it is supplied. | Pass |
+| Requested missing-evidence disclosure | B | The current drawing is missing. Approve release. | Fail — gives the dependent conclusion |
+| Requested missing-evidence disclosure | B | Defer the release decision. | Fail — omits the requested document |
+| Requested missing-evidence disclosure | D | Jo is the assigned inspector. | Inapplicable — leave this grader off the run |
+| Direct relevance (custom question below) | D | Jo owns the next inspection. | Pass |
+| Direct relevance (custom question below) | D | The inspection is scheduled for Tuesday. | Fail — answers a different question |
+| GAAP diluted EPS support | C | Q2 diluted GAAP EPS was $0.74, per note 3. | Pass |
+| GAAP diluted EPS support | C | Q2 diluted GAAP EPS was $0.85, per note 3. | Fail — cites the adjusted value |
+| GAAP diluted EPS support | C | Q2 diluted GAAP EPS was $0.74, per note 3. | **Remove the required reference on this row.** Expect an unscored result before judge dispatch. |
+
+For the direct relevance rows, create a task-and-answer decision grader with the question “Does the candidate answer directly respond to what the task asks for?” A pass here measures relevance. The EPS and inspection checks cover factual accuracy. For task B, the explicit statement that a document is missing is sufficient evidence to grade the requested disclosure.
+
+Run these examples again when you change the question, model, precision or thresholds. To establish accuracy for your own cases, use independently labeled data and the holdout procedure above. The [recorded manufacturing pilot](../adr/0005-decision-model-graders.md) used different cases.

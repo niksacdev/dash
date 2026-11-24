@@ -3,7 +3,7 @@ import type {MeasureOption} from "./measure-graders.cjs";
 import {decodeAgentPin} from "../agents/registry.cjs";
 import { decisionConfig, observationSchema, protocolSchema, fallbackAttemptSchema, type DecisionConfig } from "./decision-model.cjs";
 import type { ScoredPack, CaseRow } from "./run-types.cjs";
-import {opikMetricKey,opikMetricResult, type OpikMetricKey} from "./opik-library.cjs";
+import {getOpikTemplate,opikMetricKey,opikMetricResult, type OpikMetricKey} from "./opik-library.cjs";
 import type { LocalCandidate } from "./runtime-types.cjs";
 
 export const graderType = z.enum(["contains", "exact", "field", "trajectory", "judge", "opik", "decision", "catalog", "opik-metric"]);
@@ -30,7 +30,7 @@ const base = z.object({
   id:z.string(),name:z.string(),category:z.string(),industry:z.string().default("Unclassified"),criteria:z.string(),version:z.number().int(),
   threshold:z.number().min(0).max(1),opikEngine:z.string().optional(),origin:rubricOrigin.optional(),library:graderLibrary.optional(),producer:graderProducer.optional(),
 });
-export const rubricEvidenceView=z.enum(["answer-only","case"]);
+export const rubricEvidenceView=z.enum(["case","task-answer","answer-only"]);
 const evidenceRequirement = z.enum(["reference","trajectory"]);
 export const requiredEvidence = z.array(evidenceRequirement).max(2)
   .refine(values => new Set(values).size === values.length, "Choose each evidence requirement once.");
@@ -40,12 +40,22 @@ export const decisionSettings = z.object({
 export const savedGrader = z.union([
   base.extend({type:z.literal("catalog"),ruleKey:z.string().min(1),ruleVersion:z.number().int().positive(),judge:z.null()}),
   base.extend({type:z.literal("opik-metric"),metricKey:opikMetricKey,judge:judgeModel}),
-  base.extend({type:z.literal("decision"),judge:z.null(),decision:decisionConfig,requiredEvidence:requiredEvidence.optional()})
+  base.extend({type:z.literal("decision"),judge:z.null(),decision:decisionConfig,decisionView:rubricEvidenceView.optional(),requiredEvidence:requiredEvidence.optional()})
     .refine(g => g.decision.failAt < g.threshold, "Invalid decision cutoffs."),
   base.extend({type:z.enum(["judge","opik"]),judge:judgeModel,requiredEvidence:requiredEvidence.optional(),evidenceView:rubricEvidenceView.optional()}),
   base.extend({type:z.enum(["contains","exact","field","trajectory"]),judge:z.null()}),
 ]);
 export type GraderSpec = z.infer<typeof savedGrader>;
+export function graderEvidenceView(source:GraderSpec|undefined) {
+  return source?.type==="decision" ? source.decisionView : source?.type==="opik" ? source.evidenceView : undefined;
+}
+export function graderRequiredEvidence(source:GraderSpec|undefined):("reference"|"trajectory")[] {
+  if(source?.type==="opik" || source?.type==="decision")return source.requiredEvidence ?? [];
+  if(source?.type==="trajectory")return ["trajectory"];
+  if(source?.type==="field" || (source?.type==="catalog" && source.library?.scenario) ||
+    (source?.type==="opik-metric" && getOpikTemplate(source.metricKey).requiresReference))return ["reference"];
+  return [];
+}
 const inputSource = z.enum(["recorded-dispatch", "reconstructed-case", "fixture-case"]);
 export interface GraderEvidence {
   quickOutputSchema?:import("./quick-structure.cjs").QuickOutputSchema;
@@ -80,7 +90,7 @@ interface DefinitionFields {
   intent?:"create"|"derive"|"revise";sourceGraderId?:string;evidenceView?:z.infer<typeof rubricEvidenceView>;
 }
 export type GraderDefinition = DefinitionFields & (
-  | {type:"decision"; judgeId?:null; decision:DecisionConfig; requiredEvidence?:z.infer<typeof evidenceRequirement>[]}
+  | {type:"decision"; judgeId?:null; decision:DecisionConfig; decisionView?:z.infer<typeof rubricEvidenceView>; requiredEvidence?:z.infer<typeof evidenceRequirement>[]}
   | {type:"catalog";ruleKey?:string;ruleVersion?:number;judgeId?:null}
   | {type:"opik-metric";metricKey:OpikMetricKey;judgeId?:string|null}
   | {type:"opik"; judgeId?:string|null; requiredEvidence?:z.infer<typeof evidenceRequirement>[]}

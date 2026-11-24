@@ -4,6 +4,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { z } from "opik";
 import { DecisionDispatchError, decisionConfig, evaluateDecision, listLocalDecisionModels, type DecisionConfig } from "../lib/decision-model.cjs";
 
+import { Bench } from "../lib/bench.cjs";
+import { designGraderPlan, confirmGraderPlan } from "../lib/grader-designer.cjs";
+import {opikJudgeRequest} from "./opik-judge-fixture.cjs";
+import { inventory, reply, present } from "./runtime-fixtures.cjs";
+import type {LocalCandidate,RuntimeAdapters} from "../lib/runtime-types.cjs";
+
 const model = "synthetic/decision";
 const entry = { id: model, architecture: { output_modalities: ["decisions"] } };
 const evidence = {
@@ -337,4 +343,106 @@ test("a systemone alternate is selected solely by unambiguous preflight and a fa
   catalog = [{id:alternate}];
   await assert.rejects(evaluateDecision(config,.8,criterion,evidence,signal()),/advertised as decision-capable/);
   assert.deepEqual(posted,[alternate,alternate,model]);
+});
+
+test("reviewed binary grading pins a discovered model separately from the designer and bounds candidate evidence", async t=>{
+  const marker="QA-WITHHELD-REFERENCE", alternate="synthetic/decision-two", chat="synthetic/chat";
+  const observed:{model:string;state:Record<string,unknown>}[]=[];
+  const endpoint=await listen(t,async(req,res)=>{
+    if(req.method==="GET")return json(res,{data:[entry,{id:alternate,output_modalities:["decisions"]},{id:chat,output_modalities:["text"]}]});
+    const request=z.object({model:z.string(),state:z.string()}).parse(await body(req));
+    const state=z.record(z.string(),z.unknown()).parse(JSON.parse(request.state));
+    observed.push({model:request.model,state});
+    // Explicit synthetic verdicts exercise serialization and cutoffs; this transport is not a calibrated judge.
+    const p=state.output==="Lot A. Hold for inspection."?.98:state.output==="Lot A."?.08:.5;
+    json(res,native(p,request.model));
+  });
+  const planner:LocalCandidate={kind:"model",id:"ollama/lfm3-sim",provider:"ollama",model:"lfm3-sim",loaded:true};
+  const servers=[inventory([planner])];
+  const anchors={full:"Names the lot and the required action.",partial:"Names one of the two.",zero:"Names neither.",evidence:"response"};
+  let reuseName:string|undefined;
+  const adapters:RuntimeAdapters={discover:async()=>servers,invoke:async(_model,messages)=>{
+    if(reuseName){
+      const request=z.object({catalog:z.array(z.object({option:z.string(),name:z.string()}))}).parse(JSON.parse(present(messages.at(-1)).content));
+      const source=present(request.catalog.find(g=>g.name===reuseName));
+      return reply(JSON.stringify({M1:{choice:source.option,reason:"Reuse the saved handoff check."}}));
+    }
+    return reply(JSON.stringify({M1:{choice:"NEW:judge",anchors,name:"Handoff",criteria:"Check the two requested deliverables.",threshold:.8,reason:"Read the generated handoff."}}));
+  }};
+  const b=new Bench(":memory:",adapters);b.servers=servers;t.after(()=>b.db.close());
+  const plan=await designGraderPlan(b,{objective:"Identify the inspected lot and state the next action.",metrics:"Handoff completeness."});
+  const g=present(plan.checks[0]),cfg={provider:"local",protocol:"systemone",endpoint,model:alternate,failAt:.2};
+  const newCheck={name:"Handoff coverage",category:"Coverage",type:"decision",criteria:"Does the answer identify the lot and state the next action?",threshold:.8,decision:cfg,decisionView:"task-answer"};
+  const confirm=(definition:unknown)=>confirmGraderPlan(b,{draftId:plan.draftId,choices:[{index:0,action:"create",definition}]});
+  assert.throws(()=>confirm(newCheck),/Find decision models/);
+  assert.deepEqual(await b.graders.discoverDecisionModels(endpoint),[model,alternate]);
+  assert.throws(()=>confirm({...newCheck,criteria:g.criteria}),/yes\/no criterion/);
+  assert.throws(()=>confirm({...newCheck,decision:{...cfg,model:chat}}),/Find decision models/);
+  const manual=b.graders.save({...newCheck,name:"Manually configured legacy alias",industry:"Cross-industry",decision:{...cfg,model:chat},decisionView:undefined},[]);
+  assert.throws(()=>b.graders.save({intent:"derive",sourceGraderId:manual,decisionView:"case",confirmNative:true},[]),/Find decision models/);
+  const [id]=confirm(newCheck),version=b.graders.get(id);
+  assert.deepEqual(confirm(newCheck),[id]);
+  assert.ok(version.type==="decision");assert.equal(version.decision.model,alternate);
+  assert.equal(version.decisionView,"task-answer");assert.equal(version.producer?.model.model,planner.model);
+  for(const [output,expected] of [["Lot A. Hold for inspection.",1],["Lot A.",0],["Maybe.",null]] as const){
+    const score=await b.graders.assess(version,{input:"Identify the lot and next action.",output,reference:marker,rubric:marker},adapters,signal());
+    assert.equal(score.value,expected);assert.equal(score.pass,expected===null?null:expected===1);
+    assert.equal(score.decision?.actualModel,alternate);
+    assert.deepEqual(observed.at(-1),{model:alternate,state:{input:"Identify the lot and next action.",output}});
+  }
+  const noTask=await b.graders.assess(version,{input:"",output:"Lot A.",reference:null},adapters,signal());
+  assert.equal(noTask.value,null);assert.equal(observed.length,3);
+  const revisedId=b.graders.save({intent:"revise",sourceGraderId:id,decision:{...cfg,model},decisionView:"case",requiredEvidence:["reference"]},[]);
+  const revised=b.graders.get(revisedId);assert.equal(revised.version,2);
+  const missing=await b.graders.assess(revised,{input:"Grade this",output:"Lot A.",reference:null},adapters,signal());
+  assert.equal(missing.value,null);assert.match(missing.reason,/reference/);assert.equal(observed.length,3);
+  await b.graders.assess(revised,{input:"Grade this",output:"Lot A.",reference:marker,rubric:"Check lot and action"},adapters,signal());
+  assert.deepEqual(observed.at(-1)?.state,{input:"Grade this",output:"Lot A.",reference:marker,rubric:"Check lot and action"});
+  const answerOnlyId=b.graders.save({intent:"revise",sourceGraderId:revisedId,decisionView:"answer-only",requiredEvidence:[]},[]);
+  await b.graders.assess(b.graders.get(answerOnlyId),{input:marker,output:"Lot A.",reference:marker},adapters,signal());
+  assert.deepEqual(observed.at(-1),{model,state:{output:"Lot A."}});
+  const opikEvidence:Record<string,unknown>[]=[];
+  let opikCalls=0;
+  const judgeAdapter:RuntimeAdapters={...adapters,invoke:async(_m,messages)=>{
+    opikCalls++;
+    const request=opikJudgeRequest(messages);
+    if(request?.stage==="geval-steps")return reply("Inspect only the evidence supplied.");
+    assert.ok(request?.stage==="geval-score");opikEvidence.push(request.evidence);
+    return reply('{"score":10,"reason":"The response includes the lot ID and action."}');
+  }};
+  reuseName=newCheck.name;
+  const copy=await designGraderPlan(b,{objective:"Audit the handoff",metrics:"Handoff completeness"});
+  assert.equal(copy.checks[0].source?.id,answerOnlyId);assert.equal(copy.checks[0].evidenceView,"answer-only");
+  // A draft from the previous release lacks evidenceView. Confirm against the saved source.
+  b.db.prepare("UPDATE grader_design_drafts SET draft=json_remove(draft,'$.checks[0].evidenceView') WHERE id=?").run(copy.draftId);
+  const [derived]=confirmGraderPlan(b,{draftId:copy.draftId,choices:[{index:0,action:"derive",definition:{
+    type:"opik",name:"Reviewed handoff",category:"Coverage",criteria:"Read the reported action.",threshold:.8,judgeId:planner.id}}]});
+  const oldPlanCopy=b.graders.get(derived);assert.ok(oldPlanCopy.type==="opik");assert.equal(oldPlanCopy.evidenceView,"answer-only");
+  await b.graders.assess(oldPlanCopy,{input:marker,output:"Lot A.",reference:marker,rubric:marker},judgeAdapter,signal());
+  assert.deepEqual(opikEvidence.at(-1),{output:"Lot A."});
+  for(const [source,view,expected] of [[id,"task-answer",{input:"QA-TASK",output:"Lot A."}],[answerOnlyId,"answer-only",{output:"Lot A."}]] as const){
+    const opikId=b.graders.save({intent:"derive",sourceGraderId:source,name:"Review "+view,type:"opik",judgeId:planner.id},[planner]);
+    const opik=b.graders.get(opikId);assert.ok(opik.type==="opik");assert.equal(opik.evidenceView,view);
+    await b.graders.assess(opik,{input:"QA-TASK",output:"Lot A.",reference:marker,rubric:marker},judgeAdapter,signal());
+    assert.deepEqual(opikEvidence.at(-1),expected);
+    const back=b.graders.save({intent:"derive",sourceGraderId:opikId,name:"Binary "+view,type:"decision",decision:cfg},[]);
+    await b.graders.assess(b.graders.get(back),{input:"QA-TASK",output:"Lot A.",reference:marker,rubric:marker},adapters,signal());
+    assert.deepEqual(observed.at(-1)?.state,expected);
+    const missing={input:null,output:"Lot A.",reference:marker};
+    const prior:readonly [number,number]=[opikCalls,observed.length];
+    const absent=await Promise.all([b.graders.assess(opik,missing,judgeAdapter,signal()),b.graders.assess(b.graders.get(back),missing,adapters,signal())]);
+    if(view==="task-answer"){
+      for(const result of absent){assert.equal(result.value,null);assert.equal(result.pass,null);assert.match(result.reason,/candidate task.*unscored/);}
+      assert.deepEqual([opikCalls,observed.length],prior,"Neither backend may dispatch any request without the required task");
+    }else{
+      assert.ok(absent.every(result=>result.value!==null));assert.ok(opikCalls>prior[0] && observed.length>prior[1]);
+    }
+  }
+  const hallucination=b.graders.save({intent:"create",name:"Source grounding",type:"opik-metric",metricKey:"hallucination",industry:"Cross-industry",category:"Grounding",judgeId:planner.id,threshold:.8},[planner]);
+  assert.throws(()=>b.graders.save({intent:"derive",sourceGraderId:hallucination,name:"Grounding binary",type:"decision",decision:cfg,requiredEvidence:[],decisionView:"task-answer"},[]),/requires a reference/);
+  const keyed=b.graders.save({intent:"derive",sourceGraderId:hallucination,name:"Grounding binary",type:"decision",decision:cfg,requiredEvidence:[],decisionView:"case"},[]);
+  const prior=observed.length;
+  const noSource=await b.graders.assess(b.graders.get(keyed),{input:"Grade this",output:"Lot A.",reference:null},adapters,signal());
+  assert.equal(noSource.pass,null);assert.equal(observed.length,prior);
+  assert.deepEqual(b.graders.get(id),version);
 });
