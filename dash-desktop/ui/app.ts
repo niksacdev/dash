@@ -39,8 +39,8 @@ function readFailure(label:string,error:unknown,button:string) {
 }
 let visit=0;
 function currentVisit() {
-  const started=visit,hash=location.hash;
-  return ()=>started===visit && hash===location.hash;
+  const started=visit;
+  return ()=>started===visit;
 }
 function isRecord(value:unknown):value is Record<string,unknown> {return value!==null && typeof value==="object" && !Array.isArray(value);}
 function isRunMode(value:unknown):value is UiMode { return value==="quick" || value==="dataset"; }
@@ -119,7 +119,7 @@ function message(s:string) {
   toastTimer = setTimeout(() => ($("#msg").hidden = true), 6500);
 }
 function trail() {
-  return (location.hash.slice(1) || "home").split("/");
+  return (visibleHash.slice(1) || "home").split("/");
 }
 function dataset() {
   const ds = state.datasets.filter((d) => d.pack === packId);
@@ -884,11 +884,11 @@ function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.part
   },failures ? 1000 * 2**(failures-1) : 220);
 }
 let renderedLocation:string|null=null;
-async function render() {
+async function render(discardEdits=false) {
   const seq = ++token;
   clearTimeout(poll);
   const [route, id, rec] = trail();
-  const place=location.hash;
+  const place=visibleHash;
   const screen=$("#screen"), replacing=renderedLocation!==place;
   if(replacing){
     current=null;
@@ -980,8 +980,16 @@ async function render() {
       document.querySelectorAll("details[open]:not([data-own-open]) > summary"),
       (el) => el.textContent,
     );
+    const decision=navigationDecisionResult;
+    if(!replacing && decision) {
+      const left=await decision;
+      // The original action owns the destination. Reconcile the latest held paint on Stay
+      // or after an action that leaves the operator on this page.
+      if(seq===token && visibleHash===place && (!left || location.hash===place))await render(discardEdits);
+      return;
+    }
     renderedLocation=place;
-    screen.innerHTML = html;
+    paintWorkspace(screen,html,!replacing && !discardEdits);
     if(route==="graders")applyCatalogFilter();
     if (route==="compare") {scheduleBudgetPreview();focusReturnedQuickControl();}
     if (editing) {
@@ -1105,15 +1113,27 @@ document.addEventListener("click", async (e) => {
         if(stillHere())await render();
       }
     }
-    if (act === "cancel-import") { importDraft = null; await render(); }
+    if (act === "cancel-import" && await allowPageReplacement("Discard import metadata") && stillHere()) { importDraft = null; await render(true); }
     if (act === "import") {
       if (!api.commitImport) throw Error("Reopen DASH to register a dataset with metadata.");
-      const draft = await api.import(dashElement("#catalog-pack",HTMLSelectElement)?.value || packId);
-      if (draft) {
-        importDraft = draft;
-        await render();
-        dashElement("#catalog-import [name=family]",HTMLInputElement)?.focus();
-      }
+      if(importPicking || document.querySelector("#catalog-import[data-nav-saving]"))return;
+      const prior=document.querySelector<HTMLFormElement>("#catalog-import");
+      if(prior && !await allowPageReplacement("Choose another file","",prior))return;
+      if(!stillHere())return;
+      const pack=dashElement("#catalog-pack",HTMLSelectElement)?.value || packId;
+      importPicking=true;
+      const unlock=prior && lockNavigationWrite(prior);
+      try {
+        const draft=await api.import(pack);
+        if(draft) {
+          importDraft=draft;
+          if(prior)forgetNavigationEdits(prior);
+          if(stillHere()){
+            await render(true);
+            dashElement("#catalog-import [name=family]",HTMLInputElement)?.focus();
+          }
+        }
+      }finally{importPicking=false;unlock?.();}
     }
     if (act === "stop") {
       await api.stop(id);
@@ -1144,14 +1164,14 @@ document.addEventListener("click", async (e) => {
     el.disabled = false;
   }
 });
-window.addEventListener("hashchange", () => {
+function finishWorkspaceNavigation() {
   visit++;
   clearBudgetPreviews();
   baseline = "";
   render();
   window.scrollTo(0, 0);
   $("#screen").focus({ preventScroll: true });
-});
+}
 async function bootWorkspace() {
   const stillHere=currentVisit();
   await render();
@@ -1162,7 +1182,7 @@ async function bootWorkspace() {
     recoverQuickLineup(workflows.quick.approved);
     if (!stillHere() && trail()[0]==="compare") await render();
   }
-  if(!stillHere())return;
+  if(!stillHere() || navigationLoss())return;
   clearBudgetPreviews();
   const route = trail()[0];
   const count = document.getElementById("overview-loaded-models");

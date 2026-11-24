@@ -6,6 +6,11 @@ The **AI Industry Graders** step in the Overview uses versions from **Workspace 
 
 Open **Workspace → Graders**. **Create a grader** stays at the top. The **Industry catalogue** groups the shipped checks under Financial Services and Manufacturing. Each card shows a short description and the saved version. Hover over a card, focus **Details** with the keyboard, or tap **Details** to read its criterion and pass threshold.
 
+When you enter from **Choose graders** in Quick compare, **Back to evaluation setup** returns to the approved prompt with its selected lanes and attached grader versions. A measure selection takes effect when you attach it. If you leave with an unapplied assignment, **Stay here** lets you finish it.
+
+When you edit a manual grader or type a new answer for an industry case or a single-output test, DASH asks before navigation discards those edits. Choose **Stay here** to keep typing, or discard the edits to open the destination. An assessment you already submitted continues while you browse. Its result appears under **Test one output**.
+
+
 - **Test** lets you pick a compatible dataset snapshot and case, inspect the source and expected response format, and paste an answer. Scoring uses the selected case and rubric and returns its score and explanation. An earlier model run is optional.
 - **Use in Run** carries the exact grader version into Dataset run. Choose your candidates and press **GO** when ready.
 - **Create Version** opens an editable copy of a shipped grader. Save it to **My Graders**. Earlier run reports keep the revision they used.

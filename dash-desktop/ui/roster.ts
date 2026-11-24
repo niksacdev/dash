@@ -262,11 +262,12 @@ document.addEventListener("submit",async e=>{
   e.preventDefault();
   const f=e.target;
   const submit=f.querySelector<HTMLButtonElement>('button[type="submit"],button:not([type])'),stillHere=currentVisit();
-  if (!submit || submit.disabled)return;
-  submit.disabled=true;f.querySelector(":scope > [data-action-error]")?.remove();
+  if (!submit || submit.disabled || f.hasAttribute("data-nav-saved"))return;
+  const body={section:formText(f,"section"),model:formText(f,"model"),baseUrl:formText(f,"baseUrl"),key:formText(f,"key")};
+  const unlock=lockNavigationWrite(f);f.querySelector(":scope > [data-action-error]")?.remove();
   try {
-    await api.saveEndpoint({section:formText(f,"section"),model:formText(f,"model"),baseUrl:formText(f,"baseUrl"),key:formText(f,"key")});
+    try{await api.saveEndpoint(body);}finally{unlock();}
+    consumeSavedForm(f);
     if(stillHere()){await render();message("Model endpoint saved.");}
   } catch(error){inlineError(f,error);}
-  finally{submit.disabled=false;}
 });

@@ -111,10 +111,10 @@ function quickLibraryBanner() {
     const model=rosterModels().find(m=>m.id===id);
     return model ? displayModel(model.model) : id ? "Model unavailable" : "Open lane";
   });
-  return '<nav class="panel" aria-label="Quick comparison setup">'+link("← Back to Quick compare","compare","link")+
-    '<h2>'+esc(prompt.title || prompt.objective)+' · v'+esc(prompt.version)+'</h2><p>'+esc(prompt.domain)+
+  return '<nav class="panel qc-return" aria-label="Quick comparison setup">'+link("← Back to evaluation setup","compare","button")+
+    '<div><h2>'+esc(prompt.title || prompt.objective)+' · v'+esc(prompt.version)+'</h2><p>'+esc(prompt.domain)+
     (names?' · '+esc(names.join(" / ")):'')+'</p>'+
-    (plan?.error?quickGraderFailure(plan):plan?.options?'<small role="status">'+attached.size+' saved grader '+(attached.size===1?'version':'versions')+' attached</small>':'')+'</nav>';
+    (plan?.error?quickGraderFailure(plan):plan?.options?'<small role="status">'+attached.size+' saved grader '+(attached.size===1?'version':'versions')+' attached</small>' :'')+'</div></nav>';
 }
 function quickLibraryUnavailable(g:UiGrader,options:UiQuickOptions) {
   if (needsGraderReference(g)) return "Requires a labeled dataset with a reference answer.";
@@ -213,7 +213,7 @@ async function quickLibraryAction(button:HTMLButtonElement,host:HTMLElement,g:Ui
     }
     if (quickGraderCount(quickGradePayload(next))>8) throw Error("Choose up to eight distinct graders. Remove one before attaching another.");
     quickGradingPlans.set(prompt.id,next);
-    rememberQuickGraders(next,prompt.id);
+    rememberQuickGraders(next,prompt.id);forgetNavigationEdits(scope);
     if (button.hasAttribute("data-quick-confirm")) location.hash="compare";
     else {await render();document.querySelector<HTMLElement>('[data-use-version="'+CSS.escape(g.id)+'"] [data-quick-attach]')?.focus({preventScroll:true});}
   } catch(err) {

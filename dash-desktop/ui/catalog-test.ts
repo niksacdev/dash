@@ -87,7 +87,8 @@ async function openIndustryTest(button:HTMLButtonElement,host:HTMLElement,grader
     finally{attempt.pending=false;fields.disabled=false;form.removeAttribute("aria-busy");ready();}
   }
   snapshots.onchange=()=>{void loadCases();};cases.onchange=chooseCase;output.oninput=resetResult;
-  $("[data-close-test]",form).onclick=()=>{
+  $("[data-close-test]",form).onclick=async()=>{
+    if(!await allowPageReplacement("Discard answer and close","",form) || !present())return;
     if(industryTestAttempt?.input.grader===grader.id && !industryTestAttempt.pending)industryTestAttempt=null;
     target.replaceChildren();target.hidden=true;button.focus();
   };
@@ -95,6 +96,7 @@ async function openIndustryTest(button:HTMLButtonElement,host:HTMLElement,grader
     e.preventDefault();if(score.disabled || !form.reportValidity())return;
     if(industryTestAttempt?.pending){result.textContent="A case test is being saved. Try again when it finishes.";return;}
     const input={grader:grader.id,datasetId:snapshots.value,caseId:cases.value,output:output.value};
+    forgetNavigationEdits(form);
     industryTestAttempt={input,result:api.assess(input),pending:true};void showAssessment(industryTestAttempt);
   };
   result.textContent="Finding compatible snapshots…";

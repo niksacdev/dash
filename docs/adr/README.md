@@ -57,6 +57,7 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0030 · Local decision defaults](0030-local-decision-defaults.md) | Proposed | Allow a cross-industry local decision revision to score both candidates on new runs and preserve earlier pins. | [Grader workflow](../reviews/grader-library.md) |
 | 2026-11-24 | [0031 · Keep the Quick evaluation draft](0031-quick-evaluation-setup.md) | Proposed | Carry the approved prompt, models and grader versions through a catalogue round trip. | [Acceptance scenario](../reviews/outcome-workflow.md#finish-a-quick-evaluation-after-approving-the-prompt) |
 | 2026-11-24 | [0031 · Keep the Quick evaluation draft](0031-quick-evaluation-setup.md) | Accepted | Nik requested selecting graders for the active draft, visible setup and execution progress, and an explanation of the schema sent to the models. | [Operator guide](../reader/src/models.md) |
+| 2026-11-24 | [0032 · Protect workflow navigation](0032-workflow-navigation.md) | Proposed | Return to the active Quick setup, preserve ordinary detours and confirm destructive navigation. | [Navigation scenario](../reviews/outcome-workflow.md#return-from-grader-selection-and-protect-unsaved-edits) |
 
 ## Maintaining the history
 

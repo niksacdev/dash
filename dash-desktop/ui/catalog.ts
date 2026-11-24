@@ -1,5 +1,6 @@
 "use strict";
 let importDraft: UiImportDraft | null = null;
+let importPicking=false;
 let importPack = "";
 let catalogSearch = "";
 let catalogIndustry = "All industries";
@@ -16,7 +17,7 @@ function importForm(draft: UiImportDraft) {
   const peers=state.datasets.filter(d=>d.pack===draft.pack);
   const options=(items: string[])=>[...new Set(items)].map(v=>'<option value="'+esc(v)+'"></option>').join("");
   const field=(label: string,input: string)=>'<label class="field"><span>'+label+'</span>'+input+'</label>';
-  return '<form class="panel catalog-import" id="catalog-import"><h2>Catalog this version</h2><p>'+esc(draft.name)+' · '+esc(draft.version)+' · '+esc(draft.split)+' · '+draft.count+' cases</p>'+
+  return '<form class="panel catalog-import" id="catalog-import" data-import-token="'+esc(draft.token)+'"><h2>Catalog this version</h2><p>'+esc(draft.name)+' · '+esc(draft.version)+' · '+esc(draft.split)+' · '+draft.count+' cases</p>'+
     field('Industry','<input name="industry" required list="industry-list" maxlength="100" value="'+esc(catalogIndustry==="All industries"?"":catalogIndustry)+'" placeholder="Choose or enter an industry"><datalist id="industry-list">'+industryOptions("")+'</datalist>')+
     '<div class="cols">'+field('Dataset family','<input name="family" required list="family-names" maxlength="160" placeholder="Choose an existing family or name a new one">')+
     field('Category','<input name="category" required list="category-names" maxlength="100" placeholder="e.g. Financial extraction">')+'</div>'+
@@ -33,7 +34,7 @@ function parentOptions(form: HTMLFormElement) {
   const note = form.elements.namedItem("changeNote");
   const category = form.elements.namedItem("category");
   const draft = importDraft;
-  if (!(select instanceof HTMLSelectElement) || !draft) return;
+  if (!(select instanceof HTMLSelectElement) || !draft || form.dataset.importToken!==draft.token) return;
   const family = formText(form, "family");
   const industry = formText(form, "industry");
   const old = select.value;
@@ -82,7 +83,7 @@ document.addEventListener("input", e => {
   if (e.target.id === "catalog-search") {catalogSearch=e.target.value;filterCatalog();}
   if ((e.target.name === "family" || e.target.name === "industry") && e.target.form?.id === "catalog-import") parentOptions(e.target.form);
 });
-document.addEventListener("change", e => {
+document.addEventListener("change", async e => {
   if (!(e.target instanceof HTMLSelectElement)) return;
   if (e.target.name === "parentId" && e.target.form?.id === "catalog-import") {
     const note = e.target.form.elements.namedItem("changeNote");
@@ -95,7 +96,10 @@ document.addEventListener("change", e => {
     else document.querySelector("#dataset-detail")?.setAttribute("hidden","");
   }
   if (e.target.id === "catalog-pack") {
-    importPack=e.target.value;importDraft=null;void render();
+    const select=e.target,prior=importPack || dataset()?.pack || "",next=select.value;
+    if(!await allowPageReplacement("Discard and change scenario")){select.value=prior;return;}
+    if(!select.isConnected)return;
+    importPack=next;importDraft=null;void render(true);
   }
 });
 document.addEventListener("submit", async e => {
@@ -104,7 +108,8 @@ document.addEventListener("submit", async e => {
   const form = e.target;
   const draft = importDraft;
   const submit = form.querySelector<HTMLButtonElement>("[type=submit]");
-  if (!submit || submit.disabled || !draft) return;
+  if (!submit || submit.disabled || importPicking || form.hasAttribute("data-nav-saved"))return;
+  if (!draft || form.dataset.importToken!==draft.token) {inlineError(form,Error("This metadata form is for a different file. Choose your dataset again."));return;}
   const stillHere=currentVisit();
   form.querySelector(":scope > [data-action-error]")?.remove();
   const values: UiCommitImport = {
@@ -116,13 +121,14 @@ document.addEventListener("submit", async e => {
     parentId: formText(form, "parentId") || null,
     tags: formText(form, "tags").split(",").map(tag => tag.trim()).filter(Boolean)
   };
-  submit.disabled=true;
+  const unlock=lockNavigationWrite(form);
   try {
     const id=await api.commitImport(draft.token,values);
+    consumeSavedForm(form);
     if(importDraft===draft)importDraft=null;
     if(!stillHere())return;
     packId=draft.pack;catalogSearch="";datasetId=id;
     if(location.hash==="#datasets/"+id)await render();else location.hash="datasets/"+id;
     message("Dataset version saved.");
-  } catch(error) {inlineError(form,error);} finally {submit.disabled=false;}
+  } catch(error) {inlineError(form,error);} finally {unlock();}
 });
