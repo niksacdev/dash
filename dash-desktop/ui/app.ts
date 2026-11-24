@@ -683,6 +683,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
   if (live && run.partial?.stage) out += '<p role="status">'+esc(run.partial.stage)+' is reviewing the recorded scores…</p>';
   if (m.guardrailFailure) out += guardrailDetails(m.guardrailFailure);
   if (!live) out += evaluationReport(run);
+  if (!live) out += structuredOutputSummary(run);
   out += workflowRunSummary(m, run.status);
   if (!live) out += bar("Performance") + performanceCharts(await runPerformance(id, run));
   if (m.fixture) out += '<p class="muted">These results show how the grader handled saved answers. Choose models in Dataset run to evaluate the saved cases live.</p>';

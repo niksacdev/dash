@@ -52,7 +52,7 @@ export function reasoningPolicy(candidate: Candidate, { mode, outputCap, structu
     if (mode === "quick" && positive(outputCap) && outputCap <= 1024) return "thinking disabled for short answer";
     return structured ? "zero reasoning-token budget requested" : "runtime default";
   }
-  return structured && candidate.nativeChat ? "off" : "runtime default";
+  return mode === "dataset" && structured && candidate.nativeChat ? "off" : "runtime default";
 }
 
 export function prepareInput(messages: ChatTurn[], serializedCaseInput: boolean): { messages: ChatTurn[]; optimization: InputOptimization } {

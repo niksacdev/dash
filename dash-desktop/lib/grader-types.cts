@@ -48,6 +48,7 @@ export const savedGrader = z.union([
 export type GraderSpec = z.infer<typeof savedGrader>;
 const inputSource = z.enum(["recorded-dispatch", "reconstructed-case", "fixture-case"]);
 export interface GraderEvidence {
+  quickOutputSchema?:import("./quick-structure.cjs").QuickOutputSchema;
   input:unknown; reference:unknown; output:string; inputSource?:z.infer<typeof inputSource>;
   finishReason?:string|null; caseContext?:{pack:ScoredPack;row:CaseRow};
   trajectory?:readonly unknown[]; rubric?:string; sme_rationale?:string;

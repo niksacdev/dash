@@ -79,6 +79,7 @@ export type PlanningProgress =
   | {phase:"generating";approximateOutputTokens:number};
 export interface InvokeOptions {
   onPlanningProgress?: (progress:PlanningProgress) => void;
+  strictSchema?:boolean;
   signal: AbortSignal;
   structured?: OutputSchema | null;
   onText?: (text: string) => void;

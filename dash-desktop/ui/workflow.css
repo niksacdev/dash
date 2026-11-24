@@ -126,3 +126,12 @@ aside {overflow-y:auto}
   .ai-pulse i:nth-child(3) {animation-delay:300ms}
 }
 @keyframes planning-pulse {0%,70%,100% {opacity:.45} 35% {opacity:1;transform:translateY(-2px)}}
+
+.wf-json-toggle {display:flex;align-items:flex-start;gap:.65rem;margin:.25rem 0 1.25rem;cursor:pointer}
+.wf-json-toggle input {width:1rem;height:1rem;margin:.15rem 0 0;accent-color:var(--accent)}
+.wf-json-toggle span {font-weight:600}
+.wf-json-toggle small {display:block;margin-top:.15rem;font-weight:400;color:var(--muted)}
+.wf-json-field textarea,.wf-json-preview pre {font-family:var(--mono)}
+.wf-json-field + .wf-hint {margin:-.5rem 0 1rem}
+.wf-json-preview pre {white-space:pre-wrap;overflow-wrap:anywhere}
+.wf-structure-result p {color:var(--muted)}

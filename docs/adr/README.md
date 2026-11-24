@@ -52,6 +52,8 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0027 · Explicit local SDK loading](0027-lm-studio-sdk-load.md) | Accepted | Nik requested using the SDK for local model management. Each explicit load has a bounded SDK connection so a later refresh cannot send a queued load. | [Model guide](../reader/src/models.md) |
 | 2026-11-24 | [0028 · Map measures to graders](0028-measure-grader-mapping.md) | Proposed | Make approved measure coverage explicit before inference and compare both answers using the same pinned versions. | [Acceptance scenario](../reviews/outcome-workflow.md) |
 | 2026-11-24 | [0028 · Map measures to graders](0028-measure-grader-mapping.md) | Accepted | Nik requested an explicit link from an approved measure and its success condition to the grader used for both models and their reported scores. | [Operator guide](../reader/src/results.md) |
+| 2026-11-24 | [0029 · Approve a JSON contract](0029-approved-json-contract.md) | Proposed | Review one task input and candidate response schema, pin them for both lanes and score conformance separately from content. | [Operator walkthrough](../reader/src/models.md#request-structured-json) |
+| 2026-11-24 | [0029 · Approve a JSON contract](0029-approved-json-contract.md) | Accepted | Nik requested opt-in, reviewable JSON input and output contracts for Quick compare. | [Implementation](../../dash-desktop/lib/quick-structure.cts) |
 
 ## Maintaining the history
 

@@ -25,7 +25,9 @@ interface UiReviewEvidence {
 }
 interface UiPlanningReview { omitted:number; reasons:string[]; supplementSource?:string }
 interface UiPriorRun {id:string; candidates:{candidate:string;responses:number;errors:number;passed:number;scored:number}[]; graders:{grader:string;version:number;candidate:string;passed:number;scored:number}[]}
+interface UiTaskInput {task:string;inputs:Record<string,string>}
 interface UiPrompt extends UiTokenCaps, UiReviewEvidence {
+  input?:UiTaskInput;outputSchema?:Record<string,unknown>;
   promptRationale?:{original:string;addition:string;reason:string};
   mode:UiMode; objective:string; domain:string; requestedMetrics?:string; title:string; prompt:string; metrics:string[]; requirements:string[];
   datasetId?:string|null; dataset?:UiPack|null; domainSource?:string; agents?:Pick<UiRole,"domain"|"role"|"version"|"sources">[]; designer?:UiModelIdentity|null;
@@ -38,14 +40,16 @@ interface UiSuggestion extends UiReviewEvidence {id:string; planningAttempts?:Ui
 interface UiWorkflow {
   mode:UiMode; objective:string; metrics:string; domain:string; inputCap:string; outputCap:string;
   datasetId:string; parentId:string|null; sourceRunId:string|null; draft:UiDraft|null; approved:UiApproved|null;
+  structuredOutput?:boolean;reviewInput?:string;reviewSchema?:string;
   reviewPrompt:string; reviewMetrics:string; suggestion:UiSuggestion|null; chosenMetrics:string|null; criteria:string;
   busy:string; error:string; activity?:{requestId:string; startedAt?:number; calls:UiPlanningAttempt[]}; variant?:boolean; caseJudgeId?:string;
 }
 interface UiDesignInput extends UiTokenCaps {
+  structuredOutput?:boolean;
   mode:UiMode; requestId?:string; objective:string; metrics:string; domain?:string; datasetId?:string; parentId?:string; sourceRunId?:string;
   measures?:{metrics:string[];criteria:string[]}; suggestionId?:string;
 }
-interface UiApproval {draftId:string; prompt:string; metrics:string[]}
+interface UiApproval {draftId:string; prompt:string; metrics:string[];input?:Record<string,unknown>;outputSchema?:Record<string,unknown>}
 type UiDecisionEvidence = "reference" | "trajectory";
 type UiDecisionProtocol = "systemone" | "mlx-vlm";
 interface UiDecisionConfig {protocol?:UiDecisionProtocol;fallbackModel?:string;provider:"local"|"openrouter";endpoint?:string;model:string;failAt:number}
@@ -73,7 +77,7 @@ interface UiDatasetCaseSource {datasetId:string; datasetName:string; datasetVers
 interface UiAssessment {datasetCase?:UiDatasetCaseSource;opikMetric?:{metricKey:UiOpikMetricKey;nativeScore:number;direction:"higher-is-better"|"higher-is-risk"};decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
 interface UiScore {pass:boolean;ready?:boolean;falseAccept?:boolean;review?:boolean;reasons:string[]}
 interface UiTelemetry {latency_ms?:number|null;first_token_ms?:number|null;input_tokens?:number|null;output_tokens?:number|null;device_power?:{average_w?:number|null}|null}
-interface UiResult {gradingError?:string;candidateId:string;caseId:string;dispatchState?:"pending"|"canceled"|"interrupted";error?:string|null;output?:string|null;score?:UiScore|null;telemetry?:UiTelemetry|null;
+interface UiResult {structuredOutputCheck?:{valid:boolean;message:string};gradingError?:string;candidateId:string;caseId:string;dispatchState?:"pending"|"canceled"|"interrupted";error?:string|null;output?:string|null;score?:UiScore|null;telemetry?:UiTelemetry|null;
   trace?:unknown;guardrail?:UiGuardrail|null;inputBudget?:{tokens:number;cap:number|null;source:string}|null}
 interface UiRunSummary {id:string;mode:UiMode;status:string;title:string;created:string;fixture:boolean|number;industry?:string|null;datasetId?:string|null}
 interface UiManifest {

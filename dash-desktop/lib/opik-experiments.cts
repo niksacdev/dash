@@ -383,6 +383,7 @@ export class OpikExperiments {
         const trace:NativeTrace={id:traceId,projectName,name:result.caseId,startTime,endTime,input,output,source:"experiment",
           metadata:privacy.metadata({dash_trace_id:result.trace?.id,dash_steps:result.trace?.steps,case_id:result.caseId,candidate_id:candidate.id,
             actual_usage:tel,guardrail:result.guardrail,finish_reason:result.finishReason,fixture:m.fixture,
+            ...(result.structuredOutputCheck && {dash_json_contract_valid:result.structuredOutputCheck.valid}),
             input_provenance:provenance,dispatch_state:result.dispatchState,
             ...(caseGrades.length && {dash_grades:caseGrades}),...(!result.error && typeof result.score?.falseAccept==="boolean" && {dash_false_accept:result.score.falseAccept}),
             ...(decisionGraders.length && {dash_decision_graders:decisionGraders})})};

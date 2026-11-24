@@ -8,6 +8,7 @@ import {Catalog} from "./catalog.cjs";
 import * as providers from "./providers.cjs";
 import {OutcomeWorkflow,contractHash} from "./outcome-workflow.cjs";
 import {decodeRequest,type DesignContext,type PlanningPurpose,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
+import {checkStructuredOutput} from "./quick-structure.cjs";
 import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
 import {RunReports} from "./run-report.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
@@ -205,8 +206,9 @@ export class Bench {
     return [...this.graders.automatic(structured), ...this.configuredGeneralGraders()];
   }
   quickGraderOptions(approvedPromptId:string) {
-    const options = this.graders.quickOptions(this.workflow.get(approvedPromptId), this.servers.flatMap(s => s.models));
-    return {...options, automatic:this.automaticGraders(false)};
+    const approved=this.workflow.get(approvedPromptId);
+    const options = this.graders.quickOptions(approved, this.servers.flatMap(s => s.models));
+    return {...options, automatic:this.automaticGraders(!!approved.outputSchema)};
   }
   graderDatasetIds(graderId:string):string[] {
     const grader=this.graders.get(graderId);
@@ -259,7 +261,7 @@ export class Bench {
       if (!candidate) return {candidateId,status:"blocked" as const,message:"This model is unavailable. Refresh the starting line."};
       try {
         const {guardrail}=await assessCase({
-          candidate,mode:"quick",messages:candidateMessages({prompt:approved.prompt},{}),budget:approved,
+          candidate,mode:"quick",messages:candidateMessages({prompt:approved.prompt,approvedPrompt:approved},{}),structured:approved.outputSchema,budget:approved,
           defaultOutput:providers.settings.maxTokens,checkInputBudget:this.adapters.checkInputBudget,signal,
         });
         return {candidateId,...guardrail};
@@ -428,7 +430,8 @@ export class Bench {
     const hostedDecision = pinnedGraders.some(g => g.type === "decision" && g.decision.provider === "openrouter");
     if (hostedDecision && allowHostedDecision !== true)
       throw Error("Confirm the OpenRouter decision grader and the evidence it will receive for this run.");
-    const defaults = original ? [] : this.automaticGraders(!!pack?.outputSchema);
+    const outputSchema=pack?.outputSchema ?? approved?.outputSchema;
+    const defaults = original ? [] : this.automaticGraders(!!outputSchema);
     if (pack?.kind === "reference") {
       datasetScorer = original?.datasetScorer ?? datasetScorer ?? "selected-graders";
       if (!["selected-graders","exact-reference"].includes(datasetScorer)) throw Error("Choose a reference scoring method.");
@@ -489,7 +492,8 @@ export class Bench {
       caseIds: rows.map((r) => r.case_id),
       candidates,
       policyHash: original ? original.policyHash : pack ? hash([pack, scorerDigest, datasetScorer, pinnedGraders.map(g=>g.id)]) : null,
-      promptHash: hash(pack ? [effectiveSystem, rows.map(r=>candidateMessages({pack,effectiveSystem},r))] : prompt),
+      promptHash: hash(pack ? [effectiveSystem, rows.map(r=>candidateMessages({pack,effectiveSystem},r))] :
+        approved?.outputSchema ? [candidateMessages({prompt,approvedPrompt:approved},{}),approved.outputSchema] : prompt),
       caseSetHash: hash(rows),
       prompt: mode === "quick" ? prompt ?? null : null,
       invocations: candidates.map((c) => ({
@@ -504,7 +508,7 @@ export class Bench {
               : c.provider,
         template: fixture ? null : "Runtime model chat template",
         reasoning: reasoningPolicy(c, {
-          mode, outputCap: caps.outputCap, structured: pack?.outputSchema, verifiedAdapter: !!this.adapters.checkInputBudget,
+          mode, outputCap: caps.outputCap, structured: outputSchema, verifiedAdapter: !!this.adapters.checkInputBudget,
         }),
       })),
       outputPolicy: fixture ? null : {mode:caps.outputCap == null ? "automatic" : "explicit", automaticTarget:autoOutputTarget, providerFallback:providers.settings.maxTokens},
@@ -597,7 +601,7 @@ export class Bench {
             try {
               const decision = await assessCase({
                 candidate, messages: candidateMessages(m, row), serializedCaseInput: !!m.pack && m.pack.kind !== "reference" && !row.prompt && !row.messages,
-                mode: m.mode, structured: m.pack?.outputSchema, budget: m.tokenBudget,
+                mode: m.mode, structured: m.pack?.outputSchema ?? m.approvedPrompt?.outputSchema, budget: m.tokenBudget,
                 defaultOutput: m.parameters.maxTokens ?? providers.settings.maxTokens, checkInputBudget: this.adapters.checkInputBudget, signal,
               });
               cases.set(row.case_id, decision);
@@ -665,7 +669,8 @@ export class Bench {
                   apiKey: this.endpoints.keys.get(c.id),
                   maxTokens: guardrail.outputReserve,
                   inputBudget,
-                  structured: m.pack?.outputSchema,
+                  structured: m.pack?.outputSchema ?? m.approvedPrompt?.outputSchema,
+                  ...(m.approvedPrompt?.outputSchema && {strictSchema:true}),
                   onText: text => {
                     if (!observing) return;
                     if (job.partial) job.partial.text=text;
@@ -702,6 +707,10 @@ export class Bench {
                   rec.error??=`The runtime reported ${response.telemetry.output_tokens} output tokens above its ${guardrail.outputReserve}-token allocation.`;
                 else if (rec.finishReason === "length") rec.error??=lengthFailure(guardrail, rec.telemetry);
                 else if (!rec.output.trim()) rec.error??="Provider completed without visible response content.";
+                if (!rec.error && m.approvedPrompt?.outputSchema) {
+                  rec.structuredOutputCheck=checkStructuredOutput(rec.output,m.approvedPrompt.outputSchema);
+                  trace.steps.push({at:now(),action:rec.structuredOutputCheck.valid ? "Approved JSON contract passed" : "Approved JSON contract failed"});
+                }
                 // A confirmed answer belongs on disk before any sensor read, grader, or report.
                 saveResult(rec);
                 if (rec.error) throw Error(rec.error);
