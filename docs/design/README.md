@@ -6,6 +6,8 @@ ImageGen received the following prompt.
 
 > Wide 3:1 motorsport editorial photograph for a compact banner. A sweeping racetrack turn at blue hour, viewed from above. Scarlet taillight ribbons trace the apex past ivory-and-red kerbing on the right. Leave the left half in quiet deep burgundy shadow for white type. Real asphalt, restrained film grain, no lettering or logos.
 
+The [DASH mark](../../dash-desktop/ui/assets/dash-mark.svg) is shared by the sidebar and Overview. The Dock uses its [1024 px PNG](../../dash-desktop/ui/assets/dash-icon.png). To regenerate that raster on macOS, run `sips -s format png dash-desktop/ui/assets/dash-mark.svg --out dash-desktop/ui/assets/dash-icon.png` from the repository root. The Mac bundle builds its icon set from the PNG.
+
 Use warm racing yellow (`#ffcf00`) with charcoal lettering (`#252116`) for buttons in both themes. Selected controls have an inset stroke, and disabled buttons use a muted sand fill.
 
 The [light](overview-light.png) and [dark](overview-dark.png) screenshots show the desktop workbench using an isolated test profile.

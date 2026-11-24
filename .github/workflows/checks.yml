@@ -33,3 +33,5 @@ jobs:
       - run: npm run docs:check
       - run: npm ci
       - run: npm run check
+      - name: Verify the macOS Finder launcher
+        run: node --experimental-strip-types scripts/check-mac-launcher.mts

@@ -274,7 +274,7 @@ function bindDeviceDetails() {
 async function home() {
   const power = typeof api.power === "function" ? await api.power().catch(() => null) : null;
   return '<div class="overview"><div class="hero"><div class="hero-copy">' +
-    '<div class="dash-wordmark">' + svg("mark", "dash-emblem") + '<h1>DASH</h1></div>' +
+    '<div class="dash-wordmark">' + '<img class="dash-emblem" src="assets/dash-mark.svg" alt="">' + '<h1>DASH</h1></div>' +
     '<p class="hero-name">Domain Assessment <span>&amp; Scoring Harness</span></p>' +
     '<p class="hero-purpose">Turn a business outcome into a scored model run.</p></div>' + bannerCapabilities() + '</div>' +
     overviewStats(power) +
