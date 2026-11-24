@@ -2,6 +2,8 @@
 
 Feasibility review · November 23, 2026
 
+Subsequent implementation and local verification are recorded in the [decision model ADR](../adr/0005-decision-model-graders.md) and [grader library ADR](../adr/0006-grader-library.md).
+
 **Does the cited evidence support the candidate’s conclusion?** Use that single question on already saved answers for the first pilot. Start with Liquid’s open-weight `d1-2B` in a local `llama.cpp` process. Compare its decisions with independent subject-matter expert (SME) labels, the existing scenario checks and an approved Opik G-Eval rubric. The proposed feature belongs in the reusable grader library. Local integration, latency, power and grading quality on DASH remain unmeasured. [DASH grading workflow](../guides/workbench.md) · [Liquid decision model guide](https://docs.liquid.ai/lfm/models/d1-2b)
 
 ## Local runtime

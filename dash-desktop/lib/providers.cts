@@ -141,6 +141,7 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
   const loadSeconds = finite(stats.model_load_time_seconds);
   return {
     output,
+    reportedFinishReason: string(stats.stop_reason) ?? null,
     finishReason:
       (finite(stats.total_output_tokens) ?? -1) >= maxTokens
         ? "length"
@@ -216,7 +217,7 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
     outputTokens: number | null = null,
     bytes = 0;
   let timing: Pick<InferenceTelemetry, "load_ns" | "prompt_ns" | "generation_ns"> = {},
-    finishReason: string | null = null;
+    finishReason: string | null = null, reportedFinishReason: string | null = null;
   function line(raw: string): void {
     let text = raw.trim();
     if (!text) return;
@@ -237,7 +238,8 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
       );
     if (native && d.done === true) {
       ended = true;
-      finishReason = string(d.done_reason) ?? "stop";
+      reportedFinishReason = string(d.done_reason) ?? null;
+      finishReason = reportedFinishReason ?? "stop";
       inputTokens = count(d.prompt_eval_count);
       outputTokens = count(d.eval_count);
       timing = {
@@ -276,6 +278,7 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
   return {
     output,
     finishReason,
+    reportedFinishReason: native ? reportedFinishReason : finishReason,
     telemetry: {
       latency_ms: Math.round(performance.now() - start),
       first_token_ms: first === null ? null : Math.round(first),

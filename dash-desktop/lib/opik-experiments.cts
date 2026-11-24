@@ -1,8 +1,14 @@
+import {posix,win32} from "node:path";
 import {createHash,randomUUID} from "node:crypto";
 import {Opik,generateId,z} from "opik";
 import {localOpikEnvironment} from "./local-opik-config.cjs";
+import {catalogRules} from "./grader-catalog.cjs";
+import {getOpikTemplate} from "./opik-library.cjs";
+import type {GraderSpec} from "./grader-types.cjs";
+import {analyzeOutputs,type RunReport} from "./run-report.cjs";
 import {caseMessages} from "./evaluation-cases.cjs";
 import {prepareInput} from "./guardrail.cjs";
+import {resolveDatasetFamily} from "./opik-dataset-family.cjs";
 import {caseData,nativeVersion} from "./opik-dataset-versions.cjs";
 import type {RunManifest,CaseRow} from "./run-types.cjs";
 import {isRecord} from "./runtime-types.cjs";
@@ -12,6 +18,50 @@ export type {PublishState,SyncReceipt} from "./opik-types.cjs";
 
 const terminal = new Set(["completed", "failed", "canceled", "interrupted"]);
 const digest = (value:unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+// Local decision servers sometimes identify weights with a full filesystem path.
+function decisionPrivacy(saved:SavedRun) {
+  const paths=new Set<string>();
+  function remember(id:string|undefined) {
+    if (id && (posix.isAbsolute(id) || win32.isAbsolute(id) || id.startsWith("~/") || /^file:/i.test(id))) paths.add(id);
+  }
+  for (const grader of saved.manifest.graders || []) if (grader.type==="decision" && grader.decision.provider==="local") {
+    remember(grader.decision.model);remember(grader.decision.fallbackModel);
+  }
+  for (const a of saved.assessments) if (a.engine==="decision" && a.decisionRequest?.provider==="local"){
+    remember(a.decisionRequest.requestedModel);remember(a.decisionRequest.fallbackModel);
+    remember(a.decision?.actualModel);remember(a.decision?.dispatchedModel);remember(a.decisionAttempt?.dispatchedModel);
+  }
+  const replacements=[...paths].sort((a,b)=>b.length-a.length).map(id=>({id,label:"local-file-"+digest(id).slice(0,16)}));
+  const label=(value:string)=>replacements.reduce((label,p)=>label.replaceAll(p.id,p.label),value);
+  function clean(value:unknown):unknown {
+    if (typeof value==="string") return label(value);
+    if (Array.isArray(value)) return value.map(clean);
+    if (isRecord(value)) return metadata(value);
+    return value;
+  }
+  function metadata(value:Record<string,unknown>):Record<string,unknown> {
+    return replacements.length ? Object.fromEntries(Object.entries(value).map(([key,val])=>[label(key),clean(val)])) : value;
+  }
+  return {label,metadata};
+}
+type Metric=RunReport["metrics"][number];
+function opaqueId(id:string) {
+  return /^(?:[0-9a-f]{64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(id) ? id : digest(id);
+}
+function graderPin(metric:Metric) {
+  const source=metric.lineage;
+  return {revision_id:opaqueId(metric.id),version:metric.version,method:metric.method,
+    purpose:metric.informational ? "diagnostic" : "quality",
+    ...(source && {scope:source.scope,family_id:opaqueId(source.familyId),
+      ...(source.parentRevisionId && {parent_revision_id:opaqueId(source.parentRevisionId)})})};
+}
+function nativeScoreName(metric:Metric, grader:GraderSpec|undefined) {
+  if (!metric.lineage) return metric.label+" ["+metric.id.slice(-8)+"]";
+  const catalogName=grader?.type==="catalog" ? catalogRules.find(rule=>rule.key===grader.ruleKey)?.name :
+    grader?.type==="opik-metric" ? getOpikTemplate(grader.metricKey).name : undefined;
+  const title=metric.lineage.scope==="customer" ? "Customer grader" : catalogName || (metric.lineage.scope==="industry" ? "Industry grader" : "General grader");
+  return title+" ["+opaqueId(metric.id)+"]";
+}
 const options = { maxRetries: 0, timeoutInSeconds: 35 };
 function address(raw:string) {
   const u = new URL(raw);
@@ -181,6 +231,15 @@ export class OpikExperiments {
   }
   async send(api:NativeOpik, saved:SavedRun, step:Checkpoint):Promise<SyncReceipt> {
     const m=saved.manifest, projectName=this.destination.project;
+    // A decision score must have its matching model receipt. Reconcile against saved evidence without invoking a grader.
+    const storedMetrics = saved.report?.metrics || [];
+    const pins=m.graders || [];
+    const auditedIds=new Set(pins.filter(g=>g.library || g.type==="decision" || g.type==="opik-metric").map(g=>g.id));
+    const audited=auditedIds.size ? analyzeOutputs(saved).metrics.filter(metric=>auditedIds.has(metric.id)) : [];
+    const metrics=[...storedMetrics.filter(metric=>!auditedIds.has(metric.id) && metric.method!=="decision-model"),...audited];
+    const publishedPins=metrics.map(graderPin);
+    const pinnedGraders=new Map(pins.map(g=>[g.id,g]));
+    const privacy=decisionPrivacy(saved);
     const source=m.datasetId ? this.bench.dataset(m.datasetId) : null;
     const rows:CaseRow[]=source?.rows ?? [{case_id:"prompt",prompt:m.prompt ?? ""}];
     const byId=new Set(rows.map(r=>r.case_id));
@@ -192,17 +251,17 @@ export class OpikExperiments {
     const normalized=(value:string)=>value.trim().toLowerCase();
     const identity=digest([source?"dataset":"quick",normalized(industry),m.pack?.id || "",normalized(family)]);
     const snapshot=digest([m.datasetId || m.approvedPromptId || "quick",rows]);
-    const datasetId=this.stableId("dataset-family/"+identity);
-    const proposedName=("DASH "+(source?family:"Quick compare")).slice(0,95)+" · "+identity.slice(0,16);
-    const dsKey="dataset/"+datasetId;
+    const provisionalId=this.stableId("dataset-family/"+identity), dsKey="dataset/"+provisionalId;
     const items=rows.map(row=>({source:"sdk" as const,data:caseData(row)}));
-    const byCase=new Map(rows.map(row=>[row.case_id,row]));
-    const datasetName=await step(dsKey+"/registered-name",z.string(),async()=>{
-      const remote=await ensure(()=>api.datasets.getDatasetById(datasetId,{},options),
-        ()=>api.datasets.createDataset({id:datasetId,name:proposedName,projectName,description:industry+" · "+(m.pack?.title || "Quick comparison prompts"),tags:["DASH"]},options));
-      if (!remote.name || (remote.id && remote.id!==datasetId)) throw problem("The destination dataset identity did not match this family.");
-      return remote.name;
-    });
+    const byCase=new Map(rows.map(r=>[r.case_id,r]));
+    const binding=await step(dsKey+"/native-family",z.object({id:z.string(),projectId:z.string()}),()=>resolveDatasetFamily(api,{
+      provisionalId,identity,snapshot,title:source?family:"Quick compare",pack:m.pack?.id || "",industry,
+      project:projectName,workspace:this.destination.workspace,description:industry+" · "+(m.pack?.title || "Quick comparison prompts"),
+      source:source ? metadata?.source ?? "" : "DASH Quick compare",datasetId:m.datasetId,parentId:metadata?.parentId ?? null,
+    },problem));
+    const currentDataset=await api.datasets.getDatasetById(binding.id,{},options);
+    if(currentDataset.projectId!==binding.projectId)throw problem("The native dataset moved to a different project. No cases were changed.");
+    const datasetId=binding.id,datasetName=currentDataset.name;
     const version=await step(dsKey+"/snapshot/"+snapshot,datasetVersion,()=>nativeVersion(api,datasetId,items,snapshot,{
       dash_dataset_id:m.datasetId || "", dash_dataset_version:m.datasetVersion || rows[0].dataset_version || "",
       dash_prompt_id:m.approvedPromptId || "",family:source?family:"Quick compare",industry,pack:m.pack?.id || "",
@@ -213,18 +272,18 @@ export class OpikExperiments {
     const experiments:SyncReceipt["experiments"]=[];
     for(const candidate of m.candidates){
       const eid=this.stableId("experiment/"+m.id+"/"+candidate.id), prefix="experiment/"+eid;
-      const name=("DASH · "+m.title+" · "+candidate.model).slice(0,105)+" · "+m.id.slice(0,8)+"-"+eid.slice(-5);
-      const experimentScores=(saved.report?.metrics || []).flatMap(metric=>{
+      const name=privacy.label("DASH · "+m.title+" · "+candidate.model).slice(0,105)+" · "+m.id.slice(0,8)+"-"+eid.slice(-5);
+      const experimentScores=metrics.flatMap(metric=>{
         const v=metric.values.find(v=>v.candidateId===candidate.id);
-        return typeof v?.score==="number" && Number.isFinite(v.score)?[{name:metric.label+" ["+metric.id.slice(-8)+"]",value:v.score}]:[];
+        return typeof v?.score==="number" && Number.isFinite(v.score)?[{name:privacy.label(nativeScoreName(metric,pinnedGraders.get(metric.id))),value:v.score}]:[];
       });
       await step(prefix+"/create",z.null(),async()=>{
         const e=await ensure(()=>api.experiments.getExperimentById(eid,{},options),
           ()=>api.experiments.createExperiment({id:eid,name,projectName,datasetName,datasetVersionId:version.id,status:"running",
             ...(promptVersion && {promptVersions:[{id:promptVersion.id}]}),
-            metadata:{dash_run_id:m.id,candidate_id:candidate.id,model:candidate.model,revision:candidate.revision,industry:m.industry,
+            metadata:privacy.metadata({dash_run_id:m.id,candidate_id:candidate.id,model:candidate.model,revision:candidate.revision,industry:m.industry,
               fixture:m.fixture,dataset_id:m.datasetId,dataset_version:m.datasetVersion,dataset_family:metadata?.family,pinned_dataset_metadata:metadata,case_set_hash:m.caseSetHash,approved_prompt_id:m.approvedPromptId,policy_hash:m.policyHash,
-              token_budget:m.tokenBudget,run_status:saved.status},tags:["DASH",...(m.fixture?["fixture"]:[])]},options));
+              token_budget:m.tokenBudget,run_status:saved.status,...(publishedPins.length && {dash_grader_revisions:publishedPins})}),tags:["DASH",...(m.fixture?["fixture"]:[])]},options));
         if(e.name!==name || (e.datasetId && e.datasetId!==datasetId))throw problem("An experiment ID did not match this candidate and dataset.");
         return null;
       });
@@ -250,11 +309,22 @@ export class OpikExperiments {
             "Reconstructed legacy input; dispatch may have failed" : "Reconstructed from the saved run, case and input optimization";
         }
         const input={messages};
-        const output={response:result.output ?? null,...(unconfirmed && {partial:true}),...(result.error && {error:result.error})};
+        const output={response:result.output ?? null,...(unconfirmed && {partial:true}),...(result.error && {error:privacy.label(result.error)})};
+        const caseEvidence=metrics.flatMap(metric=>{
+          const grade=metric.caseScores.find(row=>row.caseId===result.caseId)?.values.find(value=>value.candidateId===candidate.id);
+          return grade ? [{metric,grade}] : [];
+        });
+        const decisionGraders=caseEvidence.flatMap(({metric,grade})=>grade.decision
+          ? [{grader_id:metric.lineage?opaqueId(metric.id):metric.id,grader_version:metric.version,...grade.decision}] : []);
+        const caseGrades=caseEvidence.map(({metric,grade})=>({...graderPin(metric),score:grade.score,pass:grade.pass,
+          status:grade.score===null ? (grade.decision?.status==="review"?"abstained":"unscored") : grade.pass?"passed":"failed",
+          ...(grade.opikMetric && {native_metric:grade.opikMetric})}));
         const trace:NativeTrace={id:traceId,projectName,name:result.caseId,startTime,endTime,input,output,source:"experiment",
-          metadata:{dash_trace_id:result.trace?.id,dash_steps:result.trace?.steps,case_id:result.caseId,candidate_id:candidate.id,
+          metadata:privacy.metadata({dash_trace_id:result.trace?.id,dash_steps:result.trace?.steps,case_id:result.caseId,candidate_id:candidate.id,
             actual_usage:tel,guardrail:result.guardrail,finish_reason:result.finishReason,fixture:m.fixture,
-            input_provenance:provenance,dispatch_state:result.dispatchState}};
+            input_provenance:provenance,dispatch_state:result.dispatchState,
+            ...(caseGrades.length && {dash_grades:caseGrades}),...(!result.error && typeof result.score?.falseAccept==="boolean" && {dash_false_accept:result.score.falseAccept}),
+            ...(decisionGraders.length && {dash_decision_graders:decisionGraders})})};
         if(typeof tel.first_token_ms==="number" && Number.isFinite(tel.first_token_ms))trace.ttft=tel.first_token_ms;
         traces.push(trace);
         if(!m.fixture && (!result.error || Array.isArray(result.dispatchedMessages) || result.telemetry?.input_tokens!=null)){
@@ -262,15 +332,15 @@ export class OpikExperiments {
           if(typeof tel.input_tokens==="number" && Number.isFinite(tel.input_tokens))usage.prompt_tokens=tel.input_tokens;
           if(typeof tel.output_tokens==="number" && Number.isFinite(tel.output_tokens))usage.completion_tokens=tel.output_tokens;
           if(usage.prompt_tokens!=null && usage.completion_tokens!=null)usage.total_tokens=usage.prompt_tokens+usage.completion_tokens;
-          spans.push({id:this.stableId(key+"/span"),traceId,projectName,name:candidate.model,type:"llm",model:candidate.model,
+          spans.push({id:this.stableId(key+"/span"),traceId,projectName,name:privacy.label(candidate.model),type:"llm",model:privacy.label(candidate.model),
             provider:candidate.provider,startTime,endTime,input,output,source:"experiment",usage,
             ...("cost_usd" in tel && typeof tel.cost_usd==="number" && Number.isFinite(tel.cost_usd) && {totalEstimatedCost:tel.cost_usd})});
         }
         links.push({id:this.stableId(key+"/item"),experimentId:eid,datasetItemId:version.caseIds[result.caseId],traceId,projectName});
-        for(const metric of saved.report?.metrics || []){
-          const evidence=metric.caseScores.find(r=>r.caseId===result.caseId)?.values.find(v=>v.candidateId===candidate.id);
-          if(typeof evidence?.score==="number" && Number.isFinite(evidence.score)) scores.push({id:traceId,projectName,name:metric.label+" ["+metric.id.slice(-8)+"]",value:evidence.score,
-            source:"sdk",reason:evidence.reason,categoryName:metric.method});
+        for(const {metric,grade:evidence} of caseEvidence){
+          if(typeof evidence.score==="number" && Number.isFinite(evidence.score)) scores.push({id:traceId,projectName,name:privacy.label(nativeScoreName(metric,pinnedGraders.get(metric.id))),value:evidence.score,
+            source:"sdk",reason:metric.builtIn ? privacy.label(evidence.reason) : (evidence.pass?"Passed pinned threshold.":"Below pinned threshold."),
+            categoryName:metric.informational ? "diagnostic" : metric.method});
         }
       }
       const write=async <T,>(kind:string,items:T[],fn:(chunk:T[])=>Promise<unknown>)=>{

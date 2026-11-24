@@ -8,4 +8,4 @@ List checks run, the evidence inspected, and anything that needs reviewer verifi
 
 ## Design decisions
 
-Link the relevant ADR when scoring, persistence, data sharing, or architecture changes.
+For a material product, UX or architecture choice, link the numbered ADR and its dated decision-log entry. Name the prior decision it extends or replaces. For an implementation-only change, cite the existing decision when applicable.

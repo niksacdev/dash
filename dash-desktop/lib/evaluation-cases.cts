@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRecord, validTurns } from "./run-types.cjs";
-import type { CaseRow, CaseScore, RunResult, ScenarioPack, ReferencePack } from "./run-types.cjs";
+import type { CaseRow, CaseScore, RunResult, RunManifest, ScenarioPack, ReferencePack } from "./run-types.cjs";
 import type { LocalCandidate, ChatTurn } from "./runtime-types.cjs";
 import { exactTextScore,opikVersion,decodeGraderSpec } from "./graders.cjs";
 import type {GraderSpec,GraderEvidence} from "./graders.cjs";
@@ -52,8 +52,13 @@ export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:
   ];
 }
 
-export function graderEvidence(manifest:Parameters<typeof caseMessages>[0] & {fixture?:boolean}, row:CaseRow, result:RunResult):GraderEvidence {
+type GradingManifest = Parameters<typeof caseMessages>[0] & Partial<Pick<RunManifest,"mode"|"fixture"|"approvedPrompt">>;
+export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:RunResult, catalogContext=false):GraderEvidence {
+  const approved = manifest.mode === "quick" ? manifest.approvedPrompt : null;
   return {
+    ...(catalogContext && {finishReason:result.reportedFinishReason ?? null}),
+    ...(catalogContext && manifest.pack && manifest.pack.kind !== "reference" && {caseContext:{pack:manifest.pack,row}}),
+    ...(approved && {evaluationBrief:{objective:approved.objective, metrics:approved.metrics, criteria:approved.requirements}}),
     input: result.dispatchedMessages ?? caseMessages(manifest,row),
     inputSource: result.dispatchedMessages ? "recorded-dispatch" : manifest.fixture ? "fixture-case" : "reconstructed-case",
     reference: row.reference ?? row.gold ?? null,

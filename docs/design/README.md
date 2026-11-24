@@ -10,4 +10,6 @@ Use warm racing yellow (`#ffcf00`) with charcoal lettering (`#252116`) for butto
 
 The [light](overview-light.png) and [dark](overview-dark.png) screenshots show the desktop workbench using an isolated test profile.
 
+The [grader library screenshot](grader-library.png) shows the shipped Financial Services checks, their version-specific run links, and the start of the Manufacturing section in a fresh local profile.
+
 The [original prototype](DASH_Design_Prototype.html), [approved preview](DASH_Design_Preview.png), and [in-progress animation](DASH_Run_Animation.gif) document the first design. The [logo concept sheet](archive/Eval_Bench_Logo_Concepts.png) is archived exploration.

@@ -18,6 +18,43 @@ For a structured scenario, import JSONL with the scenario’s input and gold fie
 
 Grading uses the chat turns saved at dispatch, including changes made to fit the token budget. For an older run without those turns, DASH marks the reconstructed case input in the new assessment. Recorded replays use fixture case inputs. In **Graders**, paste a candidate’s ordered tool calls to grade its actions. A blank trajectory leaves an action-order check unscored. An explicit empty array records that the agent took zero actions. DASH keeps its own execution steps in the developer trace.
 
+## Choose a grader for a run
+
+| Section | How to use it |
+| --- | --- |
+| General | Every new evaluation pins response presence and provider completion checks. A declared JSON contract also pins Opik JSON validation. A replay can show a valid response and an unknown provider stop reason. These checks describe the response and do not establish business success. |
+| Industry | In a matching dataset run, select Financial Services checks for an earnings release or Manufacturing checks for incoming inspection. Each check explains the fields it compares. The scenario’s full acceptance check continues to run. |
+| My graders | Create a check yourself or ask the grader designer for suggestions from an objective and measures. Review the rubric, evidence and any local judge before confirming. Choose an existing revision to reuse it across runs, customize a starter to create an independent family, or save a new revision of a customer grader. |
+
+Configure Opik answer relevance, usefulness, hallucination or moderation from the general library. Select a local judge first. You can make a saved cross-industry metric a default for future runs. Its score and the judge revision stay attached to the original run after you change the default. Hallucination grading needs source evidence. A missing source stays unscored. Opik reports higher raw values for hallucination and moderation risk, so DASH records the raw result separately from the quality score used in reports. [Official Opik metrics](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)
+
+For example, choose the earnings grader that checks the requested financial fact and run the **eps-gaap** case. The recorded candidate answer reports adjusted EPS of 0.85 instead of reported GAAP EPS of 0.74. Reuse that exact grader version on another earnings dataset with the same contract. The version’s run history shows where it was used. A customer can fork the shipped criterion and choose an editable rubric or another grading method to implement a different policy.
+
+The grader designer makes one proposal per success measure. For example, “Active drawing revision accuracy” can reuse the shipped active-drawing check. If you also want a separate score for routing the lot to review, put “Disposition routing accuracy” on a second line. A compound measure can use one rubric covering all its conditions. Measures that need unavailable evidence, such as actual hold duration, are marked unscored. When two measures use the same pinned rule, both appear in the review and the rule runs once.
+
+A catalog version number identifies a revision within its family. Revisions with the same display name can belong to different families. An old case rerun always retains its original manifest. A newly created run resolves the current workspace defaults and the specific grader revisions selected for it.
+
+## Use a decision model as a grader
+
+1. Open **Workspace → Graders** and select **Decision model · yes/no**. Choose an earnings or inspection starter, or enter one question yourself. If the answer depends on a held-out reference or an observed agent trajectory, mark that evidence as required.
+2. Choose the local runtime, its loopback URL, and the exact decision model. With a compatible LM Studio or llama.cpp server, the native API is `/v1/systemone`. Some servers omit decision capabilities in discovery. You can enter their model ID manually. A successful grade requires the server to return a typed answer for that model. [LM Studio decisions](https://lmstudio.ai/docs/developer/jev-compat/systemone)
+3. Choose the fail and pass probabilities. For example, with 0.20 and 0.80 a probability of 0.64 requests review and contributes no score. Save the grader and select its version on a run, or assess a saved output. To compare a second judge, edit the saved grader, change the selected model and save a new version. A case rerun keeps the grader version from the original run.
+4. For an explicitly hosted judge, select OpenRouter and a decision model such as Liquid d1.2 or TypeSafe Jev. Set `OPENROUTER_API_KEY` in the environment of the process launching DASH. Confirm the evidence disclosure when grading. Each result identifies the model that served the assessment. [OpenRouter Decisions](https://openrouter.ai/docs/guides/features/decisions)
+
+**Apple Silicon with MLX weights.** MLX-VLM supports Liquid d1 Omni on its native `/v1/decisions` endpoint. From a terminal with `uv` installed and the complete FP16 checkpoint in LM Studio’s model folder, start an isolated server. The first launch downloads the runtime dependencies. The checkpoint is read from disk.
+
+```sh
+HF_HUB_OFFLINE=1 uv run --no-project --python 3.12 --with mlx-vlm==0.8.0 \
+  python -m mlx_vlm server --host 127.0.0.1 --port 52991 \
+  --decision-model "$HOME/.lmstudio/models/LiquidAI/d1-Omni-2B-MLX-fp16"
+```
+
+Select the MLX-VLM protocol in the grader, enter `http://127.0.0.1:52991`, and discover the preloaded checkpoint. Keep the terminal open while grading. A model showing up in LM Studio’s chat catalog may still require the MLX runtime for decision inference. [MLX-VLM decision server](https://github.com/Neywa-Labs/mlx-vlm/pull/2657) · [Liquid’s FP16 checkpoint](https://huggingface.co/LiquidAI/d1-Omni-2B-MLX-fp16)
+
+An optional alternate local model on the same server can grade the case if the primary is unavailable during discovery. DASH records which model actually answered. DASH keeps absolute weight paths on the device and sends stable opaque model identifiers to Opik. Give different checkpoint revisions distinct paths or aliases. A runtime that reuses the same identifier can hide a weight change. A failed request or a probability in the review band ends that assessment without a second inference.
+
+For example, ask “Does the answer report the GAAP diluted EPS in the reference for this period?” Include a labeled case where adjusted and GAAP figures differ. Inspect the raw confidence and pass/fail or review outcome in the case results. Check the rubric on held-out SME decisions before relying on it for a business outcome.
+
 ## Developer view
 
 Open **Workspace → Developer** to inspect LM Studio's loaded instances, model adapter, trace, runtime errors and case-level measurements. Time to first visible output, provider-reported time to first token, token usage and hardware readings appear when available. Device power is measured across the whole host when the sensor is supported. Fixture runs have no model telemetry. The **Graders** workspace includes a grader-design agent and native Opik SDK metrics. See the [project setup guide](../../README.md) for grader confirmation, local judge configuration and Opik experiment sync.

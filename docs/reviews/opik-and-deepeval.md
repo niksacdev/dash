@@ -2,7 +2,7 @@
 
 Engineering review · November 23, 2026
 
-**Keep Opik for experiment history and evidence sharing. Evaluate DeepEval as an optional grader when a domain rubric benefits from its existing metrics.** For example, a Manufacturing operator could ask a decision model whether the inspection evidence supports releasing a lot. The answer, the inspection record, and the grader revision belong on the same saved DASH run whichever library calculates the score.
+**DASH uses Opik’s TypeScript SDK for general metrics and experiment history. Financial Services and Manufacturing supply the domain criteria, and customers can create or revise their own.** This comparison records the DeepEval and JevEval options considered. The implementation uses DASH’s reviewed domain graders. [Grader library decision](../adr/0006-grader-library.md)
 
 ## What DASH originally decided
 

@@ -20,6 +20,10 @@ These seven Library artifacts were verified on November 22, 2026. Revisions refe
 
 ## Design and architecture
 
-The [design assets](design/README.md) include screenshots of the running app and the source of the circuit artwork. Accepted decisions cover the [domain hierarchy](adr/0001-domain-workbench.md) and [Opik integration](adr/0002-opik-and-offline-runs.md).
+Read the [chronological decision log](adr/README.md) for status, rationale, related decisions and the PR that reviewed each material product, design or architecture choice.
 
-The product reviews explain the [domain workbench](reviews/domain-workbench.md), the [outcome-to-run workflow](reviews/outcome-workflow.md), [feasibility of live agent runs](reviews/agent-runs-feasibility.md), and [local decision models for domain grading](reviews/decision-model-graders.md). For changes to the implementation, follow the [contributor guide](../.github/CONTRIBUTING.md).
+The [design assets](design/README.md) include screenshots of the running app and the source of the circuit artwork. Accepted decisions cover the [domain hierarchy](adr/0001-domain-workbench.md) and [Opik integration](adr/0002-opik-and-offline-runs.md). The [decision grader ADR](adr/0005-decision-model-graders.md) explains model selection, missing evidence and abstention.
+
+The [grader library ADR](adr/0006-grader-library.md) and [feature specification](reviews/grader-library.md) explain automatic checks, industry criteria, customer forks and review.
+
+The product reviews cover the [domain workbench](reviews/domain-workbench.md), [outcome-to-run workflow](reviews/outcome-workflow.md), [live agent feasibility](reviews/agent-runs-feasibility.md), and [local decision models for domain grading](reviews/decision-model-graders.md). For implementation changes, follow the [contributor guide](../.github/CONTRIBUTING.md).

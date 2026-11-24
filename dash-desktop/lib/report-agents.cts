@@ -14,7 +14,7 @@ const selection = (item:OutputSchema) => ({ type: "array", items: item, minItems
 const analyzerSchema = (ids:string[]) => object({ evidence: selection(evidenceIds(ids)) });
 const observations = ["first_higher", "second_higher", "equal", "missing", "single"];
 const reporterSchema = (ids:string[]) => object({
-  verdict: { type: "string", enum: ["winner", "tie", "mixed", "incomplete", "single"] },
+  verdict: { type: "string", enum: ["winner", "tie", "mixed", "incomplete", "single", "unsafe"] },
   winner: { type: "string", enum: ["A", "B", "none"] },
   highlights: selection(object({ evidence: evidenceIds(ids), observation: { type: "string", enum: observations } })),
 });
@@ -31,6 +31,7 @@ function observation(scores:(number|null)[]):"first_higher"|"second_higher"|"equ
 function evidencePool(report:RunReport):Evidence[] {
   const pool = [];
   for (const [index, metric] of report.metrics.entries()) {
+    if (metric.comparisonIssue || metric.informational) continue;
     const best = new Map<string,{row:typeof metric.caseScores[number]; scores:(number|null)[]; difference:number}>();
     for (const row of metric.caseScores) {
       const scores = row.values.map(v => v.score);
@@ -68,8 +69,9 @@ export async function assistReport(report:RunReport, adapters:RuntimeAdapters, s
     citations: [],
   };
   const supported = { ...report, assistance };
-  if (!report.metrics.length || !report.caseCount) {
-    assistance.reason = "No recorded rubric and case evidence was available.";
+  const pool=evidencePool(report);
+  if (!pool.length) {
+    assistance.reason = "No comparable rubric and case evidence was available.";
     return supported;
   }
   let model:LocalCandidate|undefined;
@@ -80,9 +82,8 @@ export async function assistReport(report:RunReport, adapters:RuntimeAdapters, s
   }
   const selectedModel=model, invoke=adapters.reportStage.bind(adapters);
   const identity = { provider: model.provider, model: model.model, revision: model.revision || null };
-  const pool = evidencePool(report);
-  const criteria = report.metrics.map((m, i) => ({ criterion: "M" + (i + 1), name: m.label.slice(0, 180),
-    mean: m.values.map(v => v.score), paired: m.pairedCases, expected: m.totalCases }));
+  const criteria = report.metrics.flatMap((m, i) => m.comparisonIssue || m.informational ? [] : [{ criterion: "M" + (i + 1), name: m.label.slice(0, 180),
+    mean: m.values.map(v => v.score), paired: m.pairedCases, expected: m.totalCases }]);
   const winner = report.winnerId === null ? "none" : report.candidates[0].id === report.winnerId ? "A" : "B";
   const publicEvidence = ({ id, criterion, scores }:Evidence) => ({ id, criterion, scores });
   const available = new Map(pool.map(e => [e.id, e]));

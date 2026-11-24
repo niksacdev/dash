@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import { buildReport } from "../lib/run-report.cjs";
 import { OpikExperiments } from "../lib/opik-experiments.cjs";
+import type { GraderSpec } from "../lib/grader-types.cjs";
 import type { SavedRun, SyncStore } from "../lib/opik-types.cjs";
 import type { RunManifest, RunResult, StoredGuardrail, DatasetCase, DatasetMetadata } from "../lib/run-types.cjs";
 import { isCaseRow } from "../lib/run-types.cjs";
@@ -55,7 +56,7 @@ function approved(id:string, familyId:string, version:number, mode:RunManifest["
 
 // The isolated service observes JSON on the wire, after the official SDK has serialized it.
 const str = z.string(), fields = z.record(str,z.unknown());
-const datasetWire = z.looseObject({id:str,name:str});
+const datasetWire = z.looseObject({id:str,name:str,tags:z.array(str).optional(),project_id:str.optional(),project_name:str.optional()});
 const wireRow = z.looseObject({data:fields}), editedRow = wireRow.extend({id:str});
 const deltaWire = z.looseObject({base_version:str.nullable(),tags:z.array(str),metadata:fields.optional(),
   deleted_ids:z.array(str).default([]),added_items:z.array(wireRow).default([]),edited_items:z.array(editedRow).default([])});
@@ -86,6 +87,7 @@ test("Opik status remains offline and unconfigured unless the DASH destination i
 
 test("actual SDK syncs saved traces and scores into native version-pinned experiments and resumes a lost write acknowledgement",async t=>{
   const datasets=new Map<string,z.infer<typeof datasetWire>>(), experiments=new Map<string,z.infer<typeof experimentWire>>();
+  const projects=new Map<string,string>();
   const links=new Map<string,z.infer<typeof linkWire>>(), traces=new Map<string,z.infer<typeof traceWire>>();
   const spans=new Map<string,z.infer<typeof spanWire>>(), scores=new Map<string,z.infer<typeof scoreWire>>();
   const requests: [string,string][] = [], failures: string[] = [];
@@ -95,7 +97,7 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   const lastTrace = () => present([...traces.values()].at(-1));
   const historyFor = (datasetId:string) => present(versions.get(datasetId));
   const rowsFor = (datasetId:string) => present(snapshots.get(historyFor(datasetId)[0].version_hash));
-  let interrupt=true, loseNextVersion=false, losePrompt=true, competingInitializer=true;
+  let conflictName=false,interrupt=true, loseNextVersion=false, losePrompt=true, competingInitializer=true;
   // The managed local destination presents no API key even when a cloud key exists in the process.
   const priorKey=process.env.OPIK_API_KEY;
   process.env.OPIK_API_KEY="isolated-cloud-key";
@@ -106,6 +108,7 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
       const chunks: Buffer[]=[];
       for await(const chunk of req){assert.ok(Buffer.isBuffer(chunk));chunks.push(chunk);}
       const payload:unknown=chunks.length?JSON.parse(Buffer.concat(chunks).toString()):{};
+      assert.doesNotMatch(JSON.stringify(payload),/dash-synthetic-private|localhost:8181|Private grading instructions|PRIVATE_CUSTOMER_CATALOG/);
       assert.ok(req.url && req.method);
       const url=new URL(req.url,"http://localhost"), [group,sub,leaf]=url.pathname.replace("/api/v1/private/","").split("/");
       requests.push([req.method,url.pathname]);res.setHeader("Content-Type","application/json");
@@ -122,8 +125,28 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
           return send(201,version);
         }
       }
+      if(group==="projects"){
+        const content=[...projects.entries()].map(([name,id])=>({id,name}));
+        if(sub){const found=content.find(p=>p.id===sub);return found?send(200,found):send(404);}
+        return send(200,{content:content.filter(p=>p.name===url.searchParams.get("name"))});
+      }
       if(group==="datasets"){
-        if(req.method==="POST"&&!sub){const body=datasetWire.parse(payload);datasets.set(body.id,body);versions.set(body.id,[]);return send(201);}
+        if(req.method==="GET"&&!sub)return send(200,{content:[...datasets.values()].filter(d=>d.project_id===url.searchParams.get("project_id"))});
+        if(sub==="retrieve"){
+          const body=z.object({dataset_name:str}).parse(payload);
+          const found=[...datasets.values()].find(d=>d.name===body.dataset_name);
+          return found?send(200,found):send(404);
+        }
+        if(req.method==="POST"&&!sub){
+          const body=datasetWire.parse(payload),project=present(body.project_name);
+          if(conflictName){
+            conflictName=false;
+            const id=randomUUID();datasets.set(id,{id,name:body.name,tags:["Unrelated"],project_id:projects.get("QA Second")});versions.set(id,[]);
+          }
+          if([...datasets.values()].some(d=>d.name===body.name))return send(409,{message:"Dataset name is already taken"});
+          if(!projects.has(project))projects.set(project,randomUUID());
+          datasets.set(body.id,{...body,project_id:projects.get(project)});versions.set(body.id,[]);return send(201);
+        }
         if(!datasets.has(sub))return send(404,{message:"missing"});
         const history=historyFor(sub), head=history[0];
         if(!leaf)return send(200,datasets.get(sub));
@@ -327,4 +350,113 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   assert.equal(observation.end_time,undefined);
   assert.equal(present([...spans.values()].at(-1)).end_time,undefined);
   assert.equal(scores.size,scoredBeforeInterruption);
+
+  const grader={type:"decision",judge:null,id:"decision/r1",name:"Disposition follows evidence",version:1,threshold:.8,
+    category:"Quality",industry:"Manufacturing",criteria:"Private grading instructions",decision:{provider:"local",model:"/Users/dash-synthetic-private/primary",fallbackModel:"/Users/dash-synthetic-private/alternate",protocol:"mlx-vlm",endpoint:"http://localhost:8181",failAt:.2}} satisfies GraderSpec;
+  const decision:TestRun={...saved,manifest:{...saved.manifest,id:"decision-scoring",datasetScorer:"selected-graders",graders:[grader]}};
+  const pin={provider:grader.decision.provider,protocol:grader.decision.protocol,requestedModel:grader.decision.model,fallbackModel:grader.decision.fallbackModel,failAt:grader.decision.failAt,passAt:grader.threshold};
+  decision.assessments=decision.results.map((result,index)=>({
+    id:"grade-"+index,created:result.trace.started,graderId:grader.id,name:grader.name,version:grader.version,category:grader.category,
+    candidate:result.candidateId,caseId:result.caseId,threshold:grader.threshold,engine:grader.type,judge:pin.requestedModel,
+    decisionRequest:{...pin,endpoint:grader.decision.endpoint},decision:{...pin,dispatchedModel:pin.fallbackModel,actualModel:pin.fallbackModel,fallbackReason:"primary-unavailable",probabilityYes:index ? .55 : .87},
+    pass:index?null:true,value:index?null:1,reason:index?"Needs review.":"Met the criterion using "+pin.fallbackModel,
+  }));
+  decision.report=buildReport({...decision,partial:null});
+  await new OpikExperiments(bench(db,decision),{env}).sync(decision.manifest.id);
+  const [accepted,abstained]=[...traces.values()].slice(-2);
+  const seen=(trace:typeof accepted)=>z.array(z.record(z.string(),z.unknown())).parse(trace.metadata.dash_decision_graders);
+  const masked=seen(accepted)[0];
+  assert.match(z.string().parse(masked.requestedModel),/^local-file-[0-9a-f]{16}$/);
+  assert.match(z.string().parse(masked.fallbackModel),/^local-file-[0-9a-f]{16}$/);
+  assert.notEqual(masked.requestedModel,masked.fallbackModel);
+  const publicPin={...pin,requestedModel:masked.requestedModel,fallbackModel:masked.fallbackModel};
+  const dispatched={dispatchedModel:masked.fallbackModel,actualModel:masked.fallbackModel,fallbackReason:"primary-unavailable"};
+  assert.deepEqual(seen(accepted),[{...publicPin,...dispatched,status:"passed",probabilityYes:.87,grader_id:grader.id,grader_version:1}]);
+  assert.deepEqual(seen(abstained),[{...publicPin,...dispatched,status:"review",probabilityYes:.55,grader_id:grader.id,grader_version:1}]);
+  for (const trace of [accepted,abstained]) assert.doesNotMatch(JSON.stringify(trace.metadata),/localhost:8181|Private grading instructions/);
+  assert.deepEqual([...scores.values()].filter(score=>score.id===accepted.id).map(s=>s.value),[1]);
+  assert.ok(![...scores.values()].some(score=>score.id===abstained.id));
+  // Even a stale cached report cannot manufacture native feedback when its recorded receipt is absent.
+  decision.manifest={...decision.manifest,id:"decision-request-failed"};
+  decision.assessments=decision.assessments.map(a=>({...a,decision:undefined,decisionAttempt:{requestedModel:pin.requestedModel,dispatchedModel:pin.fallbackModel,protocol:pin.protocol,fallbackReason:"primary-unavailable"},value:null,pass:null,reason:"Endpoint unavailable."}));
+  const afterDecision=scores.size;
+  await new OpikExperiments(bench(db,decision),{env}).sync(decision.manifest.id);
+  assert.equal(scores.size,afterDecision);
+  assert.deepEqual(seen(lastTrace()),[{...publicPin,dispatchedModel:masked.fallbackModel,fallbackReason:"primary-unavailable",status:"unscored",grader_id:grader.id,grader_version:1}]);
+
+  const copied={type:"exact",judge:null,id:"9".repeat(64),name:"PRIVATE_CUSTOMER_CATALOG inspection policy",version:2,threshold:1,
+    category:"Quality",industry:"Manufacturing",criteria:"PRIVATE_CUSTOMER_CATALOG rubric",
+    library:{scope:"customer",familyId:"/Users/PRIVATE_CUSTOMER_CATALOG/rubrics",parentRevisionId:"8".repeat(64)}} satisfies GraderSpec;
+  const diag={...copied,name:"Completion observed",id:"7".repeat(64),type:"catalog",ruleKey:"completion",ruleVersion:1,
+    library:{scope:"general",automatic:true,familyId:"6".repeat(64)}} satisfies GraderSpec;
+  const catalog:TestRun={...saved,manifest:{...saved.manifest,id:"catalog-grades",datasetScorer:"selected-graders",graders:[copied,diag]}};
+  catalog.assessments=catalog.results.flatMap((result,index)=>[copied,diag].map(g=>{
+    const pass=g.type==="catalog" ? null : index===0;
+    return {id:g.id+index,created:result.trace.started,graderId:g.id,name:g.name,version:g.version,category:g.category,
+      candidate:result.candidateId,caseId:result.caseId,threshold:1,engine:g.type,judge:null,
+      value:pass===null?null:Number(pass),pass,reason:"PRIVATE_CUSTOMER_CATALOG reference and rationale"};
+  }));
+  catalog.report=buildReport({...catalog,partial:null});
+  const synchronized=await new OpikExperiments(bench(db,catalog),{env}).sync(catalog.manifest.id);
+  for (const [i,experiment] of synchronized.experiments.entries()) {
+    const {metadata}=present(experiments.get(experiment.id));
+    const pins=z.array(z.record(str,z.unknown())).parse(metadata.dash_grader_revisions);
+    const child=present(pins.find(p=>p.revision_id===copied.id)),baseline=present(pins.find(p=>p.revision_id===diag.id));
+    assert.match(z.string().parse(child.family_id),/^[0-9a-f]{64}$/);
+    assert.deepEqual([child.scope,child.parent_revision_id,child.version,child.purpose],["customer",copied.library.parentRevisionId,2,"quality"]);
+    assert.deepEqual([baseline.scope,baseline.family_id,baseline.purpose],["general",diag.library.familyId,"diagnostic"]);
+    const item=present([...links.values()].find(item=>item.experiment_id===experiment.id)),trace=present(traces.get(item.trace_id));
+    const judgments=z.array(z.record(str,z.unknown())).parse(trace.metadata.dash_grades);
+    assert.deepEqual(judgments,[{...child,pass:i===0,score:i===0?1:0,status:i===0?"passed":"failed"},{...baseline,pass:null,score:null,status:"unscored"}]);
+    const native=[...scores.values()].filter(s=>s.id===trace.id);
+    assert.deepEqual(native.map(s=>[s.name,s.value]),[["Customer grader ["+copied.id+"]",i===0?1:0]]);
+  }
+
+  // Independent local profiles publish into one Opik workspace. The API enforces names across projects.
+  const renamed=present(datasets.get(receipt.datasetId));renamed.name="Renamed in Opik";
+  const publishFromFresh=async(run:TestRun,project="QA")=>{
+    const fresh=new DatabaseSync(":memory:");
+    try{
+      const service=new OpikExperiments(bench(fresh,run),{env:{...env,OPIK_PROJECT_NAME:project}});
+      const result=await service.sync(run.manifest.id),before=requests.length;
+      assert.deepEqual(await service.sync(run.manifest.id),result);assert.equal(requests.length,before);
+      return result;
+    }finally{fresh.close();}
+  };
+  const familyRun=(id:string):TestRun=>({...saved,manifest:{...saved.manifest,id}});
+  const otherProfile=await publishFromFresh(familyRun("new-profile"));
+  assert.equal(otherProfile.datasetId,receipt.datasetId);assert.equal(otherProfile.versionId,receipt.versionId);
+  assert.equal(otherProfile.datasetName,"Renamed in Opik");
+  const foreign=await publishFromFresh(familyRun("independent-project"),"QA Second");
+  assert.notEqual(foreign.datasetId,receipt.datasetId);
+  const foreignVersionCount=historyFor(foreign.datasetId).length;
+  const unrelated=familyRun("different-source");
+  unrelated.manifest={...unrelated.manifest,datasetMetadata:{...metadata,source:"Vendor B"},datasetId:"vendor-b-initial"};
+  const otherSource=await publishFromFresh(unrelated);
+  assert.notEqual(otherSource.datasetId,receipt.datasetId);assert.notEqual(otherSource.datasetId,foreign.datasetId);
+  assert.equal(historyFor(foreign.datasetId).length,foreignVersionCount);
+  const legacy=present(datasets.get(receipt.datasetId));legacy.tags=["DASH"];
+  const recovered=await publishFromFresh(familyRun("older-profile-unmarked"));
+  assert.equal(recovered.datasetId,receipt.datasetId);assert.equal(recovered.versionId,receipt.versionId);
+  // A legacy server can return snapshot tags but omit version metadata. Keep the registered family prefix as independent evidence.
+  const oldName=legacy.name;legacy.name="DASH Incoming inspection · "+requireFamilySuffix();
+  function requireFamilySuffix(){
+    const tagged=present(datasets.get(foreign.datasetId)).tags || [];
+    return present(tagged.find(tag=>tag.startsWith("dash-family-"))).slice("dash-family-".length,"dash-family-".length+16);
+  }
+  const legacyHistory=historyFor(receipt.datasetId);
+  const priorMetadata=legacyHistory.map(v=>v.metadata);
+  legacyHistory.forEach(v=>{delete v.metadata;});
+  const markerOnly=await publishFromFresh(familyRun("older-profile-tags-only"));
+  assert.equal(markerOnly.datasetId,receipt.datasetId);assert.equal(markerOnly.versionId,receipt.versionId);
+  legacyHistory.forEach((v,i)=>{v.metadata=priorMetadata[i];});legacy.name=oldName;
+  const countBeforeConflict=experiments.size;
+  conflictName=true;
+  const collision=familyRun("human-owned-name");collision.manifest={...collision.manifest,datasetMetadata:{...metadata,family:"Completely different"}};
+  await assert.rejects(publishFromFresh(collision),/different project or source/);
+  assert.equal(experiments.size,countBeforeConflict);
+  const sameSnapshot=familyRun("same-snapshot-new-source");
+  sameSnapshot.manifest={...sameSnapshot.manifest,datasetMetadata:{...metadata,source:"New publisher"}};
+  const exact=await publishFromFresh(sameSnapshot);
+  assert.equal(exact.datasetId,receipt.datasetId);assert.equal(exact.versionId,receipt.versionId);
 });

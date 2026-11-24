@@ -63,8 +63,8 @@ test("Quick compare suggests outcome-related reusable graders and excludes check
   models[2] = {...models[2],revision:"weights-v2"};
   const options = bench.quickGraderOptions(approved.id);
   assert.deepEqual(options.recommended.map(g=>g.id), [latest]);
-  for (const id of [old,latest,unrelated,differentDomain]) assert.ok(options.available.some(g=>g.id===id));
-  for (const id of [reference,trajectory,judge]) {
+  for (const id of [old,latest,unrelated]) assert.ok(options.available.some(g=>g.id===id));
+  for (const id of [differentDomain,reference,trajectory,judge]) {
     assert.ok(!options.available.some(g=>g.id===id));
     assert.throws(()=>start({graderIds:[id]}), /selected grader/);
   }
@@ -75,7 +75,7 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   const {bench,approved,models,judgeCalls,start} = await setup(t);
   const options = bench.quickGraderOptions(approved.id);
   assert.equal(options.recommended.length, 0);
-  assert.equal(bench.graders.list().length, 0);
+  assert.equal(bench.graders.list().filter(g=>g.library?.scope === "customer").length, 0);
   assert.match(options.generated.criteria, /Distinguish GAAP from adjusted EPS/);
   assert.equal(options.generated.type, "opik");
   const outcomeRubric = {judgeId:models[2].id, criteria:options.generated.criteria};
@@ -83,16 +83,17 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   await present(bench.active).done;
   const {manifest,assessments,status} = bench.detail(runId);
   assert.equal(status, "completed");
-  assert.equal(manifest.graders.length, 1);
+  assert.equal(manifest.graders.filter(g=>!g.library?.automatic).length, 1);
+  assert.deepEqual(new Set(manifest.graders.filter(g=>g.type==="catalog").map(g=>g.ruleKey)),new Set(["response-present","completion"]));
   const pinned = manifest.graders[0];
   assert.deepEqual(pinned.origin,{kind:"approved-outcome",promptId:approved.id,promptFamilyId:approved.familyId,promptVersion:1});
   assert.equal(pinned.type, "opik");
   assert.match(present(pinned.opikEngine), /^opik-js@/);
-  assert.ok(assessments.every(a => a.evaluator === pinned.opikEngine));
+  assert.ok(assessments.filter(a=>a.graderId===pinned.id).every(a => a.evaluator === pinned.opikEngine));
   assert.equal(judgeCalls.length, 2);
   assert.equal(pinned.judge.revision, "weights-v1");
   assert.equal(pinned.criteria, outcomeRubric.criteria);
-  assert.deepEqual(assessments.map(v=>[v.candidate,v.value,v.pass,v.graderId,v.judge]), [
+  assert.deepEqual(assessments.filter(v=>v.graderId===pinned.id).map(v=>[v.candidate,v.value,v.pass,v.graderId,v.judge]), [
     [models[0].id,1,true,pinned.id,models[2].id],[models[1].id,0,false,pinned.id,models[2].id],
   ]);
   for (const e of judgeCalls) {
@@ -104,8 +105,8 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   assert.equal(bench.quickGraderOptions(approved.id).recommended[0].id,pinned.id);
   const reuse = start({graderIds:[pinned.id],outcomeRubric});
   await present(bench.active).done;
-  assert.equal(bench.exportRun(reuse).assessments.length,2);
-  assert.equal(bench.graders.list().length,1);
+  assert.equal(bench.exportRun(reuse).assessments.filter(a=>a.graderId===pinned.id).length,2);
+  assert.equal(bench.graders.list().filter(g=>g.library?.scope === "customer").length,1);
 });
 
 test("an explicitly requested legacy outcome rubric retains its original scoring scale", async t => {
@@ -114,7 +115,7 @@ test("an explicitly requested legacy outcome rubric retains its original scoring
   await present(bench.active).done;
   const {manifest,assessments} = bench.detail(id);
   assert.equal(manifest.graders[0].type,"judge");
-  assert.deepEqual(assessments.map(a => a.value),[1,0]);
+  assert.deepEqual(assessments.filter(a=>a.engine==="judge").map(a => a.value),[1,0]);
 });
 
 test("a rejected Quick grading configuration leaves the run queue and grader library consistent", async t => {
@@ -122,6 +123,6 @@ test("a rejected Quick grading configuration leaves the run queue and grader lib
   assert.throws(()=>start({outcomeRubric:{judgeId:"missing"}}),/available local model/);
   const graderIds = Array.from({length:8},(_,i)=>save("EPS check "+i));
   assert.throws(()=>start({graderIds,outcomeRubric:{judgeId:models[2].id}}),/up to eight/);
-  assert.equal(bench.graders.list().length,8);
+  assert.equal(bench.graders.list().filter(g=>g.library?.scope === "customer").length,8);
   assert.equal(bench.list().runs.length,0);
 });

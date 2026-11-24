@@ -26,11 +26,17 @@ On macOS, you can also open `Open DASH.command` after installing dependencies. S
 3. For live inference, start the LM Studio local server on port `1234` or Ollama on port `11434`, load a chat model, then use **Local runtimes → Refresh models**. In **Dataset run**, click one or two models onto the starting line and choose **GO**.
 4. For **Quick compare**, load an LFM3 chat model for planning. Describe a business objective, such as “Flag incoming parts that exceed the drawing tolerance and cite the measurement.” Choose **Suggest Metrics**, edit the criteria, then draft and approve the prompt. Choose two candidates for the comparison. An OpenAI planning fallback can be configured under **Domain agents**.
 
+### Choose and reuse graders
+
+Open **Workspace → Graders**. General checks follow new evaluations automatically. Industry checks cover earnings extraction in Financial Services and incoming inspection in Manufacturing. **My graders** holds the checks you write, approve from a business outcome or customize from the library. Select an existing revision for another run or save a new revision to change the grading policy. [Grader library guide](docs/guides/workbench.md#choose-a-grader-for-a-run)
+
 ### Design graders and inspect scores
 
 Open **Workspace → Graders**, or design graders from a run setup. Give the grader agent an objective and observable metrics. It proposes a set of distinct checks and explains what each measures. Edit the criteria, threshold, and judge, then confirm the checks you want. Confirmation saves reusable versions in the grader library. Confirming from a run attaches those versions to that run.
 
 The Electron renderer, preload and evaluation runner are written in TypeScript. DASH uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
+
+A **Decision model · yes/no** grader checks one domain criterion with a selected local or hosted decision model. Switch the model by saving another version. Cases with missing required evidence or a probability between the two cutoffs stay unscored. [Decision grader setup](docs/guides/workbench.md#use-a-decision-model-as-a-grader)
 
 Inspect per-case scores and explanations in **Run history**. A winner needs complete scores on the same cases and a lead on at least one rubric with no losses on the others. Ties, mixed results and missing evidence are shown explicitly. [Opik evaluator documentation](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)
 
@@ -67,7 +73,7 @@ The desktop tests run Electron against isolated temporary profiles. The workflow
 | Directory or file | Purpose |
 | --- | --- |
 | [dash-desktop/](dash-desktop/) | Electron app, local orchestration, SQLite storage, scenario packs, and tests |
-| [docs/adr/](docs/adr/) | Architecture decisions, trade-offs and ownership boundaries |
+| [Decision log](docs/adr/README.md) | Chronological product, design and architecture decisions, including alternatives, status, related ADRs and review history |
 | [Documentation index](docs/START_HERE.md) | Workbench guide, specifications, design references, product reviews and original artifacts |
 | [CONTRIBUTING.md](.github/CONTRIBUTING.md) | Branch, commit, verification and pull request workflow |
 

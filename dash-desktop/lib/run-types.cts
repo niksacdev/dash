@@ -32,7 +32,7 @@ export type StoredGuardrail=Omit<Guardrail,LaterGuardrailFields> & Partial<Pick<
 export type StoredMetadata=Omit<DatasetMetadata,"industry"> & {industry?:string};
 export interface TraceStep {at:string; action:string; guardrail?:StoredGuardrail;}
 export interface RunResult {
-  candidateId:string; caseId:string; output:string|null; error:string|null; score:CaseScore|null; finishReason?:string|null;
+  candidateId:string; caseId:string; output:string|null; error:string|null; score:CaseScore|null; finishReason?:string|null; reportedFinishReason?:string|null;
   trace:{id:string;runId:string;candidateId:string;caseId:string;started:string;finished?:string;steps:TraceStep[]};
   telemetry:(Partial<InferenceTelemetry> & {device_power?:StoredPower|null})|null;
   dispatchState?:"pending"|"canceled"|"interrupted";
@@ -40,7 +40,7 @@ export interface RunResult {
 }
 export type RunPartial = {candidateId:string;caseId:string;text:string}|{stage:string;text:string};
 export interface RunManifest {
-  format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string;
+  format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string; hostedDecisionApproved?:boolean;
   candidates:Candidate[]; caseIds:string[]; pack:ScenarioPack|null; graders:GraderSpec[];
   datasetScorer?:DatasetScorer|null; approvedPromptId?:string|null; approvedPrompt?:ApprovedPrompt|null;
   prompt:string|null; objective?:string|null; effectiveSystem?:string|null; promptSource?:string;
@@ -58,7 +58,7 @@ export interface RunData {status:RunStatus;manifest:RunManifest;results:RunResul
 export interface RunDetail extends RunData {report:RunReport|null}
 export interface StartRun {
   mode:RunMode; candidateIds:string[]; datasetId?:string; caseId?:string; parentId?:string;
-  approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[];
+  approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[]; allowHostedDecision?:boolean;
   inputCap?:number|null; outputCap?:number|null; outcomeRubric?:unknown; animation?:boolean;
 }
 export function isRecord(value:unknown):value is Record<string,unknown> {return !!value && typeof value==="object" && !Array.isArray(value);}
