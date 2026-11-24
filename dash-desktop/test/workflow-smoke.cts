@@ -184,6 +184,37 @@ async function smoke() {
     await wait(() => js("!!document.querySelector(" + q(selector) + ") && !document.querySelector(" + q(selector) + ").disabled"), "Missing enabled control " + selector);
     await js("document.querySelector(" + q(selector) + ").click(); true");
   }
+  async function checkRosterColors() {
+    const original = await text("document.documentElement.dataset.appearance");
+    for (const theme of ["light", "dark"]) {
+      await click('#appearance input[value="' + theme + '"] + span');
+      const palette = await js(`(() => {
+        const picker = document.querySelector(".model-picker");
+        const selected = picker.querySelector('[data-model][aria-pressed="true"]');
+        const other = picker.querySelector('[data-model][aria-pressed="false"]');
+        const style = element => getComputedStyle(element);
+        return {
+          action: style(document.querySelector(".header-actions .button")).backgroundColor,
+          selected: style(selected).backgroundColor,
+          other: style(other).backgroundColor,
+          metadata: style(other.querySelector("small")).color,
+          disabled: other.disabled,
+          addVisible: style(other.querySelector("i")).visibility === "visible",
+          removable: !selected.disabled && selected.querySelector("i").textContent === "✓",
+        };
+      })()`);
+      const colors = z.object({action:z.string(), selected:z.string(), other:z.string(), metadata:z.string(),
+        disabled:z.boolean(), addVisible:z.boolean(), removable:z.boolean()}).parse(palette);
+      assert.equal(colors.action, "rgb(255, 207, 0)");
+      assert.notEqual(colors.selected, colors.action);
+      assert.notEqual(colors.other, colors.action);
+      assert.notEqual(colors.selected, colors.other);
+      assert.notEqual(colors.metadata, colors.other);
+      assert.equal(colors.addVisible, !colors.disabled);
+      assert.ok(colors.removable);
+    }
+    await click('#appearance input[value="' + original + '"] + span');
+  }
   async function fill(selector:string, text:string) {
     await wait(() => exists(selector), "Missing input " + selector);
     await js("(() => { const field = document.querySelector(" + q(selector) + "); field.value = " + q(text) + "; field.dispatchEvent(new Event('input',{bubbles:true})); field.dispatchEvent(new Event('change',{bubbles:true})); return true; })()");
@@ -360,6 +391,7 @@ async function smoke() {
   assert.match(await text("document.querySelector('#qc-criteria').value"), /inspection|lots/i);
   await fill("#qc-threshold","0.8");
   await click(pick("lmstudio"));
+  await checkRosterColors();
   assert.equal(await js("document.querySelector('#setup .go-button').disabled"), true);
   await click('[data-model="ollama/qa-short-context"]');
   await wait(() => exists('[data-qc-budget="ollama/qa-short-context"][data-budget-status="blocked"]'), "Short-context lane blocks GO");
@@ -477,6 +509,7 @@ async function smoke() {
   await click(hosted);
   assert.equal(await js("document.querySelectorAll('#dataset-models .grid-slot.occupied').length"), 2);
   assert.equal(await js("document.querySelector('#dataset-models [data-model^=lmstudio]').disabled"), true);
+  await checkRosterColors();
   await click("#dataset-run-form button[type=submit]");
   const native = await completedRun(2);
   assert.equal(native.datasetId, scenario);
