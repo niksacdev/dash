@@ -32,6 +32,18 @@ body:has(.wf-page) #screen {margin:0;max-width:none;padding:clamp(16px,2.2vw,32p
 .wf-options summary {font-size:13px;width:fit-content;max-width:100%;cursor:pointer;font-weight:550}
 .wf-options-body {padding:12px 0 2px}
 .wf-options-body p,.wf-objective {line-height:1.5}
+.wf-explanation .wf-options-body {max-width:75ch;overflow-wrap:anywhere}
+.wf-explanation ul {list-style:none;padding:0;margin:0}
+.wf-explanation li+li {border-top:1px solid var(--border);margin-top:12px;padding-top:12px}
+.wf-explanation li small {display:block}
+.wf-explanation dl {display:grid;grid-template-columns:minmax(6rem,auto) 1fr;gap:6px 16px}
+.wf-explanation dt {color:var(--muted)}
+.wf-explanation dd {margin:0;white-space:pre-wrap}
+.wf-edit-note {border-inline-start:2px solid var(--accent);padding-inline-start:10px}
+@media (max-width:580px) {
+  .wf-explanation dl {grid-template-columns:1fr}
+  .wf-explanation dd+dt {margin-top:6px}
+}
 .wf-domain {padding:0;border:0;margin:0 0 14px}
 .wf-domain legend {font-weight:600;font-size:13px;margin:0 0 8px;padding:0}
 .wf-domain>div {display:flex;gap:6px;flex-wrap:wrap}

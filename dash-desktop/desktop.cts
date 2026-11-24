@@ -73,11 +73,12 @@ function initialize():void {
 
   bind("list",()=>bench.list());
   bind("refresh",()=>bench.refresh());
+  bind("loadLocalModel",raw=>bench.loadLocalModel(z.string().min(1).max(300).parse(raw)));
   bind("dataset",raw=>bench.dataset(identifier(raw)));
   bind("detail",raw=>bench.detail(identifier(raw)));
   const cursorNumber=z.number().int().nonnegative().safe();
   bind("runProgress",(id,revision,offset)=>bench.runProgress(identifier(id),cursorNumber.parse(revision),cursorNumber.parse(offset)));
-  bind("guidePrompt",value=>bench.active ? {status:"busy"} : guide.suggest(value));
+  bind("guidePrompt",value=>bench.active || bench.modelLoading ? {status:"busy"} : bench.withRuntimeUse(()=>guide.suggest(value)));
   bind("cancelGuide",()=>guide.cancel());
   const onStage=(stage:UiPlanningEvent)=>win?.webContents.send("dash:planningStage",stage);
   bind("designPrompt",value=>{guide.cancel();return bench.designPrompt(value,onStage,"draft");});
@@ -121,7 +122,9 @@ function initialize():void {
       graderId=sample.data.grader;
       evidence={...data,input:data.input??null,reference:data.reference??null};
     }
-    return bench.graders.record(bench.graders.get(graderId),evidence,where,bench.adapters,AbortSignal.timeout(190000),allowHostedDecision);
+    const grader=bench.graders.get(graderId);
+    const record=()=>bench.graders.record(grader,evidence,where,bench.adapters,AbortSignal.timeout(190000),allowHostedDecision);
+    return grader.judge || (grader.type==="decision" && grader.decision.provider==="local") ? bench.withRuntimeUse(record) : record();
   });
   const host={platform:process.platform,os:os.version(),arch:os.arch(),cpu:os.cpus()[0]?.model?.trim() ?? "",memoryGiB:Math.round(os.totalmem()/2**30)};
   const sampleDevice=createDeviceSampler({userData:app.getPath("userData"),getAppMetrics:()=>app.getAppMetrics()});

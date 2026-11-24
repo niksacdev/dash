@@ -1,6 +1,6 @@
 # 0021. Show activity and usage for each planning query
 
-**Status** Proposed
+**Status** Accepted
 
 Suggest Metrics and prompt drafting previously showed one line containing the stage and model. Nik requested a chat-style activity indicator, a distinct model label, per-query usage and cost, and explicit AI attribution. This extends the stage and model provenance in the [outcome workflow](../reviews/outcome-workflow.md) and the [local evidence policy](0002-opik-and-offline-runs.md).
 

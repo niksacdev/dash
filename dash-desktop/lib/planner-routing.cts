@@ -13,13 +13,13 @@ interface PlannerOutput {output:unknown;finishReason:unknown;revision?:string|nu
 type Validator<T> = (value:Record<string,unknown>)=>T;
 // Keep the planning route independent from the candidates an operator selects for a measured run.
 const openaiUrl = "https://api.openai.com/v1/chat/completions";
-const noPlanner = "Load an LFM3 chat model in LM Studio or Ollama, or enable the direct OpenAI fallback in DASH.";
+const noPlanner = "Load an LFM3 chat model from Local runtimes in DASH or in Ollama, then retry. You can also configure the direct OpenAI fallback.";
 
 export function selectLocalPlanner(inventory:Pick<RuntimeInventory,'models'>[]):LocalCandidate|undefined {
-  const scores = (model:LocalCandidate) => (/\bomni\b/i.test(model.model) ? 0 : 2) + (model.provider === "lmstudio" ? 1 : 0);
+  const scores = (model:LocalCandidate) => (/\bomni\b/i.test(model.nativeKey ?? model.model) ? 0 : 2) + (model.provider === "lmstudio" ? 1 : 0);
   return inventory.flatMap(server => server.models || [])
     .filter(m => m.loaded === true && ["lmstudio", "ollama"].includes(m.provider) &&
-      /(?:^|[/:_. -])lfm[-_. ]?3(?:$|[/:_. -])/i.test(m.model))
+      /(?:^|[/:_. -])lfm[-_. ]?3(?:$|[/:_. -])/i.test(m.nativeKey ?? m.model))
     .sort((a,b) => scores(b) - scores(a) || a.model.localeCompare(b.model))[0];
 }
 
@@ -43,7 +43,7 @@ export function repetitive(value:unknown):boolean {
   }
   return false;
 }
-function parseOutput<T>(response:PlannerOutput, validate:Validator<T>):T {
+function parseOutput<T>(response:PlannerOutput, validate:Validator<T>, advisoryMetrics=false):T {
   if (response.finishReason === "length") throw new InvalidOutput("the response reached its output limit");
   const raw = typeof response.output === "string" ? response.output.trim() : "";
   if (!raw || raw.length > 24000) throw new InvalidOutput("the response was empty or too long");
@@ -55,8 +55,9 @@ function parseOutput<T>(response:PlannerOutput, validate:Validator<T>):T {
   }
   if (!isRecord(parsed)) throw new InvalidOutput("the model returned an invalid JSON object");
   // Validate the fields the stage actually consumes. An unused title cannot invalidate usable measures.
-  const { title, ...content } = parsed;
-  if (repetitive(content)) throw new InvalidOutput("the model repeated a field or phrase");
+  const { title, metrics, ...content } = parsed;
+  // The expert stage can recover an unusable metric from an independently valid criterion.
+  if (repetitive(content) || (!advisoryMetrics && repetitive(metrics))) throw new InvalidOutput("the model repeated a field or phrase");
   let value;
   try { value = validate(parsed); }
   catch (error) { throw new InvalidOutput((error instanceof Error ? error.message : String(error)).replace(/[.!?\s]+$/, "")); }
@@ -104,8 +105,9 @@ export class PlanningRoute {
     return new PlanningRoute(adapters, selectLocalPlanner(inventory), options, signal, progress, requestId);
   }
   async ask<T>(stage:string, instructions:string, payload:unknown, schema:OutputSchema, maxTokens:number, validate:Validator<T>,
-    hosted?:{payload:unknown;schema:OutputSchema;validate:Validator<T>}):Promise<T> {
+    hosted?:{payload:unknown;schema:OutputSchema;validate:Validator<T>}, output?:{advisoryMetrics:true}):Promise<T> {
     const before = this.attempts.length;
+    let invalidLocalReply=false;
     const tryModel = async (candidate:LocalCandidate|{provider:'openai';model:string;revision:null}, apiKey:string|null, fallbackReason:string|null):Promise<T|null> => {
       const { provider, model, revision } = candidate;
       const input=provider==="openai" && hosted ? hosted : {payload,schema,validate};
@@ -131,7 +133,7 @@ export class PlanningRoute {
           }
           signal.throwIfAborted();
           if (response.error) throw new EndpointFailure(response.error);
-          const result = parseOutput(response, input.validate);
+          const result = parseOutput(response, input.validate, output?.advisoryMetrics);
           this.designer = identity(provider, model, response.revision || revision);
           const success:PlanningAttempt = { ...current, ...this.designer, status:"succeeded", usage:response.usage };
           this.attempts.push(success);
@@ -139,6 +141,7 @@ export class PlanningRoute {
           return result;
         } catch (error) {
           const canceled = this.signal.aborted;
+          if (provider!=="openai") invalidLocalReply=error instanceof InvalidOutput;
           const reason = canceled ? "Prompt preparation was canceled." : timeout.aborted ? "the planning request timed out" :
             error instanceof InvalidOutput || error instanceof EndpointFailure ? error.message : "the planning provider could not complete the request";
           const failure:PlanningAttempt = { ...current, status:canceled ? "canceled" : "failed", reason,
@@ -167,8 +170,12 @@ export class PlanningRoute {
     const failures = this.attempts.slice(before).filter(a => a.status === "failed");
     const summary = [...new Set(failures.map(a => a.model + " — " + a.reason))].join(". ");
     const recovery = failures.some(a => a.provider === "openai")
-      ? "Check the configured OpenAI model and key, or retry with a loaded LFM3 model."
-      : noPlanner;
+      ? "Review the failed OpenAI step in Planning activity and check the configured model and key."
+      : this.local
+        ? (invalidLocalReply ? (this.local.provider==="lmstudio" ? "LM Studio" : "Ollama")+" responded, but its planning output failed validation." :
+          "The local model was loaded when preparation started. Check its connection in Local runtimes.")+
+          " Review the failed step in Planning activity and retry, or configure the direct OpenAI fallback."
+        : noPlanner;
     throw Error(stage + " could not finish. " + (summary ? summary + ". " : "") + recovery);
   }
 }

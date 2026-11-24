@@ -75,7 +75,7 @@ export function readAgentRegistry(directory = __dirname):AgentRegistry {
       definitions.set(id,entry);
     } else definitions.set(id,base);
   }
-  for (const required of ["grader-designer","report-analyzer","report-reporter","workflow-router","workflow-expert","workflow-implementer","workflow-expert-assignment","workflow-implementer-assignment","prompt-guide"])
+  for (const required of ["workflow-metric-auditor","grader-designer","report-analyzer","report-reporter","workflow-router","workflow-expert","workflow-implementer","workflow-expert-assignment","workflow-implementer-assignment","prompt-guide"])
     if (!definitions.has(required)) throw Error("Missing bundled agent " + required);
   for (const domain of domains) for (const role of ["expert","implementer"])
     if (!roles.has(domain + "/" + role)) throw Error("Missing bundled agent for " + domain + "/" + role);

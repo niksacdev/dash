@@ -21,3 +21,15 @@ A team evaluating an earnings extractor or an inspection reviewer needs to see w
 ## Review findings
 
 The product and technical reviewers found that keyword overlap could attach a literal grader to an unrelated Quick task and that lowercased display names coupled unrelated grader histories. Require an explicit business selection, stable family identity and an exact saved revision. Score structural checks as diagnostics and preserve domain-specific failures in the comparison. Inspect both working paths and missing-evidence cases with synthetic data. Use the actual SDK behind scoring and verify the Electron review, version and reuse flow.
+
+## Calibration of agent-designed rubrics
+
+On the development Mac, a live LM Studio LFM3 1.7B designed a Manufacturing rubric from the requested share of inspection notes that name the lot and give the next action. In an isolated workspace the operator renamed the proposal, set its threshold to 0.8 and confirmed it twice. Both confirmations returned the same revision. Native Opik G-Eval from the TypeScript SDK evaluated the following synthetic notes with that local model.
+
+| Candidate answer | Expected | Observed |
+| --- | --- | --- |
+| Lot K7: hold for engineer review. | Pass | 1.0 |
+| Lot K7. | Fail | 0.0 |
+| Inspection note available. | Fail | 0.0 |
+
+In the earlier calibration, the task itself gave the next action. The judge incorrectly credited the second note for it. The released rubric pins its evidence view to **Answer only** for this presence check. Reference-based correctness checks can use the case evidence. Three synthetic examples verify this wiring and boundary. Broader judge calibration needs representative cases for each rubric.

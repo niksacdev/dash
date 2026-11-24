@@ -1,7 +1,7 @@
 import { checkInputBudget, invokeBudgeted, invokeJudge, invokePlanner } from "./token-budget.cjs";
 import { readProviderJson, parseProviderObject } from "./provider-response.cjs";
 import { ProviderRejectedError, isRecord, finite, errorText, isPositiveInteger, type LocalProvider, type LocalCandidate, type RuntimeInstance,
-  type RuntimeInventory, type ModelCandidate, type InvokeOptions, type ChatTurn, type InferenceResult, type InferenceTelemetry } from "./runtime-types.cjs";
+  type RuntimeInventory, type ModelLoadReceipt, type ModelCandidate, type InvokeOptions, type ChatTurn, type InferenceResult, type InferenceTelemetry } from "./runtime-types.cjs";
 export { checkInputBudget };
 
 const localProviders = ["ollama", "lmstudio"] as const;
@@ -42,8 +42,11 @@ async function request(provider: LocalProvider, route: string, options: RequestI
   return response;
 }
 
+function isRemoteModel(row:Record<string,unknown>,id:string):boolean {
+  return !!(row.remote_host || row.remote_model || /(?:^|[:/-])cloud(?:$|[:/])/i.test(id));
+}
 interface NativeModel {
-  key: string; type: string | null; quantization: string | null; parameterSize: string | null;
+  key: string; type: string | null; remote:boolean; quantization: string | null; parameterSize: string | null;
   maxContextTokens: number | null; maxOutputTokens: number | null; reasoningOff: boolean; instances: RuntimeInstance[];
 }
 function nativeModel(raw: Record<string,unknown>): NativeModel {
@@ -51,55 +54,123 @@ function nativeModel(raw: Record<string,unknown>): NativeModel {
   const quantization = isRecord(raw.quantization) ? string(raw.quantization.name) : null;
   const reasoning = isRecord(raw.capabilities) ? raw.capabilities.reasoning : null;
   const modes = isRecord(reasoning) ? reasoning.allowed_options : null;
-  return { key, type, quantization, parameterSize:string(raw.params_string), maxContextTokens:tokens(raw.max_context_length),
+  const instances=entries(raw.loaded_instances);
+  const remote=isRemoteModel(raw,key) || instances.some(i=>isRemoteModel(i,modelId(i.id)));
+  return { key, type, remote, quantization, parameterSize:string(raw.params_string), maxContextTokens:tokens(raw.max_context_length),
     maxOutputTokens:tokens(raw.max_output_tokens), reasoningOff:Array.isArray(modes) && modes.includes("off"),
-    instances:entries(raw.loaded_instances ?? []).map(i=>({ model:key, type, id:modelId(i.id), quantization,
+    instances:instances.map(i=>({ model:key, type, id:modelId(i.id), quantization,
       context:isRecord(i.config) ? tokens(i.config.context_length) : null })),
   };
 }
+async function nativeInventory():Promise<NativeModel[]> {
+  const response=await request("lmstudio","/api/v1/models",{signal:AbortSignal.timeout(3000)});
+  const rows=entries((await readProviderJson(response,4_000_000)).models);
+  return rows.map(nativeModel);
+}
+
+function localLoadKey(value:string):boolean {
+  return !!value && value.length<=300 && value===value.trim() && !/[\u0000-\u001f\u007f\\]/u.test(value) &&
+    !value.startsWith("/") && !value.includes("://") && !value.split("/").some(part=>!part || part==="." || part==="..");
+}
+function nativeSelection(catalog:NativeModel[],key:string):NativeModel {
+  const matches=catalog.filter(m=>m.key===key);
+  if (matches.length!==1 || matches[0].remote || matches[0].type!=="llm" || !localLoadKey(key))
+    throw Error("Choose a downloaded chat model from the current LM Studio inventory.");
+  return matches[0];
+}
+async function loadVerified(key:string):Promise<ModelLoadReceipt> {
+  let catalog:NativeModel[];
+  try { catalog=await nativeInventory(); }
+  catch { throw Error("DASH could not verify the native LM Studio inventory. Check the local server on port 1234 or load the model in LM Studio, then refresh Local runtimes."); }
+  const current=nativeSelection(catalog,key);
+  if (current.instances.length) return {status:"already-loaded",instanceId:current.instances[0].id};
+  let acknowledged:string|undefined;
+  try {
+    const response=await request("lmstudio","/api/v1/models/load",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({model:key}),signal:AbortSignal.timeout(120000)});
+    const body=await readProviderJson(response,64_000);
+    if (body.status==="loaded" && body.type==="llm") acknowledged=modelId(body.instance_id);
+  } catch(error) {
+    if (error instanceof ProviderRejectedError) throw Error("LM Studio rejected the load request. Check the model and server in LM Studio, then refresh Local runtimes.");
+    // A lost acknowledgement can follow a successful load. Only read inventory from here.
+  }
+  try {
+    const refreshed=nativeSelection(await nativeInventory(),key);
+    const instance=acknowledged ? refreshed.instances.find(i=>i.id===acknowledged) : refreshed.instances[0];
+    if (instance) return {status:"loaded",instanceId:instance.id};
+  } catch { /* The request may have succeeded while the server became unreachable. */ }
+  return {status:"unconfirmed"};
+}
+let loading:{key:string;task:Promise<ModelLoadReceipt>}|null=null;
+export function loadLocalModel(key:string):Promise<ModelLoadReceipt> {
+  if (!localLoadKey(key)) return Promise.reject(Error("Invalid local model key."));
+  if (loading) {
+    if (loading.key===key) return loading.task;
+    return Promise.reject(Error("Wait for the current LM Studio load to finish."));
+  }
+  const task=loadVerified(key).finally(()=>{loading=null;});
+  loading={key,task};
+  return task;
+}
+
 async function inventory(provider: LocalProvider): Promise<RuntimeInventory> {
-  const native = provider === "ollama";
+  const ollama = provider === "ollama";
   const status = { provider, title:titles[provider], address:servers[provider] };
   try {
-    const r = await request(provider, native ? "/api/tags" : "/v1/models", { signal:AbortSignal.timeout(2500) });
-    const data = await readProviderJson(r, 4_000_000);
-    const available = entries(native ? data.models : data.data);
-    let running: Map<string, number | null> | null = null;
     let nativeModels: NativeModel[] | null = null;
-    if (native && available.length) {
+    if (!ollama) {
+      try { nativeModels=await nativeInventory(); }
+      catch { /* Older LM Studio servers can still expose the compatible inventory. */ }
+    }
+    let available:Record<string,unknown>[];
+    try {
+      const response=await request(provider,ollama?"/api/tags":"/v1/models",{signal:AbortSignal.timeout(2500)});
+      const data=await readProviderJson(response,4_000_000);
+      available=entries(ollama?data.models:data.data);
+    } catch(error) {
+      if (!nativeModels) throw error;
+      available=[];
+    }
+    if (nativeModels) {
+      const identifiers=new Set(available.map(item=>item.id));
+      for (const m of nativeModels.filter(m=>m.type==="llm" && !m.remote)) {
+        if (!identifiers.has(m.key) && !m.instances.some(i=>identifiers.has(i.id))) available.push({id:m.key});
+      }
+    }
+    let running: Map<string, number | null> | null = null;
+    if (ollama && available.length) {
       try {
-        const active = await request(provider, "/api/ps", { signal:AbortSignal.timeout(2000) });
-        running = new Map(entries((await readProviderJson(active,4_000_000)).models).map(m=>[modelId(m.name || m.model),tokens(m.context_length)]));
+        const active=await request(provider,"/api/ps",{signal:AbortSignal.timeout(2000)});
+        running=new Map(entries((await readProviderJson(active,4_000_000)).models).map(m=>[modelId(m.name || m.model),tokens(m.context_length)]));
       } catch { /* Older Ollama runtimes may lack active inventory. */ }
     }
-    if (!native) {
-      try {
-        const active = await request(provider, "/api/v1/models", { signal:AbortSignal.timeout(2000) });
-        nativeModels = entries((await readProviderJson(active,4_000_000)).models).map(nativeModel);
-      } catch { /* Retain the compatible inventory on older LM Studio versions. */ }
-    }
-    const models: LocalCandidate[] = [];
+    const models:LocalCandidate[]=[];
     for (const m of available) {
-      const name = string(native ? m.name : m.id);
-      if (m.remote_host || m.remote_model || /(:|-|\/)cloud($|:)/i.test(name ?? "")) continue;
-      const model = modelId(name);
-      const meta = nativeModels?.find(item => item.key === model || item.instances.some(i=>i.id === model));
-      if (meta?.type === "embedding") continue;
-      const details = isRecord(m.details) ? m.details : {};
+      const name=string(ollama ? m.name : m.id);
+      if (isRemoteModel(m,name ?? "")) continue;
+      const id=modelId(name);
+      const matches=nativeModels?.filter(row=>row.key===id || row.instances.some(i=>i.id===id));
+      if (matches?.some(row=>row.remote || (row.type!==null && row.type!=="llm"))) continue;
+      const meta=matches?.length===1?matches[0]:undefined;
+      const instance=meta?.instances.find(i=>i.id===id) ?? meta?.instances[0];
+      const model=instance?.id ?? id;
+      if (models.some(c=>c.model===model)) continue;
+      const details=isRecord(m.details)?m.details:{};
       models.push({
-        id:provider + "/" + model, kind:"model", provider, model, revision:string(m.digest),
+        id:provider+"/"+id, kind:"model", provider, model, revision:string(m.digest),
+        ...(meta?.type==="llm" && localLoadKey(meta.key) && {nativeKey:meta.key}),
         parameterSize:meta?.parameterSize ?? string(details.parameter_size),
         quantization:string(details.quantization_level) ?? meta?.quantization ?? null,
-        loaded:native ? running?.has(model) ?? null : meta ? meta.instances.length > 0 : null,
-        contextTokens:(native ? running?.get(model) : meta?.instances.find(i=>i.id === model)?.context) ?? null,
+        loaded:ollama ? running?.has(model) ?? null : meta ? meta.instances.length > 0 : null,
+        contextTokens:(ollama ? running?.get(model) : instance?.context) ?? null,
         maxOutputTokens:meta?.maxOutputTokens ?? tokens(m.max_output_tokens), maxContextTokens:meta?.maxContextTokens ?? null,
-        nativeChat:!!meta, reasoningOff:meta?.reasoningOff === true,
+        nativeChat:!!meta, reasoningOff:meta?.reasoningOff===true,
       });
-      if (models.length === 200) break;
+      if (models.length===200) break;
     }
-    return { ...status, checkedAt:new Date().toISOString(), online:true, models, instances:nativeModels?.flatMap(m=>m.instances) ?? null };
-  } catch (error) {
-    return { ...status, checkedAt:new Date().toISOString(), online:false, models:[], instances:null, error:errorText(error) };
+    return {...status,checkedAt:new Date().toISOString(),online:true,models,instances:nativeModels?.filter(m=>!m.remote).flatMap(m=>m.instances) ?? null};
+  } catch(error) {
+    return {...status,checkedAt:new Date().toISOString(),online:false,models:[],instances:null,error:errorText(error)};
   }
 }
 export function discover(): Promise<RuntimeInventory[]> {

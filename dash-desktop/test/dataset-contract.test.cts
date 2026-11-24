@@ -141,3 +141,30 @@ test("action graders leave missing traces unscored and score only supplied agent
   assert.equal((await grade([{tool:"hold"},{tool:"lookup"}])).value,0);
   assert.equal((await grade([{tool:"lookup"},{action:"hold"}])).value,1);
 });
+
+test("a reference-bound Opik rubric can grade a partially labeled snapshot and rejects a wholly incapable run before dispatch",async t=>{
+  const model:LocalCandidate={kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  let candidateCalls=0,scoreCalls=0;
+  const bench=new Bench(":memory:",{discover:async()=>[inventory([model])],invoke:async(_c,messages)=>{
+    const request=opikJudgeRequest(messages);
+    if(request?.stage==="geval-steps")return reply("Compare the answer to the supplied disposition.");
+    if(request?.stage==="geval-score"){scoreCalls++;return reply('{"score":10,"reason":"The disposition matches."}');}
+    candidateCalls++;return reply("HOLD");
+  }},withoutPower);
+  t.after(()=>bench.db.close());await bench.refresh();
+  const base={dataset_version:"1",split:"development",prompt:"Give the lot disposition."};
+  const missing={...base,case_id:"missing"};
+  const label={...base,case_id:"labeled",reference:"HOLD"};
+  const plain=bench.import("reference","Unlabeled",JSON.stringify(missing));
+  const mixed=bench.import("reference","Mixed", [missing,label].map(row=>JSON.stringify(row)).join("\n"));
+  const common={intent:"create",type:"opik",category:"Disposition",industry:"Cross-industry",criteria:"Compare the lot disposition.",threshold:1,judgeId:model.id};
+  const reference=bench.graders.save({...common,name:"Reference disposition",requiredEvidence:["reference"]},[model]);
+  const trajectory=bench.graders.save({...common,name:"Disposition steps",requiredEvidence:["trajectory"]},[model]);
+  const start=(datasetId:string,id:string)=>bench.start({mode:"dataset",datasetId,candidateIds:[model.id],graderIds:[id]});
+  assert.throws(()=>start(plain,reference),/available evidence/);assert.throws(()=>start(mixed,trajectory),/available evidence/);
+  assert.equal(candidateCalls,0);
+  const run=start(mixed,reference);await present(bench.active).done;
+  const grades=bench.detail(run).assessments.filter(result=>result.graderId===reference);
+  assert.equal(grades.find(g=>g.caseId==="labeled")?.value,1);
+  assert.equal(grades.find(g=>g.caseId==="missing")?.value,null);assert.equal(candidateCalls,2);assert.equal(scoreCalls,1);
+});

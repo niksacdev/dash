@@ -3,6 +3,7 @@ import type {DatabaseSync} from "node:sqlite";
 import {hash} from "./packs.cjs";
 import {RoleStore,transaction,type DomainRole} from "./domain-profiles.cjs";
 import {bundledAgents,agentPin,isRecord,domains,isDomain,type Domain,type AgentRegistry} from "../agents/registry.cjs";
+import {instructionEcho,knownScorer,proposals,pairSelection,metricsAuditSchema,validateMetricAudit,type MetricAudit} from "./metric-audit.cjs";
 import {candidateGuidance,inspectionCheck} from "./prompt-fidelity.cjs";
 import {PlanningRoute,repetitive,tokens,type PlannerAdapters,type PlannerOptions,type PlannerIdentity,type PlanningAttempt} from "./planner-routing.cjs";
 import {required,optional,lines,cap,decodeRequest,decodeApprovedPrompt,type ApprovedPrompt,type DesignRequest,type DesignContext,type PlanningPurpose,type ScenarioContract,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
@@ -17,7 +18,7 @@ function objectSchema(properties:Record<string,unknown>) {
 const routeSchema = objectSchema({ domain: { type: "string", enum: domains } });
 const measureSchema = objectSchema({ requirements: strings, metrics: strings });
 const expertSchema = objectSchema({ title: string, metrics: strings, requirements: strings });
-const implementerSchema = objectSchema({ prompt: { type: "string", maxLength: 900 } });
+const implementerSchema = objectSchema({ prompt: { type: "string", maxLength: 900 }, reason:{type:"string",maxLength:180} });
 export function contractHash(pack:Pick<ScenarioContract,'id'|'system'|'outputSchema'|'metrics'>) {
   return hash({ id:pack.id, system:pack.system, outputSchema:pack.outputSchema, metrics:pack.metrics });
 }
@@ -31,7 +32,7 @@ function datasetContext(request:DesignRequest, context:DesignContext) {
   if (!pack || context.datasetId !== id) throw Error("Select a current dataset snapshot before drafting.");
   return {
     datasetId:id, packId:pack.id, contractHash:contractHash(pack), title:pack.title,
-    description:pack.description, system:pack.system, outputSchema:pack.outputSchema, metrics:pack.metrics,
+    description:pack.description, scorer:pack.scorer, system:pack.system, outputSchema:pack.outputSchema, metrics:pack.metrics,
     industry:context.industry ?? null, version:context.version ?? null, split:context.split ?? null,
   };
 }
@@ -56,11 +57,12 @@ const commonMeasureWords = new Set(("a an and are as at by case cases count each
 function measureTerms(text:string) {
   return new Set(tokens(text).filter(t => t.length > 2 && !commonMeasureWords.has(t)).map(t => t.replace(/s$/, "")));
 }
-function evaluationMeasures(result:Record<string,unknown>, objective:string, requestedMetrics:string, domain:Domain, dataset:ReturnType<typeof datasetContext>):Findings {
+function evaluationMeasures(result:Record<string,unknown>, objective:string, requestedMetrics:string, domain:Domain, dataset:ReturnType<typeof datasetContext>, instructions:string[]):Findings {
   const original = measureLines(result?.requirements ?? result?.criteria, "Expert criteria");
   const criteria = [], omissions = [];
   for (const criterion of original) {
     try {
+      if (instructionEcho(criterion,instructions)) { omissions.push("copied planning instructions"); continue; }
       const check = candidateGuidance(criterion,{objective,dataset,expert:true});
       if (check.omitted) omissions.push(...check.reasons);
       else criteria.push(check.text);
@@ -69,11 +71,11 @@ function evaluationMeasures(result:Record<string,unknown>, objective:string, req
   let supplementSource;
   if (!criteria.length) {
     const supplement = inspectionCheck(domain,objective,dataset);
-    if (!supplement) throw Error("the expert introduced an unsupported case rule; base the pass checks only on the stated objective");
-    criteria.push(supplement.criterion);
-    supplementSource = supplement.source;
+    if (supplement) { criteria.push(supplement.criterion); supplementSource = supplement.source; }
   }
-  const proposed = measureLines(result?.metrics, "Expert metrics");
+  // A meaningful criterion can still be audited when its proposed aggregate is unusable.
+  const proposed = Array.isArray(result.metrics) ? result.metrics.slice(0,8).map((v:unknown)=>
+    typeof v==="string" && v.trim().length<=1000 && !repetitive(v) && new Set(tokens(v)).size>=2 ? v.trim() : "") : [];
   const metrics = criteria.map((criterion, index) => {
     const metric = proposed[index];
     if (!omissions.length && metric && proposed.length === criteria.length) {
@@ -84,15 +86,12 @@ function evaluationMeasures(result:Record<string,unknown>, objective:string, req
           /correct|accura|error|miss|false|true|match|precis|recal|support|cited|complet|cover|pass|agreement|verified/i.test(metric)) return metric;
       if (requestedMetrics && requestedMetrics.includes(metric)) return metric;
     }
-    return "Pass rate among applicable cases · " + criterion;
+    return "";
   });
   return { title:titleFor(result?.title, objective), metrics, requirements:criteria, ...(omissions.length && {criteriaReview:{omitted:original.length-(supplementSource ? 0 : criteria.length),reasons:[...new Set(omissions)],supplementSource}}) };
 }
-function metricList(typed:string, suggested:string[]) {
-  return [...new Set([...(typed ? [typed] : []), ...suggested])].slice(0, 8);
-}
 interface Findings {title:string;metrics:string[];requirements:string[];criteriaReview?:{omitted:number;reasons:string[];supplementSource?:string}}
-interface CachedSuggestion {scope:string;domain:Domain;domainSource:string;expert:DomainRole;designer:PlannerIdentity;findings:Findings;planningAttempts:PlanningAttempt[]}
+interface CachedSuggestion {scope:string;domain:Domain;domainSource:string;expert:DomainRole;designer:PlannerIdentity;findings:Findings;metricAudit:MetricAudit[];auditDesigner:PlannerIdentity;planningAttempts:PlanningAttempt[]}
 function decodeSaved(spec:unknown):ApprovedPrompt {
   if (typeof spec!=="string") throw Error("Invalid saved prompt.");
   return decodeApprovedPrompt(JSON.parse(spec));
@@ -142,7 +141,7 @@ export class OutcomeWorkflow {
     const parent = request.parentId ? this.get(request.parentId) : null;
     if (parent && (parent.mode !== request.mode || parent.datasetId !== (dataset?.datasetId ?? null)))
       throw Error("Revise this prompt with its original run type and dataset snapshot.");
-    const scope = hash([request.mode, objective, manual, dataset?.datasetId, dataset?.contractHash, parent?.id, context.priorRun?.id]);
+    const scope = hash([request.mode, objective, requestedMetrics, manual, dataset?.datasetId, dataset?.contractHash, dataset?.scorer, context.coverage, parent?.id, context.priorRun?.id]);
     const prior = request.suggestionId ? this.suggestions.get(request.suggestionId) : undefined;
     if (request.suggestionId && prior?.scope !== scope)
       throw Error("The objective or scenario changed, or the suggestions expired. Choose Suggest Metrics again.");
@@ -150,12 +149,19 @@ export class OutcomeWorkflow {
       metrics: lines(request.measures.metrics, "Selected metrics", 2000, 0),
       criteria: lines(request.measures.criteria, "Success criteria", 2000, 0),
     };
+    const previousRows=prior?.metricAudit.filter(row=>row.status!=="external");
+    const previous=previousRows ? {metrics:previousRows.map(r=>r.metric),criteria:previousRows.map(r=>r.criterion),pairs:previousRows} :
+      parent ? {metrics:parent.metrics,criteria:parent.requirements,
+        pairs:parent.metricCriteria ?? parent.metricAudit?.filter(r=>r.status!=="external") ??
+          (parent.metrics.length===parent.requirements.length ? proposals(parent.metrics,parent.requirements) : undefined)} : null;
+    const selected=choices ? pairSelection(choices.metrics,choices.criteria,previous) : null;
+    const explicitlyEmpty=purpose==="draft" && selected?.length===0;
     // Snapshot IDs, versions and splits describe the catalogue. They are never case evidence.
     const publicTask:(Pick<ScenarioContract,'title'|'description'|'system'|'outputSchema'|'metrics'> & {scoringDefinitions?:Record<string,string>})|null = dataset && {
       title:dataset.title, description:dataset.description, system:dataset.system,
       outputSchema:dataset.outputSchema, metrics:dataset.metrics,
     };
-    if (publicTask?.metrics?.length === 3) {
+    if (publicTask?.metrics?.length === 3 && knownScorer(context.pack)) {
       const [ready, incorrect, review] = publicTask.metrics;
       publicTask.scoringDefinitions = {
         [ready]: "Count of candidate proposals to accept or auto-route that pass the scenario grader.",
@@ -166,9 +172,9 @@ export class OutcomeWorkflow {
     const brief:{mode:DesignRequest['mode'];objective:string;requestedMetrics:string;inputCap:number|null;outputCap:number|null;dataset:typeof publicTask;successCriteria?:string[];previousApproved?:{prompt:string;metrics:string[]};priorRun?:DesignContext['priorRun']} = { mode:request.mode, objective, requestedMetrics, inputCap, outputCap, dataset:publicTask };
     if (choices) {
       brief.requestedMetrics = choices.metrics.join("\n");
-      brief.successCriteria = choices.criteria;
+      brief.successCriteria = selected?.map(item=>item.criterion).filter(Boolean) ?? [];
     }
-    if (parent) brief.previousApproved = { prompt:parent.prompt, metrics:parent.metrics };
+    if (parent && !explicitlyEmpty) brief.previousApproved = { prompt:parent.prompt, metrics:parent.metrics };
     if (parent && context.priorRun) brief.priorRun = context.priorRun;
 
     // Snapshot each role before starting asynchronous inference. An admin edit takes effect on the next draft.
@@ -201,36 +207,95 @@ export class OutcomeWorkflow {
         "\n" + promptAsset("workflow-expert").instructions +
         (purpose === "suggest" ? "\nReturn only the metrics and requirements arrays." : "\nGive the brief a short title."),
         { ...brief, assignment:promptAsset("workflow-expert-assignment").instructions.replace("{{objective}}",()=>objective) },
-        purpose === "suggest" ? measureSchema : expertSchema, 550, result => evaluationMeasures(result, objective, requestedMetrics, domain, dataset));
+        purpose === "suggest" ? measureSchema : expertSchema, 550, result => evaluationMeasures(result, objective, requestedMetrics, domain, dataset, [expert.instructions,promptAsset("workflow-expert").instructions,promptAsset("workflow-expert-assignment").instructions]), undefined, {advisoryMetrics:true});
       const expertDesigner = prior?.designer ?? route.designer;
       if (!expertDesigner) throw Error("Missing expert planning identity.");
+      const auditor=promptAsset("workflow-metric-auditor");
+      const priorSelected=prior?.metricAudit.filter(row=>row.status!=="external");
+      const sameSelection=!!prior && (!choices || (
+        JSON.stringify(choices.metrics)===JSON.stringify(priorSelected?.map(row=>row.metric)) &&
+        JSON.stringify(choices.criteria)===JSON.stringify(priorSelected?.map(row=>row.criterion))));
+      const edited=purpose==="suggest" && !selected?.length ? null : selected;
+      const inputs=edited ?? proposals(findings.metrics,findings.requirements);
+      const metricAudit=sameSelection && prior ? prior.metricAudit : explicitlyEmpty ? [] :
+        await ask("Evaluation metric audit",auditor.instructions,{
+          objective,requestedMetrics,mode:request.mode,proposals:inputs,
+          scenario:dataset ? {title:dataset.title,scorer:dataset.scorer,metrics:dataset.metrics,coverage:context.coverage}:null,
+          preserveSelectedWording:!!choices,
+        },metricsAuditSchema,1100,result=>validateMetricAudit(result,objective,context.pack,context.coverage,requestedMetrics,
+          [expert.instructions,promptAsset("workflow-expert").instructions,promptAsset("workflow-expert-assignment").instructions,auditor.instructions],edited));
+      const auditDesigner=sameSelection && prior ? prior.auditDesigner : explicitlyEmpty ? null : route.designer;
+      if (!auditDesigner && !explicitlyEmpty) throw Error("Missing metric auditor identity.");
+      const accepted=metricAudit.filter(row=>row.status!=="external");
+      const metrics=accepted.map(row=>row.metric), requirements=accepted.map(row=>row.criterion);
       if (purpose === "suggest") {
+        if (!auditDesigner) throw Error("Missing metric auditor identity.");
         const id = randomUUID();
-        this.suggestions.set(id, { scope, domain, domainSource, expert, designer:expertDesigner, findings, planningAttempts:route.attempts });
+        this.suggestions.set(id, { scope, domain, domainSource, expert, designer:expertDesigner, findings, metricAudit, auditDesigner, planningAttempts:route.attempts });
         if (this.suggestions.size > 64) this.suggestions.delete(this.suggestions.keys().next().value ?? '');
         return structuredClone({ id, domain, expertVersion:expert.version, model:expertDesigner.model, designer:expertDesigner, planningAttempts:route.attempts,
-          metrics:findings.metrics, criteria:findings.requirements, criteriaReview:findings.criteriaReview });
+          metrics, criteria:requirements, metricAudit, ...(context.coverage && {auditCoverage:{...context.coverage}}), auditDesigner, auditAgent:agentPin(auditor), criteriaReview:findings.criteriaReview });
       }
-      const metrics = choices ? choices.metrics : metricList(requestedMetrics, findings.metrics);
-      const requirements = choices ? choices.criteria : findings.requirements;
-      const expertBrief = { title:findings.title, metrics: choices ? metrics : findings.metrics, requirements };
+      // Audit targets can be numbers, dates, category names or arbitrary expected text.
+      // Build the candidate-writing brief from a public allowlist, never by filtering targets.
+      const priorEvidence:unknown=brief.priorRun;
+      const implementerTask={
+        objective,mode:request.mode,inputCap,outputCap,
+        dataset:dataset ? {title:dataset.title,description:dataset.description,system:dataset.system,outputSchema:dataset.outputSchema}:null,
+        ...(isRecord(priorEvidence) && {refinement:{
+          inputLimitExceeded:isRecord(priorEvidence.tokenConstraint),
+          outputTruncated:Array.isArray(priorEvidence.truncatedOutputs) && priorEvidence.truncatedOutputs.length>0,
+        }}),
+        assignment:promptAsset("workflow-implementer-assignment").instructions,
+      };
       const guidance = await ask(domain + " implementer", grounding(implementer) +
         "\n" + promptAsset("workflow-implementer").instructions,
-        { ...brief, expertBrief, metrics, assignment:promptAsset("workflow-implementer-assignment").instructions },
+        implementerTask,
         implementerSchema, 650, result => {
-          const prompt = required(result?.prompt, "Implementer prompt", 1500);
+          const generated=required(result?.prompt, "Implementer prompt", 1500);
+          const withoutLabel=generated.replace(/^\s*(?:(?:business )?objective|business outcome)\s*:\s*/i,"");
+          const repeatedObjective=withoutLabel.startsWith(objective) &&
+            (!withoutLabel.slice(objective.length) || /[.!?]$/.test(objective) || /^[\s.:;–—-]/.test(withoutLabel.slice(objective.length)));
+          const prompt=repeatedObjective ? withoutLabel.slice(objective.length).replace(/^[\s.:;–—-]+/,"").trim() : generated;
+          if (repeatedObjective && !prompt) return {text:"",omitted:1,reasons:["repeated operator objective"],
+            reason:"The implementer repeated the original objective. DASH kept it unchanged."};
           if (new Set(tokens(prompt)).size < 3) throw Error("the implementer returned an incomplete instruction");
-          return candidateGuidance(prompt, {objective,dataset,domain});
+          const sources=[implementer.instructions,promptAsset("workflow-implementer").instructions,promptAsset("workflow-implementer-assignment").instructions];
+          const sentences=prompt.split(/(?<=[.!?])\s+|[;\r\n]+/).map(line=>line.trim()).filter(Boolean);
+          const retained=sentences.filter(sentence=>!instructionEcho(sentence,sources) &&
+            !/^(?:write .*sentences?\b|leave the decision to the candidate\b|(?:tell|ask) the candidate\b|the metrics belong to the evaluator\b)/i.test(sentence));
+          if (!retained.length || (sentences.length!==retained.length && !retained.some(line=>
+            [...measureTerms(objective)].some(word=>measureTerms(line).has(word))))) {
+            return {text:"",omitted:sentences.length,reasons:["copied instructions for the implementer"],
+              reason:"The implementer supplied no additional task-specific instruction. DASH kept the original objective."};
+          }
+          const reviewed=candidateGuidance(retained.join(" "), {objective,dataset,domain});
+          if (repeatedObjective) {
+            reviewed.omitted++;
+            reviewed.reasons.push("repeated operator objective");
+          }
+          if (sentences.length!==retained.length) {
+            reviewed.omitted+=sentences.length-retained.length;
+            reviewed.reasons.push("copied instructions for the implementer");
+          }
+          const rawReason=typeof result.reason==="string" ? result.reason.trim() : "";
+          const safeReason=rawReason && rawReason.length<=220 && !reviewed.omitted &&
+            !/\b(?:improv\w*|guarantee\w*|boost\w*|increas\w*|reduc\w*|ensur\w*|saved|verified|proved)\b/i.test(rawReason) &&
+            [...measureTerms(rawReason)].some(word=>measureTerms(reviewed.text).has(word)) && !instructionEcho(rawReason,sources);
+          const reason=safeReason ? rawReason : reviewed.supplementSource ? "DASH retained the supported inspection instruction after checking the generated guidance against the task."
+            : "The implementer added these case-level instructions to the operator’s objective.";
+          return {...reviewed,reason};
         });
       const draft:PromptDraft = {
         draftId:randomUUID(), mode:request.mode, objective, requestedMetrics, metrics, inputCap, outputCap,
+        metricAudit,...(context.coverage && {auditCoverage:{...context.coverage}}),...(auditDesigner && {auditAgent:agentPin(auditor),auditDesigner}),promptRationale:{original:objective,addition:guidance.text,reason:guidance.reason},
         domain, domainSource, title:findings.title, requirements,
-        prompt:objective + "\n\n" + guidance.text, criteriaReview:findings.criteriaReview ?? null, guidanceReview:{omitted:guidance.omitted,reasons:guidance.reasons,...(guidance.supplementSource && {supplementSource:guidance.supplementSource})}, parentId:parent?.id ?? null,
+        prompt:guidance.text ? objective + "\n\n" + guidance.text : objective, criteriaReview:findings.criteriaReview ?? null, guidanceReview:{omitted:guidance.omitted,reasons:guidance.reasons,...(guidance.supplementSource && {supplementSource:guidance.supplementSource})}, parentId:parent?.id ?? null,
         datasetId:dataset?.datasetId ?? null, packId:dataset?.packId ?? null, contractHash:dataset?.contractHash ?? null, dataset,
         sourceRunId:brief.priorRun?.id ?? null, priorRun:brief.priorRun ?? null,
         suggestions:prior ? { domain, expertVersion:expert.version, designer:prior.designer, metrics:findings.metrics, criteria:findings.requirements } : null,
         agents:[expert, implementer].map(({domain,role,version,hash,sources,origin,bundle}) => ({domain,role,version,hash,sources,origin,bundle})),
-        workflowAgents:[...(domainSource==="inferred"?["workflow-router"]:[]),"workflow-expert","workflow-expert-assignment","workflow-implementer","workflow-implementer-assignment"].map(id=>agentPin(promptAsset(id))),
+        workflowAgents:[...(domainSource==="inferred"?["workflow-router"]:[]),"workflow-expert","workflow-expert-assignment",...(auditDesigner?["workflow-metric-auditor"]:[]),"workflow-implementer","workflow-implementer-assignment"].map(id=>agentPin(promptAsset(id))),
         designer:route.designer, expertDesigner, planningAttempts:[...(prior?.planningAttempts ?? []), ...route.attempts],
         createdAt:new Date().toISOString(),
       };
@@ -263,9 +328,27 @@ export class OutcomeWorkflow {
         if (latest?.version !== parent.version) throw Error("A newer revision was approved. Start from the latest catalogue version.");
       }
       const id = randomUUID();
+      const finalMetrics=approvedMetrics ?? draft.metrics;
+      const {metricAudit,promptRationale,...record}=draft;
+      const sameMetrics=JSON.stringify(finalMetrics)===JSON.stringify(draft.metrics);
+      // Edited metrics may be reordered, renamed, or newly authored. Only carry a
+      // prior criterion when the operator kept its exact reviewed metric.
+      const reviewedCriteria=new Map(metricAudit?.filter(row=>row.status!=="external").map(row=>[row.metric,row.criterion]));
+      const finalRequirements=sameMetrics ? draft.requirements : finalMetrics.flatMap(metric=>{
+        const criterion=reviewedCriteria.get(metric);
+        return criterion ? [criterion] : [];
+      });
+      const unchanged=approvedText===draft.prompt;
+      const addition=approvedText.startsWith(draft.objective+"\n\n") ? approvedText.slice(draft.objective.length+2) : "";
+      const finalRationale=unchanged ? promptRationale : addition ? {original:draft.objective,addition,reason:"The operator edited the added instructions before approval."} : undefined;
       const entry = {
-        ...draft, id, familyId:parent?.familyId ?? id, version:parent ? parent.version + 1 : 1,
-        prompt:approvedText, metrics:approvedMetrics ?? draft.metrics,
+        ...record,...(finalRationale && {promptRationale:finalRationale}),
+        ...(metricAudit && unchanged && sameMetrics && {metricAudit}), id, familyId:parent?.familyId ?? id, version:parent ? parent.version + 1 : 1,
+        prompt:approvedText, metrics:finalMetrics, requirements:finalRequirements,
+        metricCriteria:finalMetrics.flatMap(metric=>{
+          const criterion=reviewedCriteria.get(metric);
+          return criterion ? [{metric,criterion}] : [];
+        }),
         approvedAt:new Date().toISOString(),
       };
       this.db.prepare("INSERT INTO outcome_prompts VALUES(?,?,?,?,?,?)")

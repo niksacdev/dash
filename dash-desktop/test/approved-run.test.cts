@@ -1,3 +1,4 @@
+import {auditReply} from "./audit-fixture.cjs";
 import { test,type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { Bench } from "../lib/bench.cjs";
@@ -20,6 +21,7 @@ function harness(t:TestContext, checkInputBudget?:CheckInputBudget) {
     checkInputBudget,
     async invoke(candidate, messages, options) {
       calls.push({ candidate, messages, options });
+      if (isRecord(options.structured?.properties) && options.structured.properties.audit) return reply(JSON.stringify(auditReply(messages)));
       let result;
       if (options.planning && isRecord(options.structured?.properties) && options.structured.properties.requirements)
         result = { title: "Receiving inspection", metrics: ["False accepts"], requirements: ["Use the active drawing."] };
@@ -98,6 +100,11 @@ test("refining from a run gives the agents measured counts and preserves its ori
   assert.equal(measured.passed,0);
   for (const call of calls.slice(index)) {
     const brief=objectValue(jsonText(call.messages[1].content));
+    if (isRecord(call.options.structured?.properties) && (call.options.structured.properties.audit || call.options.structured.properties.prompt)) {
+      assert.equal(brief.priorRun,undefined);
+      assert.doesNotMatch(JSON.stringify(brief),/PRIVATE_CANDIDATE_ANSWER|source_locator/);
+      continue;
+    }
     assert.ok(isRecord(brief.priorRun));
     assert.equal(brief.priorRun.id, id);
     assert.doesNotMatch(JSON.stringify(brief.priorRun), /PRIVATE_CANDIDATE_ANSWER|gold|source_locator/);
@@ -172,4 +179,28 @@ test("idle dataset polls do not repeat previous responses or expose the current 
     for(let i=0;i<8;i++) assert.deepEqual(bench.runProgress(id,revision,0),{kind:"unchanged"});
   } finally {release();await done;}
   assert.equal(bench.detail(id).status,"completed");
+});
+
+test("a reviewer-only categorical answer is retained for grading and cannot enter either candidate dispatch", async t=>{
+  const {bench,calls,ids}=harness(t);
+  await bench.refresh();
+  const objective="Decide the disposition from the incoming inspection report.";
+  const passTest="The correct disposition is quarantine.";
+  const draft=await bench.designPrompt({mode:"quick",domain:"Manufacturing",objective,measures:{
+    metrics:["Disposition agreement"],criteria:[passTest],
+  }});
+  assert.ok(draft.metricAudit?.some(row=>row.criterion===passTest));
+  const implementer=calls.find(call=>isRecord(call.options.structured?.properties) && call.options.structured.properties.prompt);
+  assert.ok(implementer);
+  assert.doesNotMatch(JSON.stringify(implementer.messages),/quarantine/i);
+  const approved=bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
+  const run=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id});
+  await completion(bench);
+  const results=bench.detail(run).results;
+  assert.equal(results.length,2);
+  for (const result of results) {
+    assert.ok(result.dispatchedMessages?.length);
+    assert.doesNotMatch(JSON.stringify(result.dispatchedMessages),/quarantine/i);
+  }
+  assert.ok(approved.requirements.includes(passTest));
 });

@@ -57,7 +57,7 @@ export function getOpikTemplate(key: OpikMetricKey) {
 }
 
 // Chat turns, document fields and held-out JSON answers are preserved as evidence.
-function hasEvidence(value: unknown): boolean {
+export function hasEvidence(value: unknown): boolean {
   if (typeof value === "string") return !!value.trim();
   if (typeof value === "number") return Number.isFinite(value);
   if (typeof value === "boolean") return true;

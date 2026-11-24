@@ -20,6 +20,7 @@ interface CandidateIdentity {
   nativeChat?: boolean;
 }
 export interface LocalCandidate extends CandidateIdentity {
+  nativeKey?:string;
   provider: LocalProvider;
   kind: "model";
 }
@@ -112,7 +113,9 @@ export class ConfirmedInputMismatch extends Error {
   }
   get response(): InferenceResult { return this.#response; }
 }
+export type ModelLoadReceipt = {status:"already-loaded"|"loaded";instanceId:string}|{status:"unconfirmed"};
 export interface RuntimeAdapters {
+  loadLocalModel?(nativeKey:string):Promise<ModelLoadReceipt>;
   discover(): Promise<RuntimeInventory[]>;
   invoke(candidate: ModelCandidate, messages: ChatTurn[], options: InvokeOptions): Promise<InferenceResult>;
   reportStage?(candidate: ModelCandidate, messages: ChatTurn[], options: InvokeOptions): Promise<InferenceResult>;

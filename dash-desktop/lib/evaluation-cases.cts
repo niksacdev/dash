@@ -1,3 +1,4 @@
+import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord, validTurns } from "./run-types.cjs";
 import type { CaseRow, CaseScore, RunResult, RunManifest, ScenarioPack, ReferencePack } from "./run-types.cjs";
@@ -58,7 +59,7 @@ export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:Run
   return {
     ...(catalogContext && {finishReason:result.reportedFinishReason ?? null}),
     ...(catalogContext && manifest.pack && manifest.pack.kind !== "reference" && {caseContext:{pack:manifest.pack,row}}),
-    ...(approved && {evaluationBrief:{objective:approved.objective, metrics:approved.metrics, criteria:approved.requirements}}),
+    ...(approved && {evaluationBrief:{objective:approved.objective, metrics:approved.auditAgent ? approved.metrics.filter(metric=>!isExternalOutcomeMetric(metric)) : approved.metrics, criteria:approved.requirements}}),
     input: result.dispatchedMessages ?? caseMessages(manifest,row),
     inputSource: result.dispatchedMessages ? "recorded-dispatch" : manifest.fixture ? "fixture-case" : "reconstructed-case",
     reference: row.reference ?? row.gold ?? null,

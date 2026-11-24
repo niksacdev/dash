@@ -1,3 +1,4 @@
+import {auditReply} from "./audit-fixture.cjs";
 import { test, type TestContext } from "node:test";
 import assert = require("node:assert/strict");
 import { DatabaseSync } from "node:sqlite";
@@ -102,6 +103,7 @@ test("the dispatched domain prompt and approved plan pin the deployed Markdown v
     async invoke(model,messages,{structured}) {
       calls.push(messages[0].content);
       const fields=z.object({properties:z.record(z.string(),z.unknown())}).parse(structured);
+      if(fields.properties.audit) return inferenceReply(JSON.stringify(auditReply(messages)));
       const reply=fields.properties.requirements
         ? {title:"Inspected revision",metrics:["Correct drawing revisions per cited revision"],requirements:["Cite the drawing revision."]}
         : {prompt:"Cite the supplied drawing revision."};
@@ -119,9 +121,9 @@ test("the dispatched domain prompt and approved plan pin the deployed Markdown v
   release.version=2;
   fs.writeFileSync(manifestFile,JSON.stringify(manifest));
   const after=open(), draft=await after.design(request);
-  assert.ok(calls[2].includes(next.trim()));
+  assert.ok(calls[3].includes(next.trim()));
   assert.equal(draft.agents?.find(r=>r.role==="expert")?.bundle?.version,2);
-  assert.deepEqual(draft.workflowAgents?.map(a=>a.id),["workflow-expert","workflow-expert-assignment","workflow-implementer","workflow-implementer-assignment"]);
+  assert.deepEqual(draft.workflowAgents?.map(a=>a.id),["workflow-expert","workflow-expert-assignment","workflow-metric-auditor","workflow-implementer","workflow-implementer-assignment"]);
   assert.deepEqual(after.get(saved.id),saved);
   assert.equal(saved.agents?.find(r=>r.role==="expert")?.bundle?.version,1);
 });

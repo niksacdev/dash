@@ -11,14 +11,20 @@ The Overview track reads **Business outcome → Success metrics → Evaluation r
 | Step | What happens | What the workbench keeps |
 | --- | --- | --- |
 | Describe the outcome | The operator writes the objective and, optionally, a plain-English measure and per-response input or output limit. Quick compare infers the industry. A supported dataset industry selects its profile automatically. | Original objective and requested measure |
-| Prepare the prompt | A local chat model runs the expert and implementer in sequence. The expert identifies evidence requirements and observable measures. The implementer uses that brief to write candidate instructions. | Model identity, role versions, requirements, proposed measures and draft |
+| Prepare the prompt | The expert proposes measures and a second agent audits their measurability. The implementer drafts candidate instructions from the operator’s objective, public scenario contract and token limits. The grader retains the reviewed measures and expected answers. | Model identity, role versions, requirements, proposed measures and draft |
 | Review and approve | The operator edits the candidate prompt and measures. Dataset runs show the separate, fixed scenario contract. Model selection opens after approval. | An immutable catalog revision with its domain, limits, parent and applicable dataset snapshot |
 | Evaluate | Quick compare runs two selected models on the same approved text. Dataset runs evaluate one or two candidates on the chosen snapshot. Runtimes apply their own chat templates. | Prompt revision, inputs, scenario and grader versions, replies, scores, available telemetry and errors |
-| Refine | On a finished run, the operator can start the next revision. The agents receive aggregate observed counts for the previous candidates and graders. The operator reviews the resulting revision again. | Source run, measured counts and prompt lineage. Historical prompts can also be reused exactly. |
+| Refine | On a finished run, the operator can start the next revision. The expert receives aggregate observed counts for the previous candidates and graders. The implementer can receive a budget or truncation signal. The operator reviews the resulting revision again. | Source run, measured counts and prompt lineage. Historical prompts can also be reused exactly. |
 
 ## Inspect a planning query
 
 In Quick compare or a dataset prompt variant, **Suggest Metrics** and **Draft evaluation prompt** show the active stage and the local or hosted model. A small animated indicator stops when the call settles and becomes static when reduced motion is enabled. The latest call stays visible after completion. Each retry or hosted fallback gets its own entry with the input and output tokens reported for that attempt, even when DASH rejects the generated text. Local inference has no API charge. A supported hosted model can show a labeled estimate from reported usage and standard pricing. Missing counts and prices stay unavailable. Suggested metrics are attributed to the AI expert with a review notice, and built-in supplementary criteria retain their source.
+
+## Review the evidence behind a proposal
+
+For a synthetic earnings release, an expert can propose checking the reported GAAP EPS. The auditor should identify the expected value and basis needed to grade the answer, and how the grader would compare them. A downstream goal such as increasing investor confidence needs observations outside the run. Unsupported KPIs stay outside the default run checks. A successful model call alone must never certify a metric.
+
+The operator can expand **Why these metrics?** before drafting. Edits to the selected checks require a fresh assessment or a clear indication that the explanation describes the original proposal. **Why this prompt?** shows the starting objective, the instruction added and the basis for the change. Explanations are separate from candidate instructions. Dataset reference answers, protected grader data and private model deliberation do not belong in the prompt.
 
 ## Decisions from specification and critique
 

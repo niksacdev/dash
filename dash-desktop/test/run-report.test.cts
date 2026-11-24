@@ -1,3 +1,4 @@
+import {auditReply} from "./audit-fixture.cjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -313,6 +314,7 @@ test("a two-model run compares actual persisted judge and deterministic assessme
     },
     async invoke(candidate, messages, opts) {
       if (opts.planning) {
+        if (isRecord(opts.structured?.properties) && opts.structured.properties.audit) return reply(JSON.stringify(auditReply(messages)));
         const payload = isRecord(opts.structured?.properties) && opts.structured.properties.requirements
           ? { title: "Traceability", metrics: ["Traceable evidence"], requirements: ["Cite the lot number"] }
           : { prompt: "Describe the next inspection step." };

@@ -6,10 +6,16 @@ Use **Quick compare** when you are still shaping the task. Use **Dataset run** w
 
 | Where inference runs | How to connect it |
 | --- | --- |
-| On this device | Start the LM Studio server on port `1234` or Ollama on `11434`. Load a chat model and choose **Refresh** in the roster. In **Developer**, check the LM Studio instance and active context when reported. A downloaded model can appear before it is loaded. |
+| On this device | Start the LM Studio server on port `1234` or Ollama on `11434`. In **Workspace → Local runtimes**, choose **Load** beside a downloaded LM Studio chat model, or load your model in Ollama. Choose **Refresh** in the roster. In **Developer**, check the LM Studio instance and active context when reported. A downloaded model can appear before it is loaded. |
 | At a frontier provider or private on-premises host | Open **Connect a model endpoint** below the roster in **Dataset run** or after prompt approval in **Quick compare**. Enter the OpenAI-compatible API base, exact model identifier and any required credential. Assign **Frontier Labs**, **Fine-tuned** or **Hosted** and select **Save endpoint**. Confirm the destination shown on the starting line before sending case inputs. |
 
 A model’s roster section helps you find it. The endpoint determines where the prompt goes. The **candidate** generates an answer. A **judge** evaluates that answer against the selected metric. Choose the judge separately in the grader configuration.
+
+### Load a downloaded LM Studio model
+
+Start the LM Studio server and open **Workspace → Local runtimes**. **Load** uses the model already downloaded on this Mac. DASH checks the native inventory for a loaded instance and refreshes the roster. Runs and planning wait for the load to finish. If a run, planner, or local judge is busy, finish that work before requesting a load. If the load status is unconfirmed, check LM Studio and choose **Refresh models**. A server that exposes only the compatible model list can report an unknown load state. Use LM Studio itself to load the model in that case. [LM Studio model loading](https://lmstudio.ai/docs/developer/rest/load)
+
+For **Suggest Metrics** and prompt drafting, use a loaded LFM3 chat model. If Planning activity shows that LM Studio responded with an invalid plan, inspect the failed step and retry. A missing planner or a connection failure has a separate recovery message.
 
 ## Try one objective in Quick compare
 
@@ -23,6 +29,12 @@ A model’s roster section helps you find it. The endpoint determines where the 
 During **Suggest Metrics** or **Draft evaluation prompt**, the activity indicator shows the stage and a colored label for the local or hosted model. Pending counts resolve to the input and output tokens the provider reports. **Earlier queries** shows retries and fallback calls for the current action. In the prompt review, **How the agents prepared this prompt** also includes previous suggestions used by the draft. The AI expert’s metrics are editable suggestions. Review each one against your objective.
 
 Local calls show **No API charge**. For a supported OpenAI standard-tier snapshot, **est.** is an estimate in US dollars using the reported cached input, uncached input and output tokens. An unreported value stays **Unreported**. These numbers cover planning queries. The candidate run has its own measurements. [Pricing sources and scope](https://github.com/niksacdev/dash/blob/main/docs/adr/0021-planning-activity.md)
+
+## Inspect a proposed measure
+
+Open **Why these metrics?** after **Suggest Metrics**. Each entry gives the proposed pass condition, the evidence the grader would need, and how it would use that evidence. For a reported-EPS check, look for the source figure, accounting basis and period. For a goal such as reducing analyst review time, the model’s response alone cannot supply a time-savings estimate.
+
+Edit the measures before drafting. In prompt review, open **Why this prompt?** to see the original objective and the instruction added to make the requested behavior observable. The explanation describes the draft. Check edited wording before approval. A score appears only when a grader can evaluate an actual response. [Create or reuse a grader](graders.md)
 
 ## When a budget blocks a run
 

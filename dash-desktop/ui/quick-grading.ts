@@ -28,6 +28,7 @@ async function loadQuickGrading(approved:UiApproved|null) {
       if (!plan.designed) plan.enabled = !!plan.judgeId && options.judges.some(j=>j.id===plan.judgeId) && !!plan.criteria;
 
     }
+    if (!options.generated) plan.enabled=false;
     plan.options=options;
     plan.error="";
   } catch (error) {
@@ -87,7 +88,7 @@ function quickGradePicker() {
         opt(j.id, j.model+" · "+j.provider+(j.loaded?" · loaded":""),plan.judgeId)).join("")+'</select></label>'+
         '<label class="field"><span>Pass threshold (0–1)</span><input id="qc-threshold" type="number" min="0" max="1" step="any" required value="'+esc(plan.threshold)+'"></label></div>'+
         '<small>DASH saves this rubric in the grader library when the run starts.</small>':
-        '<p class="qc-rubric-preview">'+esc(plan.criteria)+'</p>')+'</div></details></div>':'')+
+        '<p class="qc-rubric-preview">'+esc(plan.criteria)+'</p>')+'</div></details></div>':'<p>The approved business measures require evidence outside this run. Add a check you can score from an answer to enable an outcome judge.</p>')+
     (options.available.length?'<details class="qc-saved"><summary>Optional saved graders · '+plan.saved.size+' selected</summary>'+
       catalogChoices(options.available,plan.saved,"qc-saved-grader",reasons)+'</details>':'')+
     (unavailable.length?'<button type="button" data-qc-unavailable>Remove unavailable graders</button>':'')+'</section>';
