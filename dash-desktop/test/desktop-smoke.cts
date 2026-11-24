@@ -44,20 +44,33 @@ async function checkIpc(window:BrowserWindow) {
   } finally { foreign.destroy(); }
 }
 
-async function checkLocalRuntime(js:RendererEval, wait:(source:string)=>Promise<void>) {
+async function captureScreenshot(client:Electron.Debugger, name:string) {
+  const frame=await client.sendCommand("Page.captureScreenshot",{format:"png"});
+  const {data}=z.object({data:z.string().min(1)}).parse(frame);
+  writeFileSync(path.join(temporary,name),Buffer.from(data,"base64"));
+}
+
+async function checkLocalRuntime(window:BrowserWindow, js:RendererEval, wait:(source:string)=>Promise<void>) {
+  const client=window.webContents.debugger;
+  client.attach();
   const original=globalThis.fetch;
   const key="liquid/lfm3-smoke";
   let loaded=false,posts=0;
+  let finishLoad=()=>{};
+  const pendingLoad=new Promise<void>(resolve=>{finishLoad=resolve;});
   globalThis.fetch=async (input,options)=>{
     const url=new URL(input instanceof Request ? input.url : input);
     if (url.href==="http://127.0.0.1:1234/api/v1/models") return Response.json({models:[
-      {key,type:"llm",loaded_instances:loaded?[{id:"desk-worker",config:{context_length:2048}}]:[]}]});
-    if (url.href==="http://127.0.0.1:1234/v1/models") return Response.json({data:[]});
-    if (url.href==="http://127.0.0.1:11434/api/tags") return Response.json({models:[]});
+      {key,type:"llm",loaded_instances:loaded?[{id:"desk-worker",config:{context_length:2048}}]:[]},
+      {key:"gemma-smoke",type:"llm",loaded_instances:[]}]});
+    if (url.href==="http://127.0.0.1:1234/v1/models") return Response.json({data:[{id:"compatible-catalog-only"}]});
+    if (url.href==="http://127.0.0.1:11434/api/tags") throw Error("Ollama is offline");
     assert.equal(url.href,"http://127.0.0.1:1234/api/v1/models/load");
     assert.equal(options?.method,"POST");
     assert.deepEqual(JSON.parse(String(options.body)),{model:key});
-    posts++;loaded=true;
+    posts++;
+    await pendingLoad;
+    loaded=true;
     return Response.json({type:"llm",status:"loaded",instance_id:"desk-worker"});
   };
   try {
@@ -65,10 +78,29 @@ async function checkLocalRuntime(js:RendererEval, wait:(source:string)=>Promise<
     await wait("document.querySelector('h1')?.textContent==='Local runtimes'");
     await js("document.querySelector('[data-act=refresh]').click()");
     await wait("document.querySelector('[data-act=load-local-model]')?.dataset.key==='liquid/lfm3-smoke'");
+    const badge=(label:string) => `document.querySelector('.tag[data-status="${label}"]')`;
+    for (const label of ["Connected","Offline","On disk","Load state unknown"]) {
+      assert.equal(await js(badge(label)+".textContent"),label);
+    }
+    assert.equal(await js(badge("Loaded and ready")),null);
     await js("document.querySelector('[data-act=load-local-model]').click()");
-    await wait("document.querySelector('#screen').textContent.includes('desk-worker') && !document.querySelector('[data-act=load-local-model]')");
+    await wait(badge("Loading")+"?.textContent==='Loading'");
+    finishLoad();
+    await wait(badge("Loaded and ready")+"?.closest('.runtime-model').textContent.includes('desk-worker')");
+    assert.equal(await js(badge("Loaded and ready")+".closest('.runtime-model').querySelector('button')"),null);
+    for (const theme of ["dark","light"]) {
+      await js(`document.querySelector('#appearance input[value="${theme}"]').closest('label').click()`);
+      await wait(`getComputedStyle(document.documentElement).colorScheme === "${theme}"`);
+      const ink=await js(`getComputedStyle(${badge("Loaded and ready")}).color`);
+      const rgb=z.string().parse(ink).match(/^rgb\((\d+), (\d+), (\d+)\)$/);
+      assert.ok(rgb && Number(rgb[2])>Number(rgb[1]) && Number(rgb[2])>Number(rgb[3]),
+        "The loaded-and-ready label should be green in "+theme+" appearance");
+      await captureScreenshot(client,"runtimes-"+theme+".png");
+    }
     assert.equal(posts,1);
   } finally {
+    finishLoad();
+    client.detach();
     globalThis.fetch=original;
     await js("window.dash.refresh()");
   }
@@ -93,10 +125,6 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
   const key = async (name:string, code:number) => {
     for (const type of ["keyDown", "keyUp"])
       await send("Input.dispatchKeyEvent", {type, key:name, code:name, windowsVirtualKeyCode:code});
-  };
-  const screenshot = async (name:string) => {
-    const {data}=z.object({data:z.string().min(1)}).parse(await send("Page.captureScreenshot",{format:"png"}));
-    writeFileSync(path.join(temporary, name), Buffer.from(data, "base64"));
   };
   const selectTheme = (value:"light"|"dark") =>
     js(`document.querySelector('#appearance input[value="${value}"]').closest('label').click()`);
@@ -136,7 +164,7 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     assert.equal(await js("document.querySelector('.industry-view h2').textContent"), "Run domain-specific use cases");
     await send("Emulation.setEmulatedMedia", {features:[{name:"prefers-reduced-motion",value:"reduce"}]});
     await checkControlColors();
-    await screenshot("overview-light.png");
+    await captureScreenshot(client,"overview-light.png");
     const lightCanvas = await js("getComputedStyle(document.documentElement).backgroundColor");
 
     await selectTheme("dark");
@@ -153,7 +181,7 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
       {label:"Dark",value:"dark",checked:true},
     ],"Appearance choices and checked label must survive a restart");
     await checkControlColors();
-    await screenshot("overview-dark.png");
+    await captureScreenshot(client,"overview-dark.png");
 
     assert.equal(detailedSamples,0,"Idle Overview must only request the lightweight power reading");
     const device = await point(".device-stat");
@@ -265,7 +293,7 @@ app
       await js("document.querySelectorAll('#developer-run option').length"),
       2,
     );
-    await checkLocalRuntime(js,wait);
+    await checkLocalRuntime(window,js,wait);
     await checkOverview(window, js, wait);
     console.log("Light/dark Overview previews: "+temporary);
     console.log(

@@ -450,6 +450,20 @@ function loadModelButton(model:UiModel):string {
     (disabled?' disabled':'')+' aria-label="'+esc((pending?"Loading ":"Load ")+model.nativeKey)+'">'+
     (pending?"Loading…":state.active?"Run active":"Load")+'</button>';
 }
+function runtimeModelRow(model:UiModel):string {
+  let status = "Load state unknown";
+  if (model.loaded === true) status = "Loaded and ready";
+  else if (loadingModelKey !== null && model.provider === "lmstudio" && model.nativeKey === loadingModelKey) status = "Loading";
+  else if (model.loaded === false) status = "On disk";
+  const metadata = [
+    model.nativeKey !== model.model ? model.nativeKey : null,
+    model.quantization,
+    model.revision?.slice(0, 18) || "Revision unavailable",
+  ].filter(Boolean).join(" · ");
+  return '<div class="listrow runtime-model"><div class="runtime-model-info"><div class="runtime-model-heading"><strong>' +
+    esc(model.model) + '</strong>' + tag(status, true) + '</div><small>' + esc(metadata) +
+    '</small></div>' + loadModelButton(model) + '</div>';
+}
 function providersPage() {
   return (
     heading(
@@ -459,36 +473,19 @@ function providersPage() {
     ) +
     '<div class="bar"><h2>Connections</h2>' +
     btn("Refresh models", "refresh") +
-    '</div><div class="cols">' +
+    '</div><div class="cols runtime-connections">' +
     state.servers
       .map(
         (s) =>
           '<div class="panel"><div class="row"><h3>' +
           esc(s.title) +
           "</h3>" +
-          tag(s.online ? "Connected" : "Offline") +
+          tag(s.online ? "Connected" : "Offline", true) +
           '</div><p class="mono">' +
           esc(s.address) +
           "</p>" +
-          (s.models.length
-            ? s.models
-                .map(
-                  (c) =>
-                    '<div class="listrow"><div><strong>' +
-                    esc(c.model) +
-                    "</strong><small>" +
-                    (c.nativeKey && c.nativeKey!==c.model ? esc(c.nativeKey)+" · " : "") +
-                    esc(c.quantization || "") +
-                    " " +
-                    (c.loaded === true
-                      ? "· Loaded · "
-                      : c.loaded === false
-                        ? "· Available to load · "
-                        : "· Load state unknown · ") +
-                    esc(c.revision?.slice(0, 18) || "Revision unavailable") +
-                    "</small></div>"+loadModelButton(c)+"</div>",
-                )
-                .join("")
+          (s.online && s.models.length
+            ? s.models.map(runtimeModelRow).join("")
             : "<small>" +
               esc(
                 s.online

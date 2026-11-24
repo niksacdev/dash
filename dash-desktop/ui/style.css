@@ -484,6 +484,35 @@ input[type="checkbox"] {
 .listrow strong {
   display: block;
 }
+.runtime-model-info { min-width: 0; overflow-wrap: anywhere; }
+.runtime-model-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; }
+/* Model readiness is separate from the server connection and run result. */
+.runtime-connections .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: light-dark(#52606b, #c1c9cf);
+  font: 600 12px/1.45 system-ui, sans-serif;
+  white-space: nowrap;
+}
+.runtime-connections .tag::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+.runtime-connections [data-status="Loaded and ready"] { color: light-dark(#04734e, #64deac); }
+.runtime-connections [data-status="On disk"] { color: light-dark(#935500, #ffc969); }
+.runtime-connections [data-status="Loading"] { color: light-dark(#096696, #7dcfff); }
+.runtime-connections [data-status="Offline"] { color: light-dark(#ac3c32, #ffa195); }
+.runtime-connections [data-status="Loaded and ready"]::before { background: currentColor; }
+.runtime-connections [data-status="Loading"]::before { border-right-color: transparent; }
+.runtime-connections [data-status="Offline"]::before { height: 2px; border: 0; background: currentColor; }
+.runtime-connections [data-status="Load state unknown"]::before { border-style: dotted; }
 .listrow small {
   font-size: 12px;
 }
