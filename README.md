@@ -1,6 +1,6 @@
 # DASH
 
-[**Read the operator guide**](https://niksacdev.github.io/dash/) [![Reader publication](https://github.com/niksacdev/dash/actions/workflows/reader.yml/badge.svg?branch=main)](https://github.com/niksacdev/dash/actions/workflows/reader.yml) [Apache 2.0](LICENSE)
+[![DASH build and tests](https://github.com/niksacdev/dash/actions/workflows/checks.yml/badge.svg?branch=main)](https://github.com/niksacdev/dash/actions/workflows/checks.yml?query=branch%3Amain) [![Open bugs](https://img.shields.io/github/issues/niksacdev/dash/bug.svg?label=bugs)](https://github.com/niksacdev/dash/issues?q=is%3Aissue+is%3Aopen+label%3Abug) [![Open enhancements](https://img.shields.io/github/issues/niksacdev/dash/enhancement.svg?label=enhancements)](https://github.com/niksacdev/dash/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement)
 
 **Domain Assessment & Scoring Harness** is a local-first Electron workbench for evaluating model and agent outputs against a business objective. Start with a domain scenario, agree on what a good answer looks like, then compare candidates on the same evidence. The first domain packs cover financial earnings extraction and manufacturing inspection triage.
 
@@ -22,6 +22,8 @@ To run the Opik service locally with Docker, use `npm run setup:local` before st
 On macOS, you can also open `Open DASH.command` after installing dependencies. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
 
 ### Choose a workflow
+
+Browse the [DASH Operator Guide](https://niksacdev.github.io/dash/) or jump to a task below.
 
 | If you want to… | Start here |
 | --- | --- |
