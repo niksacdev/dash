@@ -31,6 +31,8 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0016 · macOS identity](0016-macos-app-identity.md) | Accepted | Nik requested the DASH name, logo and tagline on macOS. Preserve the local profile across launch methods. | [Mac operator guide](../reader/src/first-run.md) |
 | 2026-11-24 | [0017 · Overview controls and photography](0017-overview-controls-and-photography.md) | Proposed | Extend 0007 and 0015 to give presentation controls a neutral treatment and retain a common banner palette. | [Design guide](../design/README.md) |
 | 2026-11-24 | [0017 · Overview controls and photography](0017-overview-controls-and-photography.md) | Accepted | Nik requested the Light/Dark and slide controls lose their yellow fill and the photography blend into a consistent background. | [Design decision](0017-overview-controls-and-photography.md) |
+| 2026-11-24 | [0018 · Capability diagrams](0018-capability-diagrams.md) | Proposed | Give each evaluation task its own illustration while preserving the shared banner palette. | [Design guide](../design/README.md) |
+| 2026-11-24 | [0018 · Capability diagrams](0018-capability-diagrams.md) | Accepted | Nik selected one benchmark race and distinct capability diagrams alongside the approved industry photographs. Extends 0015 and 0017. | [Carousel implementation](../../dash-desktop/ui/capabilities.ts) |
 
 ## Maintaining the history
 

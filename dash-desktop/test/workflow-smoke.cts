@@ -208,7 +208,6 @@ async function smoke() {
   const slideCount = await js("Number(document.querySelector('.capability-position').textContent.split('/')[1])");
   assert.equal(slideCount, 6);
   const isPlaying = () => js("document.querySelector('.capability-reel').dataset.playing === 'true'");
-  await js("window.originalBannerCars = [...document.querySelectorAll('.banner-car')]");
   const bannerHeight = await js("document.querySelector('.hero').offsetHeight");
   assert.equal(await scene(), "0");
   await click(previous);
@@ -220,9 +219,19 @@ async function smoke() {
   await click(playback);
   assert.equal(await isPlaying(), true);
   await js("document.querySelector('.capability-frame').getAnimations()[0].updatePlaybackRate(20)");
-  await wait(async () => await scene() === "1", "Automatic next slide");
+  for (const index of ["1", "2", "3", "4", "5", "0", "1"])
+    await wait(async () => await scene() === index, "Automatic slide " + index);
   await click(playback);
   assert.equal(await isPlaying(), false);
+  assert.equal(await caption(), "Compare and benchmark multiple models");
+  assert.equal(await js("document.querySelectorAll('.banner-car').length"), 3);
+  assert.ok(await js(`(async () => {
+    const art = getComputedStyle(document.querySelector('.capability-reel'), '::before').backgroundImage;
+    const source = art.match(/url\\("([^"]+)"\\)/)?.[1];
+    if (!source || !source.endsWith('/scarlet-circuit.jpg')) return false;
+    const image = new Image(); image.src = source; await image.decode();
+    return image.naturalWidth > 0;
+  })()`));
   await click(next);
   assert.equal(await caption(), "Run domain-specific use cases");
   assert.equal(await js("document.querySelector('.capability-context').textContent"), "Domain scenarios");
@@ -233,7 +242,7 @@ async function smoke() {
     await img.decode();
     return img.currentSrc.startsWith('file:') && img.naturalWidth > 0 && img.checkVisibility({visibilityProperty:true});
   })).then(values => values.length === 3 && values.every(Boolean))`));
-  assert.equal(await js("document.querySelector('.banner-track').checkVisibility({visibilityProperty:true})"), false);
+  assert.equal(await exists(".banner-track"), false);
   assert.equal(await js("document.querySelector('.hero').offsetHeight"), bannerHeight);
   await js("document.querySelector('[data-carousel=next]').focus()");
   wc.sendInputEvent({type:"keyDown", keyCode:"Right"});
@@ -241,7 +250,6 @@ async function smoke() {
   await wait(async () => await scene() === "3", "Keyboard next slide");
   assert.equal(await caption(), "Score a whole set of cases");
   assert.equal(await js("document.querySelector('.hero').offsetHeight"), bannerHeight);
-  assert.ok(await js("window.originalBannerCars.every((c,i) => c === document.querySelectorAll('.banner-car')[i])"));
   await motion("reduce");
   await wait(() => js("!document.querySelector('.capability-reel').getAnimations({subtree:true}).length"), "Static reduced-motion carousel");
   await click(previous);
@@ -258,9 +266,24 @@ async function smoke() {
     for (const theme of ["light", "dark"]) {
       await js("document.querySelector('#appearance input[value=" + theme + "]').closest('label').click()");
       assert.ok(await js("Array.from(document.querySelectorAll('.industry-examples figcaption')).every(c => c.checkVisibility({visibilityProperty:true}) && c.scrollWidth <= c.clientWidth + 1)"));
-      if (process.env.DASH_ART_PREVIEW_DIR) {
-        const shot = z.object({data:z.string()}).parse(await wc.debugger.sendCommand("Page.captureScreenshot", {format:"png"}));
-        writeFileSync(path.join(process.env.DASH_ART_PREVIEW_DIR, "industry-" + width + "-" + theme + ".png"), Buffer.from(shot.data, "base64"));
+      // Start and end on the approved industry slide. Inspect the actual visible art at each step.
+      for (const visual of ["industries", "grading", "report", "hardware", "objective", "race"]) {
+        assert.equal(await js("document.querySelector('.capability-reel').dataset.visual"), visual);
+        assert.equal(await js("document.querySelectorAll('.banner-car').length"), visual === "race" ? 3 : 0);
+        const background = await text("getComputedStyle(document.querySelector('.capability-reel'), '::before').backgroundImage");
+        assert.equal(background.includes("scarlet-circuit.jpg"), visual === "race");
+        const diagram = visual !== "race" && visual !== "industries";
+        assert.equal(await exists(".capability-illustration .flow-diagram[role=img][aria-label]"), diagram);
+        assert.equal(await js("document.querySelector('.hero').offsetHeight"), height);
+        if (diagram) assert.ok(await js(`Array.from(document.querySelectorAll('.flow-diagram text')).every(t => {
+          const r = t.getBoundingClientRect(), svg = t.closest('svg').getBoundingClientRect();
+          return r.width > 0 && r.left >= svg.left - 1 && r.right <= svg.right + 1;
+        })`), "Readable diagram at " + width + "px: " + visual);
+        if (process.env.DASH_ART_PREVIEW_DIR) {
+          const shot = z.object({data:z.string()}).parse(await wc.debugger.sendCommand("Page.captureScreenshot", {format:"png"}));
+          writeFileSync(path.join(process.env.DASH_ART_PREVIEW_DIR, visual + "-" + width + "-" + theme + ".png"), Buffer.from(shot.data, "base64"));
+        }
+        await click(next);
       }
     }
     await click(next);
