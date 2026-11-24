@@ -2,6 +2,16 @@
 
 The **AI Industry Graders** step in the Overview uses versions from **Workspace → Graders**. Choose an existing industry check or review a proposal from the grader designer. Start with the evidence a domain expert needs to decide whether the answer is correct.
 
+## From an objective to a score
+
+1. Open **Create a grader**. Describe what a good response must do and select **Propose graders**. Review the suggested criteria, evidence and pass thresholds. **Write manually** is available when you already have a rule.
+2. Select **Save** on the checks you want. **Ready to evaluate** shows each saved name and version. You can also pick an existing version directly from the library.
+3. Choose **Test one output** to paste a task and an existing answer. Select **Score this output** to see the grade and rationale. You can browse elsewhere in DASH while scoring is in progress and return to **Test one output** for the result. If the assessment fails, the draft stays in the current DASH session for editing, retry or discard. When the grader needs a reference answer or the agent’s observed tool calls, DASH opens the fields for that evidence.
+4. To evaluate model responses across cases, choose **Use in a dataset run** on the version you want. DASH opens its source snapshot when applicable. If several snapshots match, choose the family, version, split and industry. Review the selected grader versions, select the candidate models, and press **GO**. You can add or remove graders before starting. Each run records the versions used.
+5. Open the completed run’s **Case scores and rationale** to see which answer passed, failed or lacked enough evidence to score.
+
+## Choose the grading method
+
 | Success criterion | Grader to use |
 | --- | --- |
 | The model must return a specific label such as `HOLD`. | Match the reference exactly on a labeled dataset. |
@@ -14,7 +24,7 @@ The **AI Industry Graders** step in the Overview uses versions from **Workspace 
 
 1. Open **Workspace → Graders → General → Opik metric templates**. Pick **Configure metric** on **Answer relevance**.
 2. Choose a local **Judge model**, review the pass threshold and select **Save grader version**. The version fixes the judge and grading policy used for the run.
-3. In **Dataset run**, expand **Optional graders** and select the saved version. Use **Use on new runs** in the library only if you want that metric to become a cross-industry default for eligible future runs.
+3. Choose **Use in a dataset run** on the saved version. In a run you already have open, **Add optional graders** opens the same selection. Under **Manage version**, **Use on new runs** enables the revision as a cross-industry default for eligible future runs.
 4. Run your candidates, then open **Run history → Evaluation result**. Open **Case scores and rationale** in the detailed report to see the native score, direction and judge’s explanation.
 
 For earnings extraction, pair relevance with a grader that checks the requested accounting basis. An answer can address EPS directly and still quote adjusted EPS when the question asks for GAAP.
@@ -25,7 +35,7 @@ The **General** library also supplies response diagnostics, including response p
 
 ### Create a grader with an agent
 
-In **Graders → Create a grader**, choose **Design with an agent**. Describe the task, choose its domain, and add a success measure per line when you have several. You can also choose a saved prompt or dataset snapshot under **Design for**.
+In **Graders → Create a grader**, use **AI-assisted**. Describe the task, choose its domain, and add a success measure per line when you have several. You can also choose a saved prompt or dataset snapshot under **Design for**.
 
 For example, choose a Manufacturing inspection snapshot and ask the agent to check whether the response cites the active drawing revision. Select **Propose graders**. An existing check shows its pinned version and offers reuse or a customer copy. For a new check, review the suggested name, category, industry, method, criterion and pass threshold. Judge-based methods suggest a loaded local judge when one is available. For a semantic rubric, the draft names the success measure and describes what earns full, partial and zero credit. A required reference or agent trajectory must be present for the judge to score. You can edit each proposal, change methods when the evidence supports them, and exclude any check. A prompt or dataset fixes its industry.
 
@@ -33,7 +43,7 @@ For a measure such as “Share of handoff notes that identify the lot and state 
 
 A note that contains both earns full credit. A note missing either earns zero. For “actual reduction in warranty costs six months after dispatch,” DASH leaves the outcome unscored. Verifying savings needs post-dispatch records and a comparable baseline.
 
-Select **Save** to confirm the reviewed checks together. The workspace saves them to the library. Select a saved version in Quick compare or Dataset run to use it. **Write manually** opens the grader form when you already know the rule.
+Select **Save** to confirm the reviewed checks together. The workspace saves them to the library. Select **Use in a dataset run** for that version or choose it when setting up Quick compare. **Write manually** opens the grader form when you already know the rule.
 
 For an observed agent output, you can supply ordered tool actions to a trajectory grader. Live execution of an external hosted agent is a separate planned workflow. [Decision-model grading and other methods](https://github.com/niksacdev/dash/blob/main/docs/guides/workbench.md#use-a-decision-model-as-a-grader)
 

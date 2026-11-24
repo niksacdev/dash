@@ -1,6 +1,6 @@
 # 0023. Report failure at the step that owns the outcome
 
-**Status** Proposed
+**Status** Accepted
 
 ## Context
 

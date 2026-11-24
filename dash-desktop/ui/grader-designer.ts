@@ -72,14 +72,15 @@ function gradeDesignerView(scope:string,workspace=false,open=workspace) {
     '<fieldset class="gd-fields" '+(d.busy?'disabled':'')+'>'+graderDesignInputs(scope,d,record)+
     '<button type="button" class="gd-generate" data-gd-action="design">'+(d.busy==="design"?'Designing graders…':d.hasPlan || d.saved.length?'Design a new plan':'Propose graders')+'</button>'+
     (d.error?'<p role="alert" class="wf-error">'+esc(d.error)+'</p>':'')+
-    (d.hasPlan?'<section class="gd-proposals"><h3>Coverage · '+d.checks.length+' proposed '+(d.checks.length===1?'check':'checks')+'</h3><p>'+esc(d.summary)+'</p>'+
+    (d.hasPlan?'<section class="gd-proposals"><h3>Review your plan · '+d.checks.length+' proposed '+(d.checks.length===1?'check':'checks')+'</h3><p>'+esc(d.summary)+'</p>'+
       (d.designer?.model?'<small>Designed by '+esc([d.designer.provider,d.designer.model].filter(Boolean).join(" · "))+'</small>':'')+
       (d.automatic.length ? '<p>Automatic checks · '+esc(d.automatic.join(' · '))+'</p>' : '')+
+      (d.checks.length?'<p>Review the criteria, evidence and pass threshold before saving.</p>':'')+
       d.checks.map((g,i)=>designCheckFields(g,i,d.editableMethods,scope)).join("")+
       '<div class="gd-actions">'+(d.checks.length?'<button type="button" class="yellow" data-gd-action="confirm" '+(count?'':'disabled')+'>'+
       (d.busy==="confirm"?'Saving versions…':(workspace || scope==="custom"?'Save ':'Save and select ')+count+' '+(count===1?'grader':'graders'))+'</button>':'')+
       '<button type="button" data-gd-action="discard">Discard plan</button></div></section>':'')+
-    (d.saved.length?'<div class="gd-saved" role="status"><strong>'+(workspace || scope==="custom"?'Saved in the grader library':'Confirmed for this '+(scope.startsWith("prompt:")?'prompt version':'dataset snapshot'))+
+    (!workspace && d.saved.length?'<div class="gd-saved" role="status"><strong>'+(workspace || scope==="custom"?'Saved in the grader library':'Confirmed for this '+(scope.startsWith("prompt:")?'prompt version':'dataset snapshot'))+
       '</strong><ul>'+d.saved.map(g=>'<li>'+esc(g.label)+'</li>').join("")+'</ul></div>':'')+'</fieldset></div>'+(workspace?'</section>':'</details>');
 }
 function repaintGradeDesigner(scope:string,workspace:boolean) {
@@ -251,8 +252,10 @@ document.addEventListener("click", async e=>{
       const ids=await api.confirmGraders({draftId:d.draftId,choices});
       if(!workspace) attachDesignedGraders(scope,ids,definitions);
       d.saved=ids.map((id,i)=>({id,label:definitions[i].name}));d.hasPlan=false;d.checks=[];
+      if(workspace)recordWorkspaceSave(d.saved,scope);
       if (document.querySelector<HTMLElement>("[data-gd-scope]")?.dataset.gdScope===scope) {
         await render();
+        if(workspace)document.getElementById("grader-receipt")?.focus();
         d.saved=d.saved.map(g=>{const def=state.graders.find(item=>item.id===g.id);return {...g,label:def?def.name+" · v"+def.version:g.label};});
       }
     }

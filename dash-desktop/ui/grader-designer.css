@@ -41,3 +41,18 @@
 .gc-authoring-options {margin-block:14px}
 .gd-workspace {margin:0;padding:0;border:0;background:transparent}
 .gd-workspace>.gd-content {padding:0}
+
+.gc-receipt {border-inline-start:3px solid var(--border);margin-bottom:1rem}
+.gc-receipt h2 {margin:0}
+.gc-receipt p {margin:.75rem 0 .4rem}
+.gc-use {display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;min-width:0}
+.gc-use .gc-secondary {background:transparent;color:var(--ink);border-color:var(--border)}
+.gc-use .gc-secondary:hover {background:var(--surface-soft)}
+.gc-target {flex-basis:100%;min-width:0}
+.gc-target select {width:100%;max-width:100%}
+.gc-manage {margin-top:.65rem}
+.gc-manage summary {color:var(--muted);cursor:pointer}
+#grade-sample-panel {margin-top:1rem}
+@media(max-width:680px){.gc-use button,.gc-manage summary {min-height:44px}}
+#dataset-judge-note:empty {display:none}
+.gc-sample-fields {border:0;padding:0;margin:0;min-width:0}
