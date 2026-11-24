@@ -74,7 +74,11 @@ export interface TokenCheck {
   disableThinking?: boolean;
 }
 export type CheckInputBudget = (request: TokenCheck) => Promise<TokenReceipt | null>;
+export type PlanningProgress =
+  | {phase:"processing-prompt";percent:number}
+  | {phase:"generating";approximateOutputTokens:number};
 export interface InvokeOptions {
+  onPlanningProgress?: (progress:PlanningProgress) => void;
   signal: AbortSignal;
   structured?: OutputSchema | null;
   onText?: (text: string) => void;

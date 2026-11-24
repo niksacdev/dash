@@ -3,6 +3,7 @@ import type { Guardrail } from "./guardrail.cjs";
 import type { StoredPower } from "./run-decode.cjs";
 import type { GraderSpec, RecordedAssessment } from "./graders.cjs";
 import type { ApprovedPrompt } from "./outcome-workflow.cjs";
+import type {MeasureGraderRequest,PinnedMeasure} from "./measure-graders.cjs";
 import type { RunReport } from "./run-report.cjs";
 
 export type RunMode = "quick" | "dataset";
@@ -42,6 +43,7 @@ export type RunPartial = {candidateId:string;caseId:string;text:string}|{stage:s
 export interface RunManifest {
   format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string; hostedDecisionApproved?:boolean;
   candidates:Candidate[]; caseIds:string[]; pack:ScenarioPack|null; graders:GraderSpec[];
+  measureGraders?:PinnedMeasure[];
   datasetScorer?:DatasetScorer|null; approvedPromptId?:string|null; approvedPrompt?:ApprovedPrompt|null;
   prompt:string|null; objective?:string|null; effectiveSystem?:string|null; promptSource?:string;
   tokenBudget?:{inputCap:number|null;outputCap:number|null}; datasetId:string|null; datasetMetadata?:StoredMetadata|null;
@@ -59,7 +61,7 @@ export interface RunDetail extends RunData {report:RunReport|null;liveRevision:n
 export interface StartRun {
   mode:RunMode; candidateIds:string[]; datasetId?:string; caseId?:string; parentId?:string;
   approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[]; allowHostedDecision?:boolean;
-  inputCap?:number|null; outputCap?:number|null; outcomeRubric?:unknown; animation?:boolean;
+  inputCap?:number|null; outputCap?:number|null; measureGraders?:MeasureGraderRequest; outcomeRubric?:unknown; animation?:boolean;
 }
 export function isRecord(value:unknown):value is Record<string,unknown> {return !!value && typeof value==="object" && !Array.isArray(value);}
 export function stringValue(value:unknown,label="text"):string {

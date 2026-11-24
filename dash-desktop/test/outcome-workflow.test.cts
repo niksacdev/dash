@@ -318,6 +318,28 @@ test("planning estimates count cached input once and require verified pricing an
     {inputTokens:null,outputTokens:0,estimatedCostUsd:null});
 });
 
+test("planning emits bounded numeric progress, measured timings and one terminal receipt",async t=>{
+  const {adapters}=fixture(t);
+  const events:PlanningAttempt[]=[];
+  const run:PlannerAdapters["invoke"]=async(_candidate,_messages,options)=>{
+    const reading={phase:"processing-prompt" as const,percent:20,content:"private source text"};
+    options.onPlanningProgress?.(reading);
+    for(let n=0;n<30;n++)options.onPlanningProgress?.({phase:"generating",approximateOutputTokens:n});
+    return inferenceReply('{"domain":"Manufacturing"}',{input_tokens:9,output_tokens:3,first_token_ms:41,provider_first_token_ms:32,tokens_per_second:22});
+  };
+  t.mock.method(adapters,"invoke",run);
+  const route=await PlanningRoute.start(adapters,{},new AbortController().signal,event=>{events.push(event);});
+  assert.equal(await route.ask("Domain routing","role",{}, {},32,r=>r.domain),"Manufacturing");
+  assert.deepEqual(events.filter(e=>e.progress).map(e=>e.progress),[{phase:"processing-prompt",percent:20},{phase:"generating",approximateOutputTokens:0}]);
+  assert.equal(route.attempts.length,1);
+  const [final]=route.attempts;
+  assert.equal(final.firstTokenMs,32);assert.equal(final.tokensPerSecond,22);
+  assert.ok(typeof final.elapsedMs==="number" && final.elapsedMs>=0);
+  assert.ok(typeof final.discoveryMs==="number" && final.discoveryMs>=0);
+  assert.equal(final.progress,undefined);
+  assert.equal(final.usage?.outputTokens,3);
+});
+
 test("a canceled planning call keeps returned usage and never invokes a fallback", async t => {
   const {adapters}=fixture(t);
   const controller=new AbortController();

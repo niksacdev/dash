@@ -34,6 +34,7 @@ const request = z.looseObject({
   max_tokens: z.number().optional(),
 });
 type Stage = "grader-plan" | "audit" | "native-relevance" | "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
+let inlineDesignerFixture=false;
 let holdRouting: (()=>Promise<void>) | undefined;
 interface TransportCall {stage:Stage; body:z.infer<typeof request>; brief:unknown}
 const calls:TransportCall[] = [];
@@ -49,6 +50,8 @@ const gradedDetail = z.object({
 const models = { ollama: "lfm3-qa-7b", lmstudio: "qa-ledger-2b" };
 const quickGoal = "Help inspection staff decide which nonconforming parts need a second inspection.";
 const metric = "Measure the share of lots with cited inspection evidence.";
+const markerMetric="Share of responses correctly including the QA response marker.";
+const markerCriterion="Include the literal text QA response in the answer.";
 const guidance = "Cite the inspection record and identify the next review step.";
 const roleEdit = "Trace the inspection record to the incoming lot.";
 
@@ -56,6 +59,11 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   if(stage==="grader-plan") {
     const {goals,automatic}=z.object({goals:z.array(z.object({key:z.string(),metric:z.string()})),
       automatic:z.array(z.object({option:z.string(),name:z.string()}))}).parse(raw);
+    if (inlineDesignerFixture) return Object.fromEntries(goals.map(({key,metric:goal},i)=>[key,{
+      choice:"NEW:judge",name:"Reviewed Quick measure "+(i+1),criteria:"Assess this answer independently for "+goal,
+      anchors:{full:"Includes the named item and ties it to the decision.",partial:"Mentions the item without a decision.",
+        zero:"Omits the item entirely.",evidence:"response"},threshold:.85,reason:"This measure can be checked in the supplied answer."
+    }]));
     return Object.fromEntries(goals.map(({key,metric},i)=>[key,metric==="Response present"?
       {choice:z.string().parse(automatic.find(g=>g.name===metric)?.option),reason:"   The response-presence check detects an empty answer.   "}:
       {choice:"NEW:judge",name:i?"Evidence citation":"Inspection disposition reasoning",
@@ -67,13 +75,13 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   if (stage === "route") return { domain: "Manufacturing" };
   if (stage === "expert") return {
     title: "Review incoming evidence",
-    metrics: ["Share of cases with cited evidence"],
-    requirements: ["Cite the evidence used for each decision"],
+    metrics: ["Share of cases with cited evidence",...(z.object({objective:z.string()}).parse(raw).objective===quickGoal?[markerMetric]:[])],
+    requirements: ["Cite the evidence used for each decision",...(z.object({objective:z.string()}).parse(raw).objective===quickGoal?[markerCriterion]:[])],
   };
   if (stage === "audit") {
     const check=z.object({metric:z.string(),criterion:z.string()});
     const {proposals}=z.object({proposals:z.array(check)}).parse(raw);
-    return {audit:proposals.map(pair=>({...pair,status:"needs-evidence",
+    return {audit:proposals.map(pair=>({...pair,status:"needs-evidence",evidenceBasis:"reference",
       evidence:"A labeled case with the expected decision and the candidate response.",
       method:"Compare the decision and supporting citation with the source case.",
       reason:"The cited record allows a grader to check the requested inspection decision."}))};
@@ -365,7 +373,7 @@ async function smoke() {
   await click('[data-wf-example="manufacturing"]');
   assert.match(await text("document.querySelector('#wf-objective').value"), /Synthetic inspection record/);
   await fill("#wf-objective", quickGoal);
-  await fill("#wf-metrics", metric);
+  await fill("#wf-metrics", [metric,markerMetric].join("\n"));
   await fill("#wf-output-cap", "180");
   assert.equal(await js("document.querySelector('#wf-measures #wf-suggest').textContent"), "Suggest Metrics");
   let releaseRouting:()=>void = ()=>{};
@@ -389,7 +397,8 @@ async function smoke() {
   await wait(() => exists("#wf-criteria"), "Editable success criteria");
   assert.match(await text("document.querySelector('#wf-measure-fields').textContent"), /AI expert.*AI suggestions can be wrong/);
   assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),3);
-  assert.deepEqual(await js("Array.from(document.querySelector('#wf-query .ai-query').querySelectorAll('dd'),n=>n.textContent)"),["21","12","No API charge"]);
+  assert.deepEqual(await js("Array.from(document.querySelector('#wf-query .ai-query').querySelectorAll('dd'),n=>n.textContent).slice(0,3)"),["21","12","No API charge"]);
+  assert.match(await text("document.querySelector('#wf-query .ai-query').textContent"),/Elapsed[\d.]+ s/);
   assert.equal(await exists("#wf-activity .ai-pulse"),false);
   assert.deepEqual(calls.map(c => c.stage), ["route", "expert", "audit"]);
   assert.equal(await js("document.querySelector('#wf-measures .wf-explanation').open"),false);
@@ -397,8 +406,12 @@ async function smoke() {
   assert.match(await text("document.querySelector('#wf-measures .wf-explanation').innerText"),/Evidence needed/);
   assert.equal(records().length, 0);
   const criterion = "Route any part with a missing drawing revision to inspection.";
-  await fill("#wf-criteria", criterion);
-  await fill("#wf-chosen-metrics", metric);
+  const markerGrader=z.string().parse(await js("window.dash.saveGrader("+q({
+    intent:"create",name:"QA response marker",category:"Response format",industry:"Manufacturing",
+    type:"contains",criteria:"QA response",threshold:1
+  })+")"));
+  await fill("#wf-criteria", [criterion,markerCriterion].join("\n"));
+  await fill("#wf-chosen-metrics", [metric,markerMetric].join("\n"));
   assert.equal(await js("document.querySelector('[data-metric-edit-note]').hidden"),false);
   assert.equal(await exists("[data-model]"), false, "Models follow approval");
   await click("#wf-design");
@@ -407,7 +420,7 @@ async function smoke() {
   assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),2,"Editing a criterion triggers a new audit without repeating the domain proposal");
   assert.equal(z.object({objective:z.string()}).parse(calls[1].brief).objective, quickGoal);
   const auditInput=z.object({proposals:z.array(z.object({metric:z.string(),criterion:z.string()}))}).parse(calls[3].brief);
-  assert.deepEqual(auditInput.proposals,[{metric,criterion}],"The auditor sees the exact edited pair");
+  assert.deepEqual(auditInput.proposals,[{metric,criterion},{metric:markerMetric,criterion:markerCriterion}],"The auditor sees the exact edited pair");
   assert.equal(z.object({objective:z.string()}).parse(calls[4].brief).objective,quickGoal);
   assert.ok(!JSON.stringify(calls[4].brief).includes(criterion),"Grader-only criteria stay out of candidate prompt drafting");
   assert.equal(records().length, 0, "Unapproved drafts stay out of the catalogue");
@@ -424,8 +437,8 @@ async function smoke() {
   assert.equal(first.domain, "Manufacturing");
   assert.equal(first.outputCap, 180);
   assert.equal(first.version, 1);
-  assert.deepEqual(first.metrics, [metric]);
-  assert.deepEqual(first.requirements, [criterion]);
+  assert.deepEqual(first.metrics, [metric,markerMetric]);
+  assert.deepEqual(first.requirements, [criterion,markerCriterion]);
   assert.deepEqual(first.agents?.map(a => a.role).sort(), ["expert", "implementer"]);
   // Duplicate delivery and conflicting re-submission go through the public preload bridge.
   const approve = async (value:{draftId:string;prompt:string;metrics:string[]}) => z.object({id:z.string()}).parse(await js("window.dash.approvePrompt(" + q(value) + ")"));
@@ -435,10 +448,19 @@ async function smoke() {
   assert.equal(records().length, 1);
 
   const pick = (provider:keyof typeof models) => '[data-model="' + provider + "/" + models[provider] + '"]';
-  await wait(() => exists("#qc-criteria"), "Default outcome rubric");
-  assert.equal(await js("document.querySelector('#qc-rubric-toggle').getAttribute('aria-pressed')"), "true");
-  assert.match(await text("document.querySelector('#qc-criteria').value"), /inspection|lots/i);
-  await fill("#qc-threshold","0.8");
+  const rowA='[data-qc-measure="0"]',rowB='[data-qc-measure="1"]';
+  const controls=(selector:string,field:string)=>selector+' [data-qc-field="'+field+'"]';
+  await wait(() => exists(controls(rowA,"criteria")), "Grader for each approved measure");
+  assert.equal(await text("document.querySelector("+q(controls(rowA,"choice"))+").value"),"rubric");
+  assert.match(await text("document.querySelector("+q(rowA)+").textContent"),/Unscored in Quick compare/);
+  assert.match(await text("document.querySelector("+q(controls(rowA,"criteria"))+").value"),/inspection|lots/i);
+  assert.match(await text("document.querySelector("+q(rowB)+").textContent"),/literal text QA response/);
+  await fill(controls(rowA,"evidence"),"task-answer");
+  await fill(controls(rowA,"threshold"),"0.8");
+  await fill(controls(rowB,"choice"),"skip");
+  assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/1 of 2 measures ready/);
+  await fill(controls(rowB,"choice"),"saved:"+markerGrader);
+  assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/2 of 2 measures ready.*2 model evaluations.*6 deterministic checks/);
   await click(pick("lmstudio"));
   await checkRosterColors();
   assert.equal(await js("document.querySelector('#setup .go-button').disabled"), true);
@@ -478,16 +500,20 @@ async function smoke() {
 
   const quickRecords = gradedDetail.parse(await js("window.dash.detail(" + q(quick.id) + ")"));
   const business=quick.graders.filter(g=>!g.library?.automatic);
-  assert.equal(business.length,1);
-  assert.equal(business[0].threshold,.8);
-  assert.equal(business[0].type,"opik");
-  assert.match(business[0].opikEngine ?? "",/^opik-js@/);
+  assert.equal(business.length,2);
+  const judged=business.find(g=>g.type==="opik");
+  assert.ok(judged);
+  assert.deepEqual(quick.measureGraders?.map(r=>[r.metric,r.criterion,r.graderId,r.graderVersion]),
+    [[metric,criterion,judged.id,judged.version],[markerMetric,markerCriterion,markerGrader,1]]);
+  assert.equal(judged.threshold,.8);
+  assert.equal(judged.type,"opik");
+  assert.match(judged.opikEngine ?? "",/^opik-js@/);
   const baselines=quick.graders.filter(g=>g.type==="catalog");
   assert.deepEqual(baselines.map(g=>g.ruleKey).sort(),["completion","response-present"]);
   assert.ok(baselines.every(g=>g.library?.automatic));
   assert.equal(calls.filter(c=>c.stage==="geval-score").length,2);
-  const businessScores=quickRecords.assessments.filter(a=>a.graderId===business[0].id);
-  assert.ok(businessScores.every(a=>a.evaluator===business[0].opikEngine));
+  const businessScores=quickRecords.assessments.filter(a=>a.graderId===judged.id);
+  assert.ok(businessScores.every(a=>a.evaluator===judged.opikEngine));
   assert.equal(businessScores.length,2);
   assert.deepEqual(businessScores.map(a=>a.value).sort(),[0,1]);
   for(const baseline of baselines)assert.equal(quickRecords.assessments.filter(a=>a.graderId===baseline.id).length,2);
@@ -495,10 +521,16 @@ async function smoke() {
   assert.deepEqual(calls.filter(c => ["analyzer","reporter"].includes(c.stage)).map(c=>c.stage), ["analyzer","reporter"]);
   assert.equal(quickRecords.report.assistance.analyzer.status,"verified");
   assert.equal(quickRecords.report.assistance.reporter.status,"verified");
-  assert.equal(quickRecords.report.verdict,"winner");
-  assert.equal(quickRecords.report.winnerId,"ollama/"+models.ollama);
+  const markerScores=quickRecords.assessments.filter(a=>a.graderId===markerGrader);
+  assert.deepEqual(markerScores.map(a=>a.value).sort(),[0,1]);
+  assert.equal(quickRecords.report.verdict,"mixed");
+  assert.equal(quickRecords.report.winnerId,null);
   assert.ok(quickRecords.report.metrics.some(m=>m.method==="opik-judge"));
-  await wait(() => exists('.er-report[data-verdict="winner"]'), "Terminal winner report");
+  await wait(() => exists('.er-report[data-verdict="mixed"]'), "Different answers lead on different measures");
+  const comparison=".er-measure-comparison";
+  assert.equal(await js("document.querySelectorAll("+q(comparison+" .er-answer a")+").length"),2);
+  assert.deepEqual(await js("Array.from(document.querySelectorAll("+q(comparison+" tbody tr")+")).slice(1).map(row=>Array.from(row.querySelectorAll('td')).slice(1).map(cell=>cell.innerText))"),
+    [["0 / 1\nBelow threshold","1 / 1\nPassed"],["1 / 1\nPassed","0 / 1\nBelow threshold"]]);
   const businessMetric=quickRecords.report.metrics.findIndex(m=>m.method==="opik-judge");
   const evidenceSelector='.er-evidence[data-metric-index="'+businessMetric+'"]';
   await click(evidenceSelector+" summary");
@@ -969,6 +1001,9 @@ async function smoke() {
     assert.equal(hostedGrades,1);
     await route("prompts");
     await click('[data-wf-use="'+first.id+'"]');
+    await wait(()=>exists(controls(rowB,"choice")),"Reopened approved prompt");
+    assert.equal(await text("document.querySelector("+q(controls(rowB,"choice"))+").value"),"saved:"+markerGrader,
+      "Reopening DASH restores the exact saved grader version to its approved measure");
     await reveal('[name=qc-saved-grader][value="'+hostedId+'"]');
     await click('[name=qc-saved-grader][value="'+hostedId+'"]');
     for(const provider of ["ollama","lmstudio"] as const){
@@ -1208,6 +1243,23 @@ async function smoke() {
     }
     assert.equal(proposedCount(),initialCount);
 
+    // The in-run designer carries immutable measure identities even when the operator renames a grader.
+    await route("prompts");await click('[data-wf-use="'+first.id+'"]');
+    const inline='[data-gd-scope="prompt:'+first.id+'"] ';
+    await reveal(inline+"[data-gd-action=design]");
+    inlineDesignerFixture=true;
+    await click(inline+"[data-gd-action=design]");
+    await wait(()=>exists(inline+"[data-gd-check='1']"),"Design two checks for the saved measures");
+    inlineDesignerFixture=false;
+    await fill(inline+"[data-gd-check='0'] [data-gd-field=name]","Renamed inspection criterion");
+    await fill(inline+"[data-gd-check='0'] [data-gd-field=category]","Inspection");
+    await click(inline+"[data-gd-action=confirm]");
+    await wait(()=>exists(inline+".gd-saved"),"Reviewed grader versions selected for the exact prompt");
+    const reviewed=z.string().parse(loadVersion("Renamed inspection criterion",1));
+    assert.equal(await text("document.querySelector("+q(controls(rowA,"choice"))+").value"),"saved:"+reviewed);
+    assert.deepEqual(await js("JSON.parse(localStorage.getItem("+q("dash.attachedGraders.v1.prompt:"+first.id)+")).mapped[0]"),{index:0,id:reviewed});
+    assert.equal(await js("document.querySelector("+q('[name=qc-saved-grader][value="'+reviewed+'"]')+")?.checked"),false);
+
   } finally {
     decisionOrigin="";
     server.closeAllConnections();server.close();
@@ -1216,7 +1268,7 @@ async function smoke() {
 }
 
 app.whenReady().then(smoke).then(() => {
-  console.log("Workflow smoke passed: mobile planning, automatic Quick judging, winner and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader consent, catalog forks, pinned prior revisions across two runs, native metric defaults and version-specific run links.");
+  console.log("Workflow smoke passed: mobile planning, mapped Quick graders, mixed verdict and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader consent, catalog forks, pinned prior revisions across two runs, native metric defaults and version-specific run links.");
   rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   app.exit(0);
 }).catch(err => {

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import * as os from "node:os";
 import { z } from "zod";
+import {measureGraderRequest} from "./lib/measure-graders.cjs";
 import { operatorProviderMessage } from "./lib/provider-errors.cjs";
 import { desktopFailure } from "./lib/desktop-errors.cjs";
 import { Bench } from "./lib/bench.cjs";
@@ -47,6 +48,7 @@ const startRequest=z.object({
   approvedPromptId:idSchema.nullish(),caseJudgeId:modelId.optional(),graderIds:z.array(idSchema).max(8).optional(),
   allowHostedDecision:z.boolean().optional(),animation:z.boolean().optional(),inputCap:tokenCap,outputCap:tokenCap,
   datasetScorer:z.enum(["scenario","selected-graders","exact-reference"]).nullish(),
+  measureGraders:measureGraderRequest.optional(),
   outcomeRubric:z.object({type:z.enum(["opik","judge"]).optional(),judgeId:modelId,
     criteria:z.string().min(1).max(6000).optional(),threshold:z.number().positive().max(1).optional()}).nullish(),
 });
@@ -94,7 +96,7 @@ function initialize():void {
   bind("saveDomainRole",value=>bench.workflow.saveRole(value));
   bind("savePlannerFallback",value=>bench.plannerSettings.save(value));
   bind("saveEndpoint",value=>bench.endpoints.save(value));
-  bind("designGraders",value=>designGraderPlan(bench,value));
+  bind("designGraders",value=>designGraderPlan(bench,value,onStage));
   bind("confirmGraders",value=>confirmGraderPlan(bench,value));
   bind("listDecisionModels", (raw, protocol) => listLocalDecisionModels(
     z.string().min(1).max(240).parse(raw), AbortSignal.timeout(5000),
@@ -119,7 +121,7 @@ function initialize():void {
       const {manifest,results}=bench.detail(run), result=results[index];
       if (!result || result.error) throw Error("Choose a completed response.");
       const row=manifest.datasetId ? bench.dataset(manifest.datasetId).rows.find(x=>x.case_id===result.caseId) : undefined;
-      evidence=graderEvidence(manifest,row ?? {case_id:result.caseId},result,bench.graders.get(grader).type==="catalog");
+      evidence=graderEvidence(manifest,row ?? {case_id:result.caseId},result,bench.graders.get(grader).type==="catalog",grader);
       graderId=grader;where={run,candidate:result.candidateId,caseId:result.caseId};
     } else {
       const sample=sampleAssessment.safeParse(value);
@@ -159,6 +161,7 @@ function initialize():void {
         datasetId:"Select the dataset snapshot again.",
         approvedPromptId:"Choose an approved prompt version.",
         graderIds:"Choose up to eight saved grader versions.",
+        measureGraders:"Review each measure, its selected grader and pass threshold.",
         inputCap:"Use a positive whole number for the input token limit.",
         outputCap:"Use a positive whole number for the output token limit.",
       };

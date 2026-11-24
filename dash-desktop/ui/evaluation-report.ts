@@ -47,9 +47,45 @@ function reportAssistance(r: UiReport) {
   return '<details class="er-policy"><summary>Local agent review'+(evidence.length?' · '+evidence.length+' case '+(evidence.length===1?'highlight':'highlights'):'')+'</summary><p>'+
     stages.map(stageLabel).join('<br>')+'</p>'+(evidence.length?'<ul>'+evidence.join("")+'</ul>':'')+'</details>';
 }
+function reportEvidence(runId:string,index:number) {
+  return '<details class="er-evidence" data-report-run="'+esc(runId)+'" data-metric-index="'+index+'"><summary>Case scores and rationale</summary><div></div></details>';
+}
+function quickMeasureScores(run:UiRunDetail,report:UiReport) {
+  const mapped=run.manifest.measureGraders;
+  if (run.manifest.mode!=="quick" || !mapped?.length) return "";
+  const caseId=run.manifest.caseIds[0];
+  const outputs=report.candidates.map(c=>{
+    const index=run.results.findIndex(result=>result.candidateId===c.id && result.caseId===caseId);
+    if (index<0) return "No response recorded";
+    const result=run.results[index],output=result.output;
+    if (!output) return esc(result.error || "No response recorded");
+    const preview=output.length>240 ? output.slice(0,240)+"…" : output;
+    return '<details class="er-answer"><summary>View answer</summary><pre>'+esc(preview)+'</pre>'+
+      link("Open full response","run/"+encodeURIComponent(run.manifest.id)+"/"+index,"link")+'</details>';
+  });
+  const rows=mapped.map(row=>{
+    const grader=run.manifest.graders.find(g=>g.id===row.graderId && g.version===row.graderVersion);
+    const index=grader ? report.metrics.findIndex(m=>m.id===grader.id) : -1;
+    const metric=report.metrics[index];
+    const scores=metric?.caseScores?.find(c=>c.caseId===caseId)?.values;
+    const rule=grader ? '<small>'+esc(grader.name)+' v'+esc(grader.version)+' · pass threshold '+esc(grader.threshold)+'</small>' : '';
+    const measure='<strong>'+esc(row.metric)+'</strong>'+(row.criterion?'<p>Pass condition · '+esc(row.criterion)+'</p>':'')+rule+
+      (row.reason?'<small>'+esc(row.reason)+'</small>':'')+(metric?reportEvidence(run.manifest.id,index):'');
+    return [measure,...report.candidates.map(c=>{
+      const value=scores?.find(v=>v.candidateId===c.id);
+      if (!value || value.score==null) return '<strong>Unscored</strong>'+(value?.reason?'<small>'+esc(value.reason)+'</small>':'');
+      const verdict=value.decision?.status==="review"?"Review":value.pass==null?"Unscored":value.pass?"Passed":"Below threshold";
+      return '<strong>'+esc(value.score)+' / 1</strong><small>'+esc(verdict)+'</small>';
+    })];
+  });
+  return '<section class="er-measure-comparison"><h3>Scores by approved measure</h3><p>Each score applies to one model answer.</p>'+
+    table(["Measure and grader",...report.candidates.map(c=>reportCandidateLabel(c,report.candidates))],[["Model output",...outputs],...rows])+'</section>';
+}
 function evaluationReport(run: UiRunDetail) {
   const r=run.report;
   if (!r || ["queued","running"].includes(run.status)) return "";
+  const mapped=new Set(run.manifest.measureGraders?.map(row=>row.graderId));
+  const remaining=r.metrics.map((metric,index)=>({metric,index})).filter(({metric})=>!mapped.has(metric.id));
   const winner=r.candidates.find(c=>c.id===r.winnerId);
   const name=winner && reportCandidateLabel(winner,r.candidates);
   const headline=({
@@ -59,11 +95,12 @@ function evaluationReport(run: UiRunDetail) {
   return '<section class="er-report" aria-labelledby="er-title" data-verdict="'+esc(r.verdict)+'">'+
     '<div class="er-intro"><small class="er-kicker">Evaluation report</small><h2 id="er-title">'+esc(headline)+'</h2><p>'+esc(r.summary)+'</p></div>'+
     (r.cacheIssue ? '<p class="note">'+esc(r.cacheIssue)+'</p>' : "")+
-    (r.metrics.length?'<div class="er-metrics">'+r.metrics.map((m,i)=>
+    quickMeasureScores(run,r)+
+    (remaining.length?'<div class="er-metrics">'+remaining.map(({metric:m,index:i})=>
       '<article class="er-metric"><div class="er-metric-head"><div><small>'+(m.informational?'Response diagnostic · ':'')+(m.lineage?esc(m.lineage.scope)+' library · ':'')+esc(scoreMethod(m.method))+(m.judge?' · '+esc(m.judge)+(r.candidates.some(c=>c.id===m.judge)?' · also a candidate':''):'')+'</small><h3>'+esc(m.label)+'</h3></div>'+
       '<span>'+esc(m.pairedCases)+' / '+esc(m.totalCases)+' matched cases</span></div>'+
       (m.comparisonIssue?'<p>'+esc(m.comparisonIssue)+'</p>':'')+metricComparisons(m,r.candidates)+
-      '<details class="er-evidence" data-report-run="'+esc(run.manifest.id)+'" data-metric-index="'+i+'"><summary>Case scores and rationale</summary><div></div></details></article>').join("")+'</div>':'')+
+      reportEvidence(run.manifest.id,i)+'</article>').join("")+'</div>':'')+
     outcomeBenchmarks(r)+reportAssistance(r)+
     '<details class="er-policy"><summary>How DASH reached the verdict</summary><p>'+esc(r.decisionRule)+'</p>'+
     (r.metrics.length?'<ul>'+r.metrics.map(m=>'<li>'+esc(m.label)+' · '+(m.decisionPolicy?'Fail at or below '+esc(m.decisionPolicy.failAt)+', pass at or above '+esc(m.decisionPolicy.passAt)+', review between': 'Pass threshold '+esc(scorePercent(m.threshold)))+'</li>').join("")+'</ul>':'')+

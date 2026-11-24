@@ -53,13 +53,14 @@ export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:
   ];
 }
 
-type GradingManifest = Parameters<typeof caseMessages>[0] & Partial<Pick<RunManifest,"mode"|"fixture"|"approvedPrompt">>;
-export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:RunResult, catalogContext=false):GraderEvidence {
+type GradingManifest = Parameters<typeof caseMessages>[0] & Partial<Pick<RunManifest,"mode"|"fixture"|"approvedPrompt"|"measureGraders">>;
+export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:RunResult, catalogContext=false, graderId?:string):GraderEvidence {
   const approved = manifest.mode === "quick" ? manifest.approvedPrompt : null;
+  const mapped=graderId && manifest.measureGraders?.find(row=>row.graderId===graderId);
   return {
     ...(catalogContext && {finishReason:result.reportedFinishReason ?? null}),
     ...(catalogContext && manifest.pack && manifest.pack.kind !== "reference" && {caseContext:{pack:manifest.pack,row}}),
-    ...(approved && {evaluationBrief:{objective:approved.objective, metrics:approved.auditAgent ? approved.metrics.filter(metric=>!isExternalOutcomeMetric(metric)) : approved.metrics, criteria:approved.requirements}}),
+    ...(approved && {evaluationBrief:{objective:approved.objective, metrics:mapped ? [mapped.metric] : approved.auditAgent ? approved.metrics.filter(metric=>!isExternalOutcomeMetric(metric)) : approved.metrics, criteria:mapped ? (mapped.criterion ? [mapped.criterion] : []) : approved.requirements}}),
     input: result.dispatchedMessages ?? caseMessages(manifest,row),
     inputSource: result.dispatchedMessages ? "recorded-dispatch" : manifest.fixture ? "fixture-case" : "reconstructed-case",
     reference: row.reference ?? row.gold ?? null,

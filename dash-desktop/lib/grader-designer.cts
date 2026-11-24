@@ -1,5 +1,5 @@
 import {z} from "opik";
-import {PlanningRoute,type PlannerAdapters} from "./planner-routing.cjs";
+import {PlanningRoute,type PlannerAdapters,type PlanningAttempt} from "./planner-routing.cjs";
 import {isRecord,type RuntimeInventory} from "./runtime-types.cjs";
 import {loadAgent,agentPin,isDomain} from "../agents/registry.cjs";
 import type {DatabaseSync} from "node:sqlite";
@@ -20,7 +20,7 @@ interface DesignerBench {
   plannerSettings:Pick<PlannerSettings,"fallback">;servers:RuntimeInventory[];
 }
 const textId=z.string().trim().min(1).max(250);
-const designRequest=z.strictObject({promptId:textId.optional(),datasetId:textId.optional(),domainId:textId.optional(),
+const designRequest=z.strictObject({requestId:z.string().uuid().optional(),promptId:textId.optional(),datasetId:textId.optional(),domainId:textId.optional(),
   objective:z.string().max(12000).optional(),metrics:z.string().max(3000).optional(),industry:z.string().max(100).optional(),
   target:z.enum(["response","agent"]).optional()}).refine(r=>[r.promptId,r.datasetId,r.domainId].filter(Boolean).length<=1,"Choose a single prompt, dataset, or domain.");
 const methodSchema=z.enum(["contains","exact","judge","field","trajectory"]);
@@ -34,7 +34,7 @@ const assignmentSchema=z.union([
 ]);
 const sourceSchema=z.object({id:textId,name:z.string(),version:z.number().int().positive(),scope:z.enum(["general","industry","customer"]),
   criteria:z.string(),hosted:z.boolean(),model:z.string().nullable()});
-const proposedSchema=z.object({name:z.string(),category:z.string(),industry:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),
+const proposedSchema=z.object({measures:z.array(z.string()).max(8).optional(),name:z.string(),category:z.string(),industry:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),
   type:z.enum(["contains","exact","field","trajectory","judge","opik","decision","catalog","opik-metric"]),reason:z.string(),
   evidenceView:rubricEvidenceView.optional(),requiredEvidence:z.array(z.enum(["reference","trajectory"])).optional(),action:z.enum(["reuse","derive","create"]),source:sourceSchema.nullable()});
 type Proposed=z.infer<typeof proposedSchema>;
@@ -187,7 +187,7 @@ function rewardsExternalOutcome(criteria:string,full:string,partial:string):bool
 function draftTable(db:DatabaseSync){
   db.exec(`CREATE TABLE IF NOT EXISTS grader_design_drafts(id TEXT PRIMARY KEY,created INTEGER NOT NULL,draft TEXT NOT NULL,approval TEXT,ids TEXT)`);
 }
-export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
+export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:(event:PlanningAttempt & {mode:"grader"})=>void) {
   if (bench.modelLoading) throw Error("Wait for the LM Studio model load to finish before designing graders.");
   if (bench.active || bench.designing) throw Error("Wait for the current run or planning request to finish.");
   bench.designing=true;
@@ -203,7 +203,8 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
     const methods=supportedMethods(brief,literals);
     const goals=[...new Set(brief.metrics)].map((metric,i)=>({key:"M"+(i+1),metric,external:brief.metricAudit?.some(row=>row.metric===metric && row.status==="external") || isExternalOutcomeMetric(metric),answerContent:asksForAnswerContent(metric)}));
     if(!goals.length)throw Error("Enter at least one success measure.");
-    const route=await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),()=>{});
+    const route=await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),
+      event=>onStage?.({...event,mode:"grader"}),request.requestId);
     const agent=loadAgent("grader-designer");
     type Visible=typeof choices;
     type Defaults=typeof localDefaults;
@@ -319,8 +320,10 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
           JSON.stringify([check.action,check.source?.id,check.name,check.type,check.criteria,check.threshold,check.industry,check.category]);
         const duplicate=byDefinition.get(identity);
         if(duplicate){
+          duplicate.measures=[...new Set([...(duplicate.measures ?? []),metric])];
           duplicate.reason+="\n"+metric+" — "+rationale;
         }else{
+          check.measures=[metric];
           check.reason=metric+" — "+rationale;
           checks.push(check);byDefinition.set(identity,check);
         }
@@ -364,7 +367,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
     const draftId=randomUUID();draftTable(bench.db);
     bench.db.prepare("DELETE FROM grader_design_drafts WHERE created < ?").run(Date.now()-7*24*60*60*1000);
     bench.db.prepare("INSERT INTO grader_design_drafts(id,created,draft) VALUES(?,?,?)").run(draftId,Date.now(),JSON.stringify(draftSchema.parse({request,checks:result.checks,covered:result.covered,...(route.designer && {producer:{agent:agentPin(agent),model:route.designer}})})));
-    return {draftId,...result,editableMethods:methods.map(m=>m==="judge"?"opik" as const:m),automatic:localDefaults.map(g=>g.name),designer:route.designer,agent:agentPin(agent),industry:brief.industry};
+    return {draftId,...result,planningAttempts:route.attempts,editableMethods:methods.map(m=>m==="judge"?"opik" as const:m),automatic:localDefaults.map(g=>g.name),designer:route.designer,agent:agentPin(agent),industry:brief.industry};
   } finally {bench.designing=false;}
 }
 export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{

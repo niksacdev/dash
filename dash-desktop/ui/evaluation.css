@@ -64,3 +64,15 @@
 .qc-lane-budget[data-budget-status=blocked] {color:var(--warning-ink)}
 .qc-lane-budget strong,.qc-lane-budget a {display:block}
 .qc-lane-budget a {width:fit-content;margin-top:3px}
+
+.qc-measure {min-width:0;margin:14px 0;padding:12px 14px;border:1px solid var(--border);border-radius:5px}
+.qc-measure legend {max-width:100%;padding:0 5px;font-weight:650;overflow-wrap:anywhere}
+.qc-measure p {margin:0;line-height:1.45}
+.qc-measure>label.field {max-width:36rem}
+.qc-measure select {max-width:100%}
+.er-measure-comparison {margin:16px 0}
+.er-measure-comparison td {vertical-align:top}
+.er-measure-comparison td small {display:block;color:var(--muted);line-height:1.5}
+.er-measure-comparison td p {margin:4px 0;font-size:13px}
+.er-measure-comparison .er-answer pre {max-height:12rem;max-width:34ch;white-space:pre-wrap;overflow:auto}
+.er-measure-comparison .er-evidence .tablewrap {max-width:min(56ch,70vw)}

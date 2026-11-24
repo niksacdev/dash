@@ -1,4 +1,5 @@
 import {z} from "opik";
+import {pinnedMeasure} from "./measure-graders.cjs";
 import {jsonText,isScenarioPack} from "./run-types.cjs";
 import type {RunManifest,RunResult,ScenarioPack} from "./run-types.cjs";
 import {isCandidate,type Candidate} from "./runtime-types.cjs";
@@ -26,6 +27,7 @@ const candidate=z.preprocess(v=>{
 const manifest=z.object({format:num,id:str,created:str,title:str,mode:z.enum(["quick","dataset"]),fixture:z.boolean(),
   candidates:z.array(candidate),caseIds:z.array(str),pack:z.custom<ScenarioPack>(isScenarioPack).nullable(),
   graders:z.array(z.unknown().transform(decodeGraderSpec)).default([]),approvedPrompt:z.unknown().transform(v=>v==null?v:decodeApprovedPrompt(v)).optional(),
+  measureGraders:z.array(pinnedMeasure).max(8).optional(),
   approvedPromptId:nullable.optional(),datasetScorer:z.enum(["scenario","selected-graders","exact-reference"]).nullable().optional(),
   prompt:nullable,effectiveSystem:nullable.optional(),objective:nullable.optional(),promptSource:str.optional(),tokenBudget:budget.optional(),
   datasetId:nullable,datasetMetadata:savedMetadata.partial({industry:true}).nullable().optional(),datasetVersion:nullable,split:nullable,industry:nullable.optional(),

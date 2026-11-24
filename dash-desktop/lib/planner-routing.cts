@@ -2,13 +2,13 @@ import {randomUUID} from "node:crypto";
 import {hostedPlanningUsage,localPlanningUsage} from "./planning-usage.cjs";
 import {isRecord} from "../agents/registry.cjs";
 import {ProviderFailure,ProviderPreflightError,ProviderRejectedError} from "./runtime-types.cjs";
-import type {RuntimeAdapters, RuntimeInventory, LocalCandidate, ChatTurn, OutputSchema} from "./runtime-types.cjs";
+import type {RuntimeAdapters, RuntimeInventory, LocalCandidate, ChatTurn, OutputSchema, PlanningProgress} from "./runtime-types.cjs";
 import {readProviderJson} from "./provider-response.cjs";
 import type {FallbackConfig} from "./planner-settings.cjs";
 export type PlannerAdapters = Pick<RuntimeAdapters,"discover"|"invoke">;
 export interface PlannerOptions {fetch?:typeof fetch;openaiFallback?:()=>FallbackConfig|null|Promise<FallbackConfig|null>}
 export interface PlannerIdentity { provider:string; model:string; revision:string|null }
-export interface PlanningAttempt extends PlannerIdentity {stage:string;requestId:string;queryId:string;attempt:number;status:"succeeded"|"failed"|"running"|"canceled";usage?:PlanningUsage;fallbackReason?:string;reason?:string}
+export interface PlanningAttempt extends PlannerIdentity {stage:string;requestId:string;queryId:string;attempt:number;status:"succeeded"|"failed"|"running"|"canceled";usage?:PlanningUsage;startedAt?:number;elapsedMs?:number;discoveryMs?:number;firstTokenMs?:number;tokensPerSecond?:number;progress?:PlanningProgress;fallbackReason?:string;reason?:string}
 type Progress = (event:PlanningAttempt)=>void;
 interface PlannerOutput {output:unknown;finishReason:unknown;revision?:string|null;usage:PlanningUsage;error?:string}
 type Validator<T> = (value:Record<string,unknown>)=>T;
@@ -98,12 +98,13 @@ export class PlanningRoute {
   readonly attempts:PlanningAttempt[] = [];
   designer:PlannerIdentity|null = null;
   constructor(private readonly adapters:PlannerAdapters, private readonly local:LocalCandidate|undefined,
-    private readonly options:PlannerOptions, private readonly signal:AbortSignal, private readonly progress:Progress, private readonly requestId:string, private readonly discoveryUnavailable=false) {}
+    private readonly options:PlannerOptions, private readonly signal:AbortSignal, private readonly progress:Progress, private readonly requestId:string, private readonly discoveryUnavailable=false, private readonly discoveryMs?:number) {}
   private notify(event:PlanningAttempt) {
     // A window may close mid-call. Presentation failures must never redispatch inference.
     try { this.progress(event); } catch { /* The attempt still belongs to the preparation. */ }
   }
   static async start(adapters:PlannerAdapters, options:PlannerOptions, signal:AbortSignal, progress:Progress, requestId:string=randomUUID()) {
+    const start=performance.now();
     let inventory:RuntimeInventory[];
     let discoveryUnavailable=false;
     try {
@@ -111,7 +112,7 @@ export class PlanningRoute {
       discoveryUnavailable=inventory.length>0 && inventory.every(server=>!server.online);
     } catch { inventory=[]; discoveryUnavailable=true; }
     signal.throwIfAborted();
-    return new PlanningRoute(adapters, selectLocalPlanner(inventory), options, signal, progress, requestId, discoveryUnavailable);
+    return new PlanningRoute(adapters, selectLocalPlanner(inventory), options, signal, progress, requestId, discoveryUnavailable, Math.round(performance.now()-start));
   }
   async ask<T>(stage:string, instructions:string, payload:unknown, schema:OutputSchema, maxTokens:number, validate:Validator<T>,
     hosted?:{payload:unknown;schema:OutputSchema;validate:Validator<T>}, output?:{advisoryMetrics:true}):Promise<T> {
@@ -124,7 +125,10 @@ export class PlanningRoute {
       let correction = "";
       for (let attempt = 1; attempt <= 2; attempt++) {
         this.signal.throwIfAborted();
-        const current = {stage,requestId:this.requestId,queryId:randomUUID(),...identity(provider,model,revision),attempt,...(fallbackReason && {fallbackReason})};
+        const start=performance.now();
+        const timing:Pick<PlanningAttempt,"firstTokenMs"|"tokensPerSecond">={};
+        let lastProgress=-Infinity, lastPhase:PlanningProgress["phase"]|undefined, settled=false;
+        const current = {stage,startedAt:Date.now(),...(this.attempts.length===0 && {discoveryMs:this.discoveryMs}),requestId:this.requestId,queryId:randomUUID(),...identity(provider,model,revision),attempt,...(fallbackReason && {fallbackReason})};
         this.notify({ ...current, status:"running" });
         const timeout = AbortSignal.timeout(60000);
         const signal = AbortSignal.any([this.signal, timeout]);
@@ -137,14 +141,30 @@ export class PlanningRoute {
           if (candidate.provider === "openai") {
             response = await directOpenAI(this.options.fetch || fetch, model, apiKey || "", messages, maxTokens, signal);
           } else {
-            const result = await this.adapters.invoke(candidate, messages, {planning:true, structured:schema, maxTokens, signal});
+            const result = await this.adapters.invoke(candidate, messages, {planning:true, structured:schema, maxTokens, signal,
+              onPlanningProgress:progress=>{
+                if (settled || signal.aborted) return;
+                const now=performance.now();
+                if (lastPhase===progress.phase && now-lastProgress<500) return;
+                lastProgress=now;lastPhase=progress.phase;
+                // Forward whitelisted numbers; SDK fragments and callback data can contain model text.
+                const reported=progress.phase==="processing-prompt"
+                  ? {phase:progress.phase,percent:progress.percent}
+                  : {phase:progress.phase,approximateOutputTokens:progress.approximateOutputTokens};
+                this.notify({...current,status:"running",progress:reported});
+              },
+            });
+            const first=result.telemetry.provider_first_token_ms ?? result.telemetry.first_token_ms;
+            const rate=result.telemetry.tokens_per_second;
+            if (typeof first==="number" && Number.isFinite(first) && first>=0) timing.firstTokenMs=Math.round(first);
+            if (typeof rate==="number" && Number.isFinite(rate) && rate>0) timing.tokensPerSecond=rate;
             response = {...result, usage:localPlanningUsage(result.telemetry.input_tokens, result.telemetry.output_tokens)};
           }
           signal.throwIfAborted();
           if (response.error) throw new EndpointFailure(response.error);
           const result = parseOutput(response, input.validate, output?.advisoryMetrics);
           this.designer = identity(provider, model, response.revision || revision);
-          const success:PlanningAttempt = { ...current, ...this.designer, status:"succeeded", usage:response.usage };
+          const success:PlanningAttempt = { ...current, ...this.designer, ...timing, elapsedMs:Math.round(performance.now()-start), status:"succeeded", usage:response.usage };
           this.attempts.push(success);
           this.notify(success);
           return result;
@@ -159,7 +179,7 @@ export class PlanningRoute {
           const reason=canceled ? "Prompt preparation was canceled." : timedOut ? "the planning request timed out" :
             error instanceof InvalidOutput || error instanceof EndpointFailure || error instanceof ProviderFailure ? error.message :
               "the planning provider could not complete the request";
-          const failure:PlanningAttempt = { ...current, status:canceled ? "canceled" : "failed", reason,
+          const failure:PlanningAttempt = { ...current, ...timing, elapsedMs:Math.round(performance.now()-start), status:canceled ? "canceled" : "failed", reason,
             ...(response && {usage:response.usage,revision:response.revision ?? revision}) };
           this.attempts.push(failure);
           this.notify(failure);
@@ -168,7 +188,7 @@ export class PlanningRoute {
           if (!(error instanceof InvalidOutput) || attempt === 2) break;
           correction = "\nCorrect the previous generation error: " + reason +
             ". Write one fresh, short answer in plain language for each required field. Avoid repeating field names or phrases.";
-        }
+        } finally { settled=true; }
       }
       return null;
     };

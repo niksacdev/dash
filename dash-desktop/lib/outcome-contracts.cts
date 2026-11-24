@@ -68,6 +68,9 @@ const savedPlanningCall = z.object({
   stage:z.string(), model:z.string(), status:z.enum(["succeeded","failed","canceled"]),
   revision:z.string().nullable().optional(), provider:z.string().optional(), attempt:z.int().positive().optional(),
   requestId:z.string().optional(), queryId:z.string().optional(), reason:z.string().optional(), fallbackReason:z.string().optional(),
+  startedAt:z.int().nonnegative().optional().catch(undefined), elapsedMs:z.int().nonnegative().optional().catch(undefined),
+  discoveryMs:z.int().nonnegative().optional().catch(undefined), firstTokenMs:z.int().nonnegative().optional().catch(undefined),
+  tokensPerSecond:z.number().positive().optional().catch(undefined),
   usage:z.object({inputTokens:z.int().nonnegative().nullable(),outputTokens:z.int().nonnegative().nullable(),
     estimatedCostUsd:z.number().nonnegative().nullable()}).optional().catch(undefined),
 });

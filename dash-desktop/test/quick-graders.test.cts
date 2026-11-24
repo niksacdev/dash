@@ -13,7 +13,11 @@ import {z} from "zod";
 
 const requestProperties=z.object({properties:z.record(z.string(),z.unknown())});
 
-async function setup(t:TestContext) {
+const epsMetric="GAAP EPS source agreement";
+const periodMetric="Reporting period citation";
+const epsCriterion="The answer gives the GAAP EPS stated in the supplied release.";
+const periodCriterion="The answer explicitly names a reporting period.";
+async function setup(t:TestContext,paired=false) {
   const models = ["lfm3-1.7b","lane-b","local-judge"].map((model):LocalCandidate => ({
     id:"lmstudio/" + model, provider:"lmstudio", kind:"model", model, revision:"weights-v1", loaded:true,
   }));
@@ -23,10 +27,15 @@ async function setup(t:TestContext) {
     async invoke(model, messages, options) {
       if (options.planning) {
         const properties=requestProperties.parse(options.structured).properties;
-        if (properties.audit) return reply(JSON.stringify(auditReply(messages)));
+        if (properties.audit) {
+          const result=auditReply(messages);
+          if(paired)return reply(JSON.stringify({audit:result.audit.map(row=>({...row,metric:row.criterion===periodCriterion ? periodMetric : epsMetric,evidenceBasis:"task-answer",
+            evidence:"The source in the task and the candidate answer."}))}));
+          return reply(JSON.stringify(result));
+        }
         const expert=properties.requirements;
         return reply(JSON.stringify(expert
-          ? {title:"Capture earnings", metrics:["GAAP EPS capture accuracy"], requirements:["Distinguish GAAP from adjusted EPS."]}
+          ? paired ? {title:"Capture earnings",metrics:[epsMetric,periodMetric],requirements:[epsCriterion,periodCriterion]} : {title:"Capture earnings", metrics:["GAAP EPS capture accuracy"], requirements:["Distinguish GAAP from adjusted EPS."]}
           : {prompt:"Extract the reported GAAP EPS."}));
       }
       if (model.model === "local-judge") {
@@ -37,17 +46,19 @@ async function setup(t:TestContext) {
         const spec=requestProperties.parse(options.structured);
         assert.equal(z.object({maximum:z.number()}).parse(spec.properties.score).maximum,maxScore);
         judgeCalls.push(evidence);
-        return reply(JSON.stringify({score:evidence.output === "GAAP EPS 1.24" ? maxScore : 0, reason:"Checked the cited earnings basis."}));
+        const brief=z.object({metrics:z.array(z.string())}).parse(evidence.evaluationBrief);
+        const passed=paired && brief.metrics.includes(periodMetric) ? String(evidence.output).includes("June") : String(evidence.output).includes("GAAP EPS 1.24");
+        return reply(JSON.stringify({score:passed ? maxScore : 0, reason:"Checked the requested item in the answer."}));
       }
-      return reply(model.model === "lfm3-1.7b" ? "GAAP EPS 1.24" : "Adjusted EPS 1.80");
+      return reply(model.model === "lfm3-1.7b" ? "GAAP EPS 1.24" : paired ? "Adjusted EPS 1.80 for June." : "Adjusted EPS 1.80");
     },
   };
   const bench = new Bench(":memory:", adapters, withoutPower);
   t.after(() => bench.db.close());
   await bench.refresh();
-  const draft = await bench.designPrompt({mode:"quick",domain:"Financial Services",objective:"Extract GAAP EPS from the earnings release."});
+  const draft = await bench.designPrompt({mode:"quick",domain:"Financial Services",objective:paired ? "Extract GAAP EPS and cite the reporting period. The release states June GAAP EPS 1.24 and adjusted EPS 1.80." : "Extract GAAP EPS from the earnings release."});
   const approved = bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
-  const start = (extra:Pick<StartRun,"graderIds"|"outcomeRubric">) => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
+  const start = (extra:Pick<StartRun,"graderIds"|"outcomeRubric"|"measureGraders">) => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
   function save(name:string, change:Partial<GraderDefinition> = {}) {
     return bench.graders.save({name,type:"contains",category:"Extraction",threshold:1,criteria:"GAAP",industry:"Financial Services",...change},models);
   }
@@ -83,12 +94,16 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   assert.match(options.generated.criteria, /Distinguish GAAP from adjusted EPS/);
   assert.equal(options.generated.type, "opik");
   const outcomeRubric = {judgeId:models[2].id, criteria:options.generated.criteria};
+  const legacyBasis=options.measures[0].generated;
+  assert.ok(legacyBasis?.type==="opik");
+  assert.deepEqual(legacyBasis.requiredEvidence,["reference"]);
   const runId = start({outcomeRubric});
   await present(bench.active).done;
   const {manifest,assessments,status} = bench.detail(runId);
   assert.equal(status, "completed");
   assert.equal(manifest.graders.filter(g=>!g.library?.automatic).length, 1);
   assert.deepEqual(new Set(manifest.graders.filter(g=>g.type==="catalog").map(g=>g.ruleKey)),new Set(["response-present","completion"]));
+  assert.equal(manifest.measureGraders,undefined);
   const pinned = manifest.graders[0];
   assert.deepEqual(pinned.origin,{kind:"approved-outcome",promptId:approved.id,promptFamilyId:approved.familyId,promptVersion:1});
   assert.equal(pinned.type, "opik");
@@ -140,4 +155,84 @@ test("an audited external KPI does not enable an outcome judge or erase the oper
   assert.deepEqual(withKpi.metrics,["Actual analyst hours saved"]);
   const edited={...approved,metrics:[],requirements:[],metricAudit:undefined};
   assert.equal(bench.graders.quickOptions(edited,models).generated,null);
+});
+
+
+test("Quick pins an independent revision per approved measure and scores both answers on both criteria", async t=>{
+  const {bench,approved,models,judgeCalls,start}=await setup(t,true);
+  const options=bench.quickGraderOptions(approved.id).measures;
+  assert.deepEqual(options.map(o=>[o.metric,o.criterion]),[[epsMetric,epsCriterion],[periodMetric,periodCriterion]]);
+  const choices=options.map(({metric,generated})=>{
+    assert.ok(generated?.type==="opik" && !generated.requiredEvidence?.length);
+    return {metric,kind:"rubric" as const,judgeId:models[2].id,threshold:1};
+  });
+  const id=start({measureGraders:choices});
+  await present(bench.active).done;
+  const run=bench.detail(id);
+  const pinned=present(run.manifest.measureGraders);
+  const graders=pinned.map(item=>present(run.manifest.graders.find(g=>g.id===item.graderId)));
+  assert.equal(new Set(graders.map(g=>g.library?.familyId)).size,2);
+  assert.deepEqual(graders.map(g=>[g.origin?.measure,g.origin?.promptId,g.version]),[[epsMetric,approved.id,1],[periodMetric,approved.id,1]]);
+  assert.deepEqual(pinned.map(row=>[row.metric,row.criterion,row.graderVersion]),[[epsMetric,epsCriterion,1],[periodMetric,periodCriterion,1]]);
+  assert.equal(run.report?.verdict,"mixed");
+  assert.match(run.results[0].dispatchedMessages?.map(m=>m.content).join(" ") ?? "",/June GAAP EPS 1.24/);
+  assert.deepEqual(pinned.map(row=>present(run.report?.metrics.find(m=>m.id===row.graderId)).values.map(v=>v.score)),[[1,0],[0,1]]);
+  assert.deepEqual(run.results.map(r=>r.output),["GAAP EPS 1.24","Adjusted EPS 1.80 for June."]);
+  assert.deepEqual(run.results[0].dispatchedMessages,run.results[1].dispatchedMessages);
+  assert.equal(judgeCalls.length,4);
+  const briefs=judgeCalls.map(e=>z.object({metrics:z.array(z.string()),criteria:z.array(z.string())}).parse(e.evaluationBrief));
+  for(const [metric,criterion] of [[epsMetric,epsCriterion],[periodMetric,periodCriterion]]) {
+    assert.equal(briefs.filter(b=>b.metrics.length===1 && b.metrics[0]===metric && b.criteria.length===1 && b.criteria[0]===criterion).length,2);
+  }
+  const revisedId=start({measureGraders:[{...choices[0],threshold:0.8},choices[1]]});
+  await present(bench.active).done;
+  const revised=present(bench.detail(revisedId).manifest.measureGraders);
+  assert.deepEqual(revised.map(m=>m.graderVersion),[2,1]);
+  assert.equal(revised[1].graderId,pinned[1].graderId);
+  assert.deepEqual(bench.detail(id).manifest.measureGraders,pinned);
+  assert.equal(bench.detail(id).report?.verdict,"mixed");
+});
+
+test("Quick retains missing reference and skipped measures without claiming an overall winner",async t=>{
+  const {bench,approved,models,judgeCalls,start,save}=await setup(t,true);
+  const saved=save("Reusable source check",{criteria:"GAAP"});
+  const id=start({graderIds:[saved],measureGraders:[{metric:epsMetric,kind:"saved",graderId:saved},
+    {metric:periodMetric,kind:"rubric",judgeId:models[2].id,threshold:1,evidence:"reference"}]});
+  await present(bench.active).done;
+  const run=bench.detail(id);
+  assert.equal(run.report?.verdict,"incomplete");
+  const pinned=present(run.manifest.measureGraders);
+  const missing=run.assessments.filter(a=>a.graderId===pinned[1].graderId);
+  assert.equal(missing.length,2);
+  assert.ok(missing.every(a=>a.value===null && a.pass===null && /reference/.test(a.reason)));
+  assert.equal(judgeCalls.length,0);
+  assert.equal(run.assessments.filter(a=>a.graderId===saved).length,2);
+  const skippedId=start({measureGraders:[{metric:epsMetric,kind:"saved",graderId:saved},{metric:periodMetric,kind:"skip"}]});
+  await present(bench.active).done;
+  const skipped=bench.detail(skippedId);
+  assert.equal(skipped.report?.verdict,"incomplete");
+  assert.equal(skipped.report?.winnerId,null);
+  assert.match(skipped.report?.summary??"",/measure was left unscored/);
+  assert.equal(skipped.manifest.measureGraders?.[1].graderId,null);
+  const external={...approved,metrics:["Actual analyst hours saved"],metricCriteria:[{metric:"Actual analyst hours saved",criterion:"Verify actual analyst hours saved."}]};
+  const kpi=bench.graders.quickOptions(external,models).measures[0];
+  assert.equal(kpi.generated,null);
+  assert.throws(()=>bench.graders.resolveMeasureGraders(external,[],[{metric:kpi.metric,kind:"saved",graderId:saved}],models),/outside this run/);
+  assert.deepEqual(bench.graders.quickOptions({...approved,metricCriteria:undefined,metricAudit:undefined},models).measures,[]);
+});
+
+test("invalid or excessive measure assignments roll back generated revisions and the run",async t=>{
+  const {bench,models,start,save}=await setup(t,true);
+  const graderIds=Array.from({length:8},(_,i)=>save("Additional check "+i));
+  const rubric={metric:epsMetric,kind:"rubric" as const,judgeId:models[2].id,threshold:1};
+  const skip={metric:periodMetric,kind:"skip" as const};
+  const count=bench.graders.list().length;
+  assert.throws(()=>start({measureGraders:[rubric]}),/exactly once/);
+  assert.throws(()=>start({measureGraders:[rubric,{...skip,metric:epsMetric}]}),/exactly once/);
+  assert.throws(()=>start({measureGraders:[rubric,{...skip,metric:"Unapproved"}]}),/exactly once/);
+  assert.throws(()=>start({measureGraders:[{metric:epsMetric,kind:"saved",graderId:graderIds[0]},
+    {metric:periodMetric,kind:"saved",graderId:graderIds[0]}]}),/distinct grader/);
+  assert.throws(()=>start({measureGraders:[rubric,skip],graderIds}),/up to eight/);
+  assert.equal(bench.graders.list().length,count);
+  assert.equal(bench.list().runs.length,0);
 });

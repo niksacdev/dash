@@ -44,10 +44,17 @@ test("the designer proposes a minimal plan, then confirmation saves reusable ver
   const b=new Bench(":memory:",adapters);
   t.after(()=>b.db.close());
   b.servers=servers;
-  const proposal=await designGraderPlan(b,{objective:'Every response must include the literal "HOLD" and cite the measurement.',metrics:"Exact disposition\nEvidence quality",domainId:"Manufacturing"});
+  const stages:string[]=[];
+  const proposal=await designGraderPlan(b,{objective:'Every response must include the literal "HOLD" and cite the measurement.',metrics:"Exact disposition\nEvidence quality",domainId:"Manufacturing"},event=>{
+    assert.equal(event.mode,"grader");
+    stages.push(event.status);
+  });
+  assert.deepEqual(stages,["running","succeeded"]);
+  assert.equal(proposal.planningAttempts.at(-1)?.status,"succeeded");
   const customerCount=()=>b.graders.list().filter(g=>g.library?.scope==="customer").length;
   assert.equal(present(proposal.designer).model,judge.model);
   assert.deepEqual(proposal.checks.map(g=>g.type),["contains","opik"]);
+  assert.deepEqual(proposal.checks.map(g=>g.measures),[["Exact disposition"],["Evidence quality"]]);
   assert.equal(customerCount(),0);
   const choices=proposal.checks.map((g,index)=>({index,action:"create",
     definition:{name:g.name,category:g.category,criteria:g.criteria,threshold:g.threshold,judgeId:judge.id}}));

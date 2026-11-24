@@ -109,14 +109,14 @@ function measuresSection(w:UiWorkflow) {
     '<input id="wf-metrics" maxlength="2000" value="' + esc(w.metrics) + '" placeholder="For example, count incorrect lot acceptances."></label>';
   const selected = w.chosenMetrics !== null;
   const fields = selected ? '<div class="wf-measure-grid"><label class="field"><span>' +
-    (w.suggestion ? 'Suggested metrics' : 'Your metrics') + '</span><textarea id="wf-chosen-metrics" rows="3">' +
-    esc(w.chosenMetrics) + '</textarea></label><label class="field"><span>Success criteria</span><textarea id="wf-criteria" rows="3">' +
+    (w.suggestion ? 'Suggested metrics' : 'Your metrics') + ' · what to measure</span><textarea id="wf-chosen-metrics" rows="3">' +
+    esc(w.chosenMetrics) + '</textarea></label><label class="field"><span>Pass conditions · what counts as success for one answer</span><textarea id="wf-criteria" rows="3">' +
     esc(w.criteria) + '</textarea></label></div>' : manual;
   const supplement = w.suggestion?.criteriaReview?.supplementSource;
   const attribution = w.suggestion ? '<strong>AI expert</strong> · AI suggestions can be wrong. Review and edit them before drafting.' +
     (supplement ? ' Supplementary criteria from '+esc(supplement)+'.' : '') : 'Edit or remove any line before drafting.';
   return head + '<div id="wf-measure-fields">' + fields +
-    (selected ? '<small class="wf-hint">' + attribution + '</small>' : '') + (w.suggestion ? metricExplanation(w.suggestion,suggestionEdited(w)) : '') + '</div>';
+    (selected ? '<p class="wf-hint">Pair each metric with its pass condition on the same line in the next field. The grader checks the answer against that condition.</p><small class="wf-hint">' + attribution + '</small>' : '') + (w.suggestion ? metricExplanation(w.suggestion,suggestionEdited(w)) : '') + '</div>';
 }
 function mergeSuggestions(text:string, previous:string[] = [], suggested:string[] = []) {
   const current = metricLines(text);
@@ -171,10 +171,10 @@ function workflowReview(w:UiWorkflow, grader=false) {
   if (!d) return "";
   return planningActivity(w) + '<form id="wf-approval-form" class="wf-panel"><fieldset class="wf-fields"' + (w.busy ? ' disabled' : '') +
     '><div class="wf-section-head"><h2>Review the evaluation prompt</h2>' + tag(d.domain) + '</div>' +
-    '<label class="field"><span>Prompt for evaluation</span><textarea id="wf-prompt" required maxlength="24000" rows="10">' +
+    '<label class="field"><span>Task prompt sent to each candidate</span><textarea id="wf-prompt" required maxlength="24000" rows="10">' +
     esc(w.reviewPrompt) + '</textarea></label>' +
     '<label class="field"><span>Success metrics</span><textarea id="wf-review-metrics" rows="3">' +
-    esc(w.reviewMetrics) + '</textarea></label><p class="wf-hint">One metric per line. The graders selected for the run determine which checks are scored.</p>' +
+    esc(w.reviewMetrics) + '</textarea></label><p class="wf-hint">One metric per line. Keep its reviewed name to retain its pass condition. Graders use these measures when scoring the returned answers.</p>' +
     planningDetails(d,w.reviewPrompt.trim()!==d.prompt,!sameMeasureText(w.reviewMetrics,d.metrics)) + scenarioContract({...d,mode:w.mode,datasetId:w.datasetId}) +
     '<div class="wf-actions"><button type="button" data-wf-edit>Edit outcome or domain</button><button class="yellow" type="submit" id="wf-approve">' +
     (w.busy ? 'Saving version…' : grader?'Approve prompt &amp; propose graders':'Approve &amp; choose models →') + '</button></div></fieldset></form>';
@@ -282,17 +282,13 @@ function showCurrentWorkflow(w:UiWorkflow) {
   return activeWorkflow()===w;
 }
 const planningRequests=new Map<string,UiWorkflow>();
-window.dash?.onPlanningStage?.(event => {
-  const w=planningRequests.get(event.requestId);
-  if(!w)return;
+function updatePlanningActivity(w:Pick<UiWorkflow,"activity"|"busy">,event:UiPlanningEvent,body:HTMLElement|null,status:HTMLElement|null):void {
   const activity=w.activity;
-  if (!activity || activity.requestId !== event.requestId || (w.busy !== "design" && w.busy !== "suggest")) return;
+  if (!activity || activity.requestId!==event.requestId) return;
   const index = activity.calls.findIndex(call => call.queryId === event.queryId);
   if (index < 0) activity.calls.push(event);
   else if (activity.calls[index].status === "running") activity.calls[index] = event;
   else return;
-  if (!showCurrentWorkflow(w)) return;
-  const body = document.getElementById("wf-query");
   if (body) {
     const expanded = body.querySelector("details")?.open;
     const focusedSummary = document.activeElement === body.querySelector(".ai-earlier summary");
@@ -301,8 +297,15 @@ window.dash?.onPlanningStage?.(event => {
     if (earlier && expanded) earlier.open = true;
     if (focusedSummary) earlier?.querySelector("summary")?.focus({preventScroll:true});
   }
-  const status = document.getElementById("wf-progress");
-  if (status) status.textContent = [event.stage,event.model,planningOutcome[event.status]].join(" · ");
+  const announcement=[event.stage,event.model,planningOutcome[event.status]].join(" · ");
+  if (status && status.textContent!==announcement) status.textContent = announcement;
+}
+window.dash?.onPlanningStage?.(event => {
+  if(event.mode==="grader"){updateGraderActivity(event);return;}
+  const w=planningRequests.get(event.requestId);
+  if(!w || (w.busy!=="design" && w.busy!=="suggest"))return;
+  const visible=showCurrentWorkflow(w);
+  updatePlanningActivity(w,event,visible ? document.getElementById("wf-query") : null,visible ? document.getElementById("wf-progress") : null);
 });
 type WorkflowTextField = "objective"|"metrics"|"chosenMetrics"|"criteria"|"inputCap"|"outputCap"|"reviewPrompt"|"reviewMetrics";
 const workflowFields:Record<string,WorkflowTextField|undefined> = {
@@ -384,7 +387,7 @@ document.addEventListener("submit", async e=>{
   w.error="";
   const grader=activeGraderPlanning();
   if (design) {
-    w.activity={requestId:crypto.randomUUID(),calls:[]};
+    w.activity={requestId:crypto.randomUUID(),startedAt:Date.now(),calls:[]};
     planningRequests.set(w.activity.requestId,w);
   }
   w.busy=suggest ? "suggest" : design ? "design" : "approve";

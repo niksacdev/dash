@@ -1,3 +1,4 @@
+import {measureOptions,measureGraderRequest,pinMeasure,type PinnedMeasure} from "./measure-graders.cjs";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -164,6 +165,7 @@ function inIndustry(grader:GraderSpec,industry:string) {
   return generalIndustries.has(grader.industry) || grader.industry===industry;
 }
 function legacyFamilyId(g:{name:string;industry:string;origin?:RubricOrigin}) {
+  if (g.origin?.measure) return "measure/"+hash([g.origin.promptFamilyId,g.origin.measure]);
   return g.origin ? "outcome/"+g.origin.promptFamilyId : "customer/legacy/"+hash([g.industry,g.name.toLowerCase()]);
 }
 function familyIdOf(g:GraderSpec) { return g.library?.familyId ?? legacyFamilyId(g); }
@@ -190,10 +192,13 @@ function onlyExternalMeasures(approved:ApprovedPrompt):boolean {
   if (approved.metrics.length) return approved.metrics.every(isExternalOutcomeMetric);
   return !approved.requirements.length || (!!approved.metricAudit?.length && approved.metricAudit.every(row=>row.status==="external"));
 }
+function preferredJudge(approved:ApprovedPrompt,judges:LocalCandidate[]) {
+  const sameDesigner=(m:LocalCandidate)=>m.provider===approved.designer?.provider && m.model===approved.designer?.model;
+  const loaded=judges.filter(m=>m.loaded);
+  return loaded.find(sameDesigner) || loaded[0] || judges.find(sameDesigner) || judges[0];
+}
 function outcomeRubric(approved:ApprovedPrompt, judges:LocalCandidate[], type:JudgeMethod = "opik"):GraderDefinition {
-  const sameDesigner = (m:LocalCandidate) => m.provider === approved.designer?.provider && m.model === approved.designer?.model;
-  const loaded = judges.filter(m => m.loaded);
-  const preferred = loaded.find(sameDesigner) || loaded[0] || judges.find(sameDesigner) || judges[0];
+  const preferred = preferredJudge(approved,judges);
   const title = approved.title || approved.domain + " assessment";
   const criteria = [
     "Judge how well the answer fulfills the approved objective using the input shown to the candidate.",
@@ -363,7 +368,41 @@ export class Graders {
       scored.push({ score:(reused ? 100 : 0) + Math.min(matched.length, 8) + Number(inDomain), grader:{ ...grader, reason } });
     }
     scored.sort((a,b) => b.score - a.score || a.grader.name.localeCompare(b.grader.name));
-    return { automatic:this.automatic(false), recommended:scored.slice(0,3).map(item => item.grader), available, generated:onlyExternalMeasures(approved) ? null : outcomeRubric(approved, judges), judges };
+    return { measures:measureOptions(approved,preferredJudge(approved,judges)?.id ?? null), automatic:this.automatic(false), recommended:scored.slice(0,3).map(item => item.grader), available, generated:onlyExternalMeasures(approved) ? null : outcomeRubric(approved, judges), judges };
+  }
+  resolveMeasureGraders(approved:ApprovedPrompt,selected:GraderSpec[],raw:unknown,models:ModelCandidate[]) {
+    const parsed=measureGraderRequest.safeParse(raw);
+    if(!parsed.success)throw Error("Choose a grader or leave each approved measure unscored. Review the rubric, judge and threshold before GO.");
+    const byMetric=new Map(parsed.data.map(choice=>[choice.metric,choice]));
+    const judges=localJudges(models);
+    const options=measureOptions(approved,preferredJudge(approved,judges)?.id ?? null);
+    if(byMetric.size!==parsed.data.length || options.length!==byMetric.size || options.some(option=>!byMetric.has(option.metric)))
+      throw Error("Map each measure from this approved prompt exactly once, or leave it unscored.");
+    const ids=new Set(this.resolveQuick(approved,selected,null,models).map(g=>g.id));
+    const used=new Set<string>();
+    const mappings:PinnedMeasure[]=[];
+    for(const option of options) {
+      const choice=byMetric.get(option.metric);
+      if(!choice)throw Error("Choose how to score this measure.");
+      if(choice.kind==="skip"){mappings.push(pinMeasure(option,null));continue;}
+      if(!option.generated)throw Error(option.reason ?? "This measure cannot be scored in Quick compare.");
+      let grader:GraderSpec;
+      if(choice.kind==="saved"){
+        grader=this.get(choice.graderId);
+        if(!inIndustry(grader,approved.domain) || !quickCompatible(grader,judges))
+          throw Error("Choose an applicable saved grader for this measure. This grader needs different evidence, a different industry, or an unavailable judge.");
+      }else{
+        const judge=judges.find(model=>model.id===choice.judgeId);
+        if(!judge)throw Error("Choose an available local judge for this measure.");
+        const origin:RubricOrigin={kind:"approved-outcome",promptId:approved.id,promptFamilyId:approved.familyId,promptVersion:approved.version,measure:option.metric};
+        const id=this.save({...option.generated,judgeId:judge.id,threshold:choice.threshold,criteria:choice.criteria ?? option.generated.criteria,
+          ...(choice.evidence!==undefined && {requiredEvidence:choice.evidence==="reference" ? ["reference"] : []})},[pinnedJudge(judge)],origin);
+        grader=this.get(id);
+      }
+      if(used.has(grader.id))throw Error("Choose a distinct grader version for each separately scored measure.");
+      used.add(grader.id);ids.add(grader.id);mappings.push(pinMeasure(option,grader));
+    }
+    return {graders:this.select([...ids]),mappings};
   }
   resolveQuick(approved:ApprovedPrompt, selected:GraderSpec[], requested:unknown, models:ModelCandidate[]):GraderSpec[] {
     const judges = localJudges(models);
