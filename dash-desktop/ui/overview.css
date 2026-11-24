@@ -120,10 +120,41 @@ body:has(.overview) .desk > header .button {
 @media (prefers-reduced-motion: reduce) {
   .capability-controls [data-carousel="playback"] { display: none; }
 }
-.capability-slide {
+.capability-slide, .capability-copy {
   display: grid;
   align-items: start;
 }
+.capability-standard, .industry-view { grid-area: 1 / 1; min-width: 0; }
+.industry-view { visibility: hidden; }
+.capability-reel[data-visual="industries"] .capability-standard { visibility: hidden; }
+.capability-reel[data-visual="industries"] .industry-view { visibility: visible; }
+.capability-reel[data-visual="industries"]::before {
+  background: linear-gradient(115deg, #39242d, #182731 72%, #17222c);
+}
+.industry-examples {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(4px, .7cqw, 10px);
+  margin-top: 6px;
+}
+.industry-examples figure {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #18232e;
+  box-shadow: inset 0 0 0 1px #ffffff24;
+}
+.industry-examples img {
+  display: block;
+  width: 100%;
+  height: clamp(58px, 7cqw, 88px);
+  object-fit: cover;
+}
+.industry-examples figcaption { padding: 5px 6px 7px; line-height: 1.22; }
+.industry-examples strong, .industry-examples small { display: block; }
+.industry-examples strong { color: #fff; font-size: 12px; }
+.industry-examples small { margin-top: 3px; color: #d0dae4; font-size: 11px; }
 .capability-sizer, .capability-frame { grid-area: 1 / 1; }
 .capability-sizer { visibility: hidden; }
 .capability-context {
@@ -327,7 +358,7 @@ a.overview-run:hover { background: var(--selected); }
   .capability-reel { --cut: 24px; padding-left: 34px; }
   .hero-name { font-size: 24px; }
 }
-@container (max-width: 560px) {
+@container (max-width: 700px) {
   .hero { grid-template-columns: 1fr; }
   .hero-copy { padding: 17px var(--inset) 15px; }
   .dash-emblem { width: 34px; height: 34px; }
@@ -338,6 +369,8 @@ a.overview-run:hover { background: var(--selected); }
   .capability-reel::before { clip-path: none; }
   .capability-reel::after { inset: 0 auto 0 0; width: 2px; clip-path: none; }
   .banner-track { margin-top: 8px; }
+}
+@container (max-width: 560px) {
   .timing-strip { padding-inline: var(--inset); display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
   .timing-strip > :nth-child(3) {border-left:0;}
   .timing-strip > a, .timing-strip .device-stat { flex-wrap: wrap; gap: 2px 6px; padding: 6px 8px; justify-content: flex-start; }

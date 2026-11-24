@@ -204,7 +204,6 @@ async function smoke() {
   await motion("no-preference");
   const scene = () => js("document.querySelector('.capability-reel').dataset.scene");
   const caption = () => text("document.querySelector('.capability-frame h2').textContent");
-  const lanes = () => text("document.querySelector('.banner-track').innerText");
   const previous = '[data-carousel="previous"]', next = '[data-carousel="next"]', playback = '[data-carousel="playback"]';
   const slideCount = await js("Number(document.querySelector('.capability-position').textContent.split('/')[1])");
   assert.equal(slideCount, 6);
@@ -226,11 +225,16 @@ async function smoke() {
   assert.equal(await isPlaying(), false);
   await click(next);
   assert.equal(await caption(), "Run domain-specific use cases");
-  assert.equal(await js("document.querySelector('.capability-context').textContent"), "Financial Services · Manufacturing");
-  const domainExamples = await text("document.querySelector('.capability-frame .capability-detail').textContent");
-  assert.match(domainExamples, /earnings per share/);
-  assert.match(domainExamples, /drawing’s tolerances/);
-  assert.match(await lanes(), /Financial implementer/);
+  assert.equal(await js("document.querySelector('.capability-context').textContent"), "Domain scenarios");
+  assert.deepEqual(await js("Array.from(document.querySelectorAll('.industry-examples strong'), e => e.textContent)"),
+    ["Financial Services", "Manufacturing", "Automotive"]);
+  assert.match(await text("document.querySelector('.industry-examples figure:last-child small').textContent"), /Planned/);
+  assert.ok(await js(`Promise.all(Array.from(document.querySelectorAll('.industry-examples img'), async img => {
+    await img.decode();
+    return img.currentSrc.startsWith('file:') && img.naturalWidth > 0 && img.checkVisibility({visibilityProperty:true});
+  })).then(values => values.length === 3 && values.every(Boolean))`));
+  assert.equal(await js("document.querySelector('.banner-track').checkVisibility({visibilityProperty:true})"), false);
+  assert.equal(await js("document.querySelector('.hero').offsetHeight"), bannerHeight);
   await js("document.querySelector('[data-carousel=next]').focus()");
   wc.sendInputEvent({type:"keyDown", keyCode:"Right"});
   wc.sendInputEvent({type:"keyUp", keyCode:"Right"});
@@ -247,6 +251,23 @@ async function smoke() {
   await wait(() => js("innerWidth <= 400"), "Phone-width carousel");
   assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"));
   assert.ok(await js("document.querySelector('[data-carousel=next]').getBoundingClientRect().width >= 44"));
+  for (const width of [390, 780, 1310]) {
+    await wc.debugger.sendCommand("Emulation.setDeviceMetricsOverride", {width, height:850, deviceScaleFactor:1, mobile:false});
+    const height = await js("document.querySelector('.hero').offsetHeight");
+    assert.equal(await js("document.documentElement.scrollWidth <= innerWidth + 1"), true);
+    for (const theme of ["light", "dark"]) {
+      await js("document.querySelector('#appearance input[value=" + theme + "]').closest('label').click()");
+      assert.ok(await js("Array.from(document.querySelectorAll('.industry-examples figcaption')).every(c => c.checkVisibility({visibilityProperty:true}) && c.scrollWidth <= c.clientWidth + 1)"));
+      if (process.env.DASH_ART_PREVIEW_DIR) {
+        const shot = z.object({data:z.string()}).parse(await wc.debugger.sendCommand("Page.captureScreenshot", {format:"png"}));
+        writeFileSync(path.join(process.env.DASH_ART_PREVIEW_DIR, "industry-" + width + "-" + theme + ".png"), Buffer.from(shot.data, "base64"));
+      }
+    }
+    await click(next);
+    assert.equal(await js("document.querySelector('.hero').offsetHeight"), height);
+    await click(previous);
+  }
+  await wc.debugger.sendCommand("Emulation.clearDeviceMetricsOverride");
   await motion("no-preference");
   wc.debugger.detach();
   await route("compare");
