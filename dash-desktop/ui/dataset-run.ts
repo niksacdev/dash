@@ -83,7 +83,7 @@ function plannerAttempts(p:UiPrompt) {
   const omitted=review?.omitted ? '<p>'+esc('Draft review removed '+review.omitted+' generated instruction'+(review.omitted===1?'':'s')+' ('+review.reasons.join(', ')+').')+'</p>' : '';
   const sources=[...new Set([review?.supplementSource,p.criteriaReview?.supplementSource].filter(Boolean))];
   const grounding=sources.length?'<p>'+esc('Additional guidance from '+sources.join(' and '))+'.</p>':'';
-  return omitted+grounding+'<h3>Planning models</h3><ul>'+p.planningAttempts.map(a=>'<li>'+esc([a.stage,a.model,a.status,a.reason].filter(Boolean).join(" · "))+'</li>').join("")+'</ul>';
+  return omitted+grounding+'<h3>Planning queries</h3>'+p.planningAttempts.map(planningQueryRow).join("");
 }
 
 function plannerSettingsPanel() {

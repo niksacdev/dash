@@ -36,6 +36,7 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0019 · Domain-first Overview](0019-domain-first-overview.md) | Proposed | Begin with the industries, then show a measurable task and model choices. | [Overview guide](../reader/src/index.md) |
 | 2026-11-24 | [0019 · Domain-first Overview](0019-domain-first-overview.md) | Accepted | Nik selected the 3–1–2 opening sequence, Manufacturing metrics, clearer grading and report titles, and a closed-loop hardware example under FUTURES. | [Carousel implementation](../../dash-desktop/ui/capabilities.ts) |
 | 2026-11-24 | [0020 · Selection controls](0020-selection-controls.md) | Accepted | Nik reserved yellow for standard action buttons. Model selection, lane controls and planning choices use neutral surfaces. Extends 0007 and 0017. | [Model roster](../../dash-desktop/ui/roster.ts) |
+| 2026-11-24 | [0021 · Planning activity](0021-planning-activity.md) | Proposed | Use per-call receipts for model identity, token usage and supported cost estimates, with explicit AI attribution. Extends 0002. | [Workflow spec](../reviews/outcome-workflow.md) |
 
 ## Maintaining the history
 

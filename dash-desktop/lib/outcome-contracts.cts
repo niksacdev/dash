@@ -1,10 +1,11 @@
+import {z} from "zod";
 import {isRecord,isDomain,decodeAgentPin,type AgentPin,type Domain} from "../agents/registry.cjs";
 import {decodeRoleSnapshot,type RoleSnapshot} from "./domain-profiles.cjs";
 import type {PlanningAttempt,PlannerIdentity} from "./planner-routing.cjs";
 export type PlanningPurpose = "draft" | "suggest";
 export type RunMode = "quick"|"dataset";
 export interface DesignRequest {
-  mode:RunMode; objective:string; metrics?:string; domain?:string; inputCap?:number|null; outputCap?:number|null;
+  mode:RunMode; requestId?:string; objective:string; metrics?:string; domain?:string; inputCap?:number|null; outputCap?:number|null;
   datasetId?:string|null; parentId?:string|null; suggestionId?:string|null; sourceRunId?:string|null;
   measures?:{metrics:string[];criteria:string[]}|null;
 }
@@ -13,7 +14,7 @@ export interface ScenarioContract {
 }
 export interface DesignContext {
   pack?:ScenarioContract; datasetId?:string; version?:string|null; split?:string|null; industry?:string|null;
-  priorRun?:{id:string}; onStage?:(event:PlanningAttempt & {mode:RunMode})=>void;
+  priorRun?:{id:string}; onStage?:(event:PlanningAttempt & {mode:RunMode;requestId:string})=>void;
 }
 export function required(value:unknown,name:string,max=24000):string {
   if (typeof value!=="string" || !value.trim() || value.length>max)
@@ -38,7 +39,7 @@ export function decodeRequest(raw:unknown):DesignRequest {
   if (!isRecord(raw) || (raw.mode!=="quick" && raw.mode!=="dataset")) throw Error("Choose Quick compare or Dataset run.");
   const measures=raw.measures;
   if (measures!=null && !isRecord(measures)) throw Error("Invalid selected measures.");
-  return {mode:raw.mode,objective:required(raw.objective,"Business outcome",12000),metrics:optional(raw.metrics,"Business metrics",2000),
+  return {mode:raw.mode,requestId:optional(raw.requestId,"Planning request ID",64),objective:required(raw.objective,"Business outcome",12000),metrics:optional(raw.metrics,"Business metrics",2000),
     domain:optional(raw.domain,"Planning domain",100),inputCap:cap(raw.inputCap,"Input budget"),outputCap:cap(raw.outputCap,"Output budget"),
     datasetId:optional(raw.datasetId,"Dataset snapshot",256)||null,parentId:optional(raw.parentId,"Parent prompt",256)||null,
     sourceRunId:optional(raw.sourceRunId,"Source run",256)||null,suggestionId:optional(raw.suggestionId,"Suggestion ID",256)||null,
@@ -48,6 +49,7 @@ interface PromptCore {
   mode:RunMode; prompt:string; objective:string; title:string; domain:Domain; metrics:string[]; requirements:string[];
   datasetId:string|null; packId:string|null; contractHash:string|null; inputCap:number|null; outputCap:number|null;
   designer:PlannerIdentity|null;
+  planningAttempts?:UiPlanningAttempt[];
   agents?:RoleSnapshot[];
   workflowAgents?:AgentPin[];
 }
@@ -55,6 +57,20 @@ export interface PromptDraft extends PromptCore {draftId:string;parentId:string|
 export interface ApprovedPrompt extends PromptCore {id:string;familyId:string;version:number;[key:string]:unknown}
 export interface MetricSuggestion {
   id:string; domain:Domain;expertVersion:number;model:string;designer:PlannerIdentity;planningAttempts:PlanningAttempt[];metrics:string[];criteria:string[];criteriaReview?:{omitted:number;reasons:string[];supplementSource?:string};
+}
+const savedPlanningCall = z.object({
+  stage:z.string(), model:z.string(), status:z.enum(["succeeded","failed","canceled"]),
+  revision:z.string().nullable().optional(), provider:z.string().optional(), attempt:z.int().positive().optional(),
+  requestId:z.string().optional(), queryId:z.string().optional(), reason:z.string().optional(), fallbackReason:z.string().optional(),
+  usage:z.object({inputTokens:z.int().nonnegative().nullable(),outputTokens:z.int().nonnegative().nullable(),
+    estimatedCostUsd:z.number().nonnegative().nullable()}).optional().catch(undefined),
+});
+function savedPlanningCalls(raw:unknown):UiPlanningAttempt[]|undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.flatMap((call:unknown) => {
+    const parsed = savedPlanningCall.safeParse(call);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 export function decodeApprovedPrompt(raw:unknown):ApprovedPrompt {
   if (!isRecord(raw) || typeof raw.id!=="string" || typeof raw.familyId!=="string" || typeof raw.version!=="number" ||
@@ -70,7 +86,7 @@ export function decodeApprovedPrompt(raw:unknown):ApprovedPrompt {
   const agents=raw.agents, workflowAgents=raw.workflowAgents;
   if (agents!=null && !Array.isArray(agents)) throw Error("Invalid saved domain agent revisions.");
   if (workflowAgents!=null && !Array.isArray(workflowAgents)) throw Error("Invalid saved workflow agent revisions.");
-  return {...raw,...(Array.isArray(agents) && {agents:agents.map(decodeRoleSnapshot)}),
+  return {...raw,planningAttempts:savedPlanningCalls(raw.planningAttempts),...(Array.isArray(agents) && {agents:agents.map(decodeRoleSnapshot)}),
     ...(Array.isArray(workflowAgents) && {workflowAgents:workflowAgents.map(decodeAgentPin)}),id:raw.id,familyId:raw.familyId,version:raw.version,mode:raw.mode,domain:raw.domain,prompt:raw.prompt,objective:raw.objective,
     title:typeof raw.title==="string"?raw.title:raw.objective,designer,metrics:lines(raw.metrics??[],"Saved metrics",2000,0),
     requirements:lines(raw.requirements??[],"Saved criteria",2000,0),datasetId:key(raw.datasetId),packId:key(raw.packId),contractHash:key(raw.contractHash),

@@ -2,7 +2,8 @@ import {test,type TestContext} from "node:test";
 import assert = require("node:assert/strict");
 import { DatabaseSync } from "node:sqlite";
 import {OutcomeWorkflow,contractHash,type DesignContext} from "../lib/outcome-workflow.cjs";
-import type {PlannerAdapters,PlanningAttempt} from "../lib/planner-routing.cjs";
+import {hostedPlanningUsage} from "../lib/planning-usage.cjs";
+import {PlanningRoute,type PlannerAdapters,type PlanningAttempt} from "../lib/planner-routing.cjs";
 import type {LocalCandidate,ModelCandidate,ChatTurn} from "../lib/runtime-types.cjs";
 import {z} from "zod";
 const planSchema=z.object({properties:z.record(z.string(),z.unknown()),required:z.array(z.string())});
@@ -38,7 +39,7 @@ function fixture(t:TestContext, options:FixtureOptions = {}) {
       const schema=decoded.properties;
       const result = schema.domain ? { domain:"Manufacturing" } :
         schema.requirements ? expert : { prompt:"Check the source drawing, record units, and explain any inspection referral." };
-      return inferenceReply(options.reply?.(result) ?? JSON.stringify(result));
+      return inferenceReply(options.reply?.(result) ?? JSON.stringify(result),{input_tokens:19,output_tokens:7});
     },
   };
   if (options.inventory) {
@@ -232,7 +233,7 @@ test("failure of either role falls back directly to the configured OpenAI endpoi
         assert.equal(body.store, false);
         assert.doesNotMatch(init.body, /test-session-value|part_id, part_id|PRIVATE_DATASET_GOLD/);
         const output = failingRole === "expert" ? expert : {prompt:"Inspect the source drawing and explain any referral."};
-        return Response.json({model:"configured-openai-snapshot",choices:[{message:{content:JSON.stringify(output)},finish_reason:"stop"}]});
+        return Response.json({model:"configured-openai-snapshot",usage:{prompt_tokens:512,completion_tokens:0},choices:[{message:{content:JSON.stringify(output)},finish_reason:"stop"}]});
       },
     });
     const privateContext:DesignContext & {gold:string}={...context,gold:"PRIVATE_DATASET_GOLD",onStage:e=>events.push(e)};
@@ -244,6 +245,11 @@ test("failure of either role falls back directly to the configured OpenAI endpoi
     const hosted=attempts.parse(draft.planningAttempts).find(a=>a.provider==="openai");
     assert.ok(hosted);
     assert.equal(hosted.status, "succeeded");
+    const failing=events.filter(e=>e.status==="failed");
+    assert.equal(failing.length,2);
+    assert.equal(new Set(failing.map(e=>e.queryId)).size,2);
+    assert.ok(failing.every(e=>e.usage?.inputTokens===19 && e.usage?.outputTokens===7 && events.some(start=>start.status==="running" && start.queryId===e.queryId)));
+    assert.deepEqual(events.find(e=>e.provider==="openai" && e.status==="succeeded")?.usage,{inputTokens:512,outputTokens:0,estimatedCostUsd:null});
     assert.equal(hosted.revision, "configured-openai-snapshot");
     assert.ok(hosted.fallbackReason);
     assert.doesNotMatch(JSON.stringify([events,draft]), /test-session-value|PRIVATE_DATASET_GOLD/);
@@ -293,4 +299,31 @@ test("unwritten inspection policies are removed before the implementer sees the 
   assert.equal(review.parse(d.guidanceReview).supplementSource,review.parse(d.criteriaReview).supplementSource);
   assert.doesNotMatch(calls[1].messages[1].content,/0\.01|typical boundary/);
   assert.doesNotMatch(d.prompt,/0\.01|pass rate|typical boundary/i);
+});
+
+test("planning estimates count cached input once and require verified pricing and usage", () => {
+  const body={model:"gpt-4.1-mini-2025-04-14",service_tier:"default",
+    usage:{prompt_tokens:100_000,prompt_tokens_details:{cached_tokens:40_000},completion_tokens:20_000}};
+  assert.deepEqual(hostedPlanningUsage(body),{inputTokens:100_000,outputTokens:20_000,estimatedCostUsd:0.06});
+  for (const incomplete of [{...body,model:"custom"},{...body,service_tier:"priority"},
+    {...body,usage:{prompt_tokens:100,completion_tokens:3}},{...body,usage:{...body.usage,prompt_tokens:1}}])
+    assert.equal(hostedPlanningUsage(incomplete).estimatedCostUsd,null);
+  assert.deepEqual(hostedPlanningUsage({usage:{prompt_tokens:-1,completion_tokens:0}}),
+    {inputTokens:null,outputTokens:0,estimatedCostUsd:null});
+});
+
+test("a canceled planning call keeps returned usage and never invokes a fallback", async t => {
+  const {adapters}=fixture(t);
+  const controller=new AbortController();
+  const events:PlanningAttempt[]=[];
+  t.mock.method(adapters,"invoke",async ()=>{
+    controller.abort();
+    return inferenceReply('{"domain":"Manufacturing"}',{input_tokens:12,output_tokens:0});
+  });
+  const route=await PlanningRoute.start(adapters,{openaiFallback:()=>assert.fail("Canceled requests stop")},controller.signal,
+    event=>{events.push(event);throw Error("Window closed");});
+  await assert.rejects(route.ask("Domain routing","route",{}, {},80, value=>value.domain), /canceled/i);
+  assert.deepEqual(events.map(e=>e.status),["running","canceled"]);
+  assert.equal(events[0].queryId,events[1].queryId);
+  assert.deepEqual(events[1].usage,{inputTokens:12,outputTokens:0,estimatedCostUsd:null});
 });

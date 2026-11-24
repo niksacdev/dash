@@ -176,8 +176,9 @@ export class OutcomeWorkflow {
     const controller = new AbortController();
     this.controllers.add(controller);
     try {
+      const requestId = request.requestId || randomUUID();
       const route = await PlanningRoute.start(this.adapters, this.planning, controller.signal,
-        event => context.onStage?.({ mode:request.mode, ...event }));
+        event => context.onStage?.({ mode:request.mode, ...event }), requestId);
       const ask = route.ask.bind(route);
       const promptAsset=(id:string)=>this.registry.get(id);
 
