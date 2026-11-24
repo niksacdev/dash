@@ -81,6 +81,9 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     await js("location.hash='home'");
     await wait("document.querySelector('#overview-total-runs')?.textContent === '2'");
     await wait(themeIs("light"));
+    assert.equal(window.getTitle(), "DASH — Domain Assessment & Scoring Harness");
+    assert.equal(await js("Promise.all(Array.from(document.querySelectorAll('.dash-emblem, .brand img'), img => img.decode())).then(() => document.querySelectorAll('.dash-emblem, .brand img').length)"), 2);
+
 
     const artLoaded = await js(`(async () => {
       const background = getComputedStyle(document.querySelector('.capability-reel'), '::before').backgroundImage;
