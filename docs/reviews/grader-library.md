@@ -45,3 +45,12 @@ In the earlier calibration, the task itself gave the next action. The judge inco
 ## Cross-industry local decisions
 
 An operator comparing two responses can enable a saved, general-purpose yes/no criterion that is meaningful across domains and can be evaluated with the input and response. Both candidates use the same grader version, judge configuration and thresholds. An automatically added decision receives the candidate-visible task and answer. Explicit selection retains the grader's normal case evidence. Each run pins that scope for regrading and case reruns. A measured probability in the review interval or an unavailable judge produces an unscored assessment. Deterministic domain acceptance rules still run. Hosted decision graders and criteria requiring a reference or observed trajectory remain explicit selections. A generic default cannot stand in for a case-specific SME rubric. [Decision record](../adr/0030-local-decision-defaults.md)
+
+
+## Review the scoring backend
+
+A Manufacturing operator approves a handoff task requiring the lot ID and next action. The designer proposes a graded rubric. During review the operator may keep its partial-credit anchors and pick a connected local Opik judge, or explicitly write a single binary criterion and select a locally discovered native decision model. Both authoring paths use the same scoring engines and immutable library versions. Reusing an existing version keeps the original judge.
+
+Acceptance requires the selected evaluator to receive both candidates' eligible evidence. A task-and-answer decision must exclude any held-out reference, and an answer-only rule must also exclude the task. A grader requiring an unavailable reference stays unscored without an inference request. Save/reopen, approval retries and deriving a new version must preserve the earlier policy and scores. Optional editable completeness and missing-evidence questions need domain-specific calibration. The latter applies only when the task explicitly identifies the gap and requests disclosure and withholding.
+
+See the [scoring backend decision](../adr/0034-review-grader-backend.md) and [operator workflow](../reader/src/graders.md#choose-the-scoring-model).

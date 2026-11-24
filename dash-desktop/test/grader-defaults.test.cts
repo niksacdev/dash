@@ -110,6 +110,9 @@ test("an automatic local decision receives only the candidate task and answer on
   });
   const start=(ids:string[],parentId?:string)=>b.start({mode:"dataset",datasetId,caseId:row.case_id,candidateIds:[model.id],graderIds:ids,parentId});
   assert.throws(()=>start([]),/case-level rubrics/);
+  const scoped=b.graders.save({intent:"derive",sourceGraderId:auto,decisionView:"task-answer"},[]);
+  assert.throws(()=>start([scoped]),/case-level rubrics/,"An explicitly selected task-only grader cannot read the case rubric");
+
   const id=start([manual]);await present(b.active).done;
   const run=b.detail(id), grader=b.graders.get(auto);
   const task={input:run.results[0].dispatchedMessages,output:"Hold the lot."};

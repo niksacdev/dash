@@ -19,7 +19,6 @@ import { performance } from "./lib/performance.cjs";
 import { createDeviceSampler } from "./lib/device-stats.cjs";
 import { readPower } from "./lib/power.cjs";
 import { isRecord, type DatasetCase, type StartRun } from "./lib/run-types.cjs";
-import { listLocalDecisionModels } from "./lib/decision-model.cjs";
 import type { GraderEvidence } from "./lib/grader-types.cjs";
 
 const page = path.join(__dirname, "ui", "index.html");
@@ -100,10 +99,10 @@ function initialize():void {
   bind("saveEndpoint",value=>bench.endpoints.save(value));
   bind("designGraders",value=>designGraderPlan(bench,value,onStage));
   bind("confirmGraders",value=>confirmGraderPlan(bench,value));
-  bind("listDecisionModels", (raw, protocol) => listLocalDecisionModels(
-    z.string().min(1).max(240).parse(raw), AbortSignal.timeout(5000),
+  bind("listDecisionModels", (raw, protocol) => bench.graders.discoverDecisionModels(
+    z.string().min(1).max(240).parse(raw),
     z.enum(["systemone","mlx-vlm"]).optional().parse(protocol)),1);
-  bind("saveGrader",value=>bench.graders.save(value,bench.servers.flatMap(s=>s.models)));
+  bind("saveGrader",value=>bench.graders.save(value,bench.servers.filter(s=>s.online).flatMap(s=>s.models)));
   bind("graderDatasetIds", id=>bench.graderDatasetIds(identifier(id)));
   bind("datasetGraderOptions", id=>bench.datasetGraderOptions(identifier(id)));
   bind("graderRuns", id=>bench.graderRuns(identifier(id)));

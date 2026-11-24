@@ -1158,9 +1158,32 @@ async function smoke() {
     assert.deepEqual(await js("JSON.stringify(modelSelections.quick.lanes)"),quickSelectionBefore);
     assert.equal(proposedCount(),initial,"Approving the prompt and proposing checks does not save a grader");
     const proposal=designer+" [data-gd-check='0']";
+    const reuseState=await js(`(() => {
+      const synthetic="synthetic-source-switch",d=gradeDesignerDraft(synthetic,true);
+      const base=gradeDesignerDraft(workspaceGradeScope,true).checks[0];
+      const source={id:"fixture",name:"Saved source",scope:"customer",version:1,criteria:"One saved rule.",threshold:.93,hosted:false,model:"fixture model"};
+      const row={...base,source,action:"reuse",name:source.name,type:"opik",threshold:source.threshold,criteria:source.criteria,included:true};
+      d.hasPlan=true;d.checks=[row];d.editableMethods=["opik","decision"];
+      const panel=document.createElement("div");document.body.append(panel);panel.innerHTML=gradeDesignerView(synthetic,true,true);
+      const set=(key,value)=>{
+        const control=panel.querySelector("[data-gd-field="+key+"]");
+        control.value=value;control.dispatchEvent(new Event("change",{bubbles:true}));
+      };
+      try{
+        set("action","derive");set("type","decision");set("criteria","Does the answer cite the lot?");set("threshold",".77");
+        set("action","reuse");const exact=panel.innerText;
+        set("action","derive");return [exact,row.type,row.criteria,row.threshold];
+      }finally{panel.remove();graderDesignDrafts.delete("workspace/"+synthetic);}
+    })()`);
+    const switched=z.tuple([z.string(),z.string(),z.string(),z.string()]).parse(reuseState);
+    assert.match(switched[0],/Saved pass threshold · 0.93/);assert.doesNotMatch(switched[0],/0.77/);
+    assert.deepEqual(switched.slice(1),["decision","Does the answer cite the lot?",".77"]);
+
     assert.equal(await text("document.querySelector("+q(proposal+" [data-gd-field=name]")+").value"),"Inspection disposition reasoning");
     assert.equal(await text("document.querySelector("+q(proposal+" [data-gd-field=threshold]")+").value"),"0.9");
-    assert.ok(await text("document.querySelector("+q(proposal+" [data-gd-field=judgeId]")+").value"));
+    const judgeSelector=proposal+" [data-gd-field=judgeId]";
+    const differentJudge=await text("Array.from(document.querySelector("+q(judgeSelector)+").options).find(o=>o.value && o.value!==document.querySelector("+q(judgeSelector)+").value)?.value");
+    assert.ok(differentJudge);await fill(judgeSelector,differentJudge);
     const name="Reviewed workspace inspection checks";
     await fill(proposal+" [data-gd-field=name]",name);
     await fill(proposal+" [data-gd-field=threshold]","0.75");
@@ -1172,6 +1195,7 @@ async function smoke() {
     assert.equal(await js("localStorage.getItem('dash.attachedGraders.v1.'+"+q(snapshot)+")"),attachmentBefore);
     const saved=await js("window.dash.list().then(s=>s.graders.find(g=>g.name==="+q(name)+"))");
     assert.equal(z.object({threshold:z.literal(.75),type:z.literal("opik"),version:z.literal(1)}).safeParse(saved).success,true);
+    assert.equal(z.object({judge:z.object({id:z.string()})}).parse(saved).judge.id,differentJudge);
     const savedId=z.object({id:z.string()}).parse(saved).id;
     if(process.env.DASH_GRADER_PREVIEW_DIR){
       await wait(()=>js("document.querySelector('#msg').hidden"),"Clear unrelated transient notices from preview");
@@ -1204,7 +1228,13 @@ async function smoke() {
     await js("history.forward()");await wait(()=>exists(manualName),"Forward returns to the grader catalogue");
     assert.equal(await text("document.querySelector("+q(manualName)+").value"),"");
     assert.equal(calls.length,callsBeforeBack,"Navigation cannot dispatch a candidate, grade or planning request");
-    await fill("#grade-type","decision");
+    await reveal("[data-decision-starter=completeness]");
+    await click("[data-decision-starter=completeness]");
+    assert.equal(await text("document.querySelector('#grade-type').value"),"decision");
+    assert.equal(await text("document.querySelector('#grade-create [name=decision-view]').value"),"task-answer");
+    assert.equal(await js("document.querySelector('#grade-create [value=reference]').checked"),false);
+    await click("[data-decision-starter=disclosure]");
+    assert.match(await text("document.querySelector('#grade-create [name=criteria]').value"),/withhold/);
     await click("[data-decision-starter=earnings]");
     assert.equal(await text("document.querySelector('#grade-create [name=industry]').value"),"Financial Services");
     await click("[data-decision-starter=inspection]");
@@ -1308,6 +1338,11 @@ async function smoke() {
     assert.equal(manualCount(),manualStart+3);
     assert.equal(hostedGrades,0);
     const confirmation=await text("window.consentPrompts.at(-1)");
+    const notices=z.array(z.string()).parse(await js("(() => { const g=state.graders.find(g=>g.id==="+q(hostedId)+"); return ['answer-only','task-answer','case'].map(view=>{hostedDecisionConsent([{...g,decisionView:view}],'test');return window.consentPrompts.at(-1);}); })()"));
+    assert.match(notices[0],/candidate answer only/);assert.doesNotMatch(notices[0],/reference answer|SME notes|candidate task/);
+    assert.match(notices[1],/candidate task and answer/);assert.doesNotMatch(notices[1],/reference answer|SME notes/);
+    assert.match(notices[2],/reference answer/);
+
     assert.match(confirmation,/OpenRouter/);assert.match(confirmation,/typesafe\/jev-1.14/);assert.match(confirmation,/reference answer/);
     await js("window.allowNextDecision=true");
     await click("#grade-sample button");
@@ -1635,13 +1670,42 @@ async function smoke() {
     inlineDesignerFixture=false;
     await fill(inline+"[data-gd-check='0'] [data-gd-field=name]","Renamed inspection criterion");
     await fill(inline+"[data-gd-check='0'] [data-gd-field=category]","Inspection");
+    const binary=inline+"[data-gd-check='0'] ";
+    const method=binary+"[data-gd-field=type]",criterionField=binary+"[data-gd-field=criteria]";
+    const originalRubric=await text("document.querySelector("+q(criterionField)+").value");
+    await fill(method,"decision");
+    assert.equal(await text("document.querySelector("+q(criterionField)+").value"),"");
+    const binaryRule="Does the candidate answer itself state the required disposition?";
+    await fill(criterionField,binaryRule);
+    await fill(method,"opik");
+    assert.equal(await text("document.querySelector("+q(criterionField)+").value"),originalRubric);
+    await fill(method,"decision");
+    assert.equal(await text("document.querySelector("+q(criterionField)+").value"),binaryRule);
+    await fill(binary+"[data-native=endpoint]",decisionOrigin);
+    await click(binary+"[data-native-discover]");
+    await wait(()=>js("document.querySelector("+q(binary+"[data-native=selected]")+").value==="+q(localAlias)),"Choose the native scoring model in the reviewed plan");
+
     assert.equal(await js("(() => {const go=document.querySelector('#setup .go-button');const ready=!go.disabled;document.querySelector("+q(inline+"[data-gd-action=confirm]")+").click();return ready && go.disabled;})()"),true,
       "Confirming grader versions immediately blocks comparison until selections are pinned");
     await wait(()=>exists(inline+".gd-saved"),"Reviewed grader versions selected for the exact prompt");
     const reviewed=z.string().parse(loadVersion("Renamed inspection criterion",1));
+    const finalGrader=z.object({type:z.literal("decision"),decision:z.object({model:z.string(),endpoint:z.string()})}).parse(
+      await js("window.dash.list().then(s=>s.graders.find(g=>g.id==="+q(reviewed)+"))"));
+    assert.deepEqual(finalGrader.decision,{model:localAlias,endpoint:decisionOrigin});
     assert.equal(await text("document.querySelector("+q(controls(rowA,"choice"))+").value"),"saved:"+reviewed);
     assert.deepEqual(await js("JSON.parse(localStorage.getItem("+q("dash.attachedGraders.v1.prompt:"+first.id)+")).mapped[0]"),{index:0,id:reviewed});
     assert.equal(await exists('[data-qc-extra-remove="'+reviewed+'"]'),false,"A mapped grader is not also an additional grader");
+    await route("graders");await click('[data-revise="'+reviewed+'"]');
+    await wait(()=>js("document.querySelector('#grade-create [name=name]')?.value==='Renamed inspection criterion'"),"Reopen the reviewed grader version");
+    assert.notEqual(await text("document.querySelector('#grade-create [name=decision-view]').value"),"case");
+    await fill("#grade-create [name=decision-view]","case");
+    await click("#grade-create [name=decision-evidence][value=reference]");
+    await click("#grade-create button.yellow");
+    await wait(()=>loadVersion("Renamed inspection criterion",2),"Save explicit case-evidence scope as a new version");
+    const scopes=await js("window.dash.list().then(s=>s.graders.filter(g=>g.name==='Renamed inspection criterion').map(g=>[g.version,g.decisionView,g.requiredEvidence||[]]).sort((a,b)=>a[0]-b[0]))");
+    const savedScopes=z.array(z.tuple([z.number(),z.string(),z.array(z.string())])).parse(scopes);
+    assert.notEqual(savedScopes[0]?.[1],"case");assert.deepEqual(savedScopes[1],[2,"case",["reference"]]);
+
 
   } finally {
     decisionOrigin="";

@@ -2,7 +2,7 @@ import {ProviderFailure} from "./runtime-types.cjs";
 import {httpGuidance} from "./provider-errors.cjs";
 import { isAbsolute } from "node:path";
 import { BaseMetric, z } from "opik";
-import type { GraderEvidence } from "./grader-types.cjs";
+import type { GraderEvidence, rubricEvidenceView } from "./grader-types.cjs";
 
 const probability = z.number().finite().min(0).max(1);
 const modelId = z.string().min(1).max(512).refine(value =>
@@ -279,7 +279,7 @@ class DecisionCriterion extends BaseMetric<typeof observationSchema> {
 const metric = new DecisionCriterion();
 const decisionModels: Record<DecisionConfig["provider"], DecisionModel> = { local: localDecision, openrouter: hostedDecision };
 
-export async function evaluateDecision(config: DecisionConfig, passAt: number, criteria: string, evidence: GraderEvidence, signal: AbortSignal):
+export async function evaluateDecision(config: DecisionConfig, passAt: number, criteria: string, evidence: GraderEvidence, signal: AbortSignal, view:z.infer<typeof rubricEvidenceView>="case"):
   Promise<{ value: number | null; pass: boolean | null; reason: string; decision: DecisionObservation }> {
   if (signal.aborted) throw cancellation(signal);
   const checked = decisionConfig.safeParse(config);
@@ -290,7 +290,7 @@ export async function evaluateDecision(config: DecisionConfig, passAt: number, c
   const {input, output, reference, rubric, sme_rationale, evaluationBrief, trajectory} = evidence;
   let state: string;
   try {
-    state = JSON.stringify({input, output, reference, rubric, sme_rationale,
+    state = JSON.stringify(view==="answer-only" ? {output} : view==="task-answer" ? {input,output} : {input, output, reference, rubric, sme_rationale,
       evaluationBrief: evaluationBrief && { objective: evaluationBrief.objective, metrics: evaluationBrief.metrics, criteria: evaluationBrief.criteria }, trajectory});
   } catch { throw new ProviderFailure("Decision grader evidence must be serializable as JSON."); }
   const request: NativeRequest = {

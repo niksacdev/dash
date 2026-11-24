@@ -60,7 +60,8 @@ interface UiDecisionObservation extends UiDecisionRequest {actualModel:string;pr
 interface UiDecisionAttempt {dispatchedModel:string;fallbackReason:UiDecisionFallbackReason}
 type UiOpikMetricKey = "answer-relevance"|"usefulness"|"hallucination"|"moderation";
 interface UiOpikLibraryTemplate {key:UiOpikMetricKey;name:string;criteria:string;category:string;requiresReference:boolean;docsUrl:string}
-interface UiGraderDefinition {evidenceView?:"answer-only"|"case";metricKey?:UiOpikMetricKey;name:string;category:string;industry:string;type:UiGradeType;criteria:string;threshold:number;judgeId?:string|null;decision?:UiDecisionConfig;requiredEvidence?:UiDecisionEvidence[]}
+type UiDecisionView="task-answer"|"answer-only"|"case";
+interface UiGraderDefinition {decisionView?:UiDecisionView;confirmNative?:boolean;evidenceView?:UiDecisionView;metricKey?:UiOpikMetricKey;name:string;category:string;industry:string;type:UiGradeType;criteria:string;threshold:number;judgeId?:string|null;decision?:UiDecisionConfig;requiredEvidence?:UiDecisionEvidence[]}
 type UiGraderScope = "general" | "industry" | "customer";
 interface UiGraderLibrary {scope:UiGraderScope;familyId:string;parentRevisionId?:string;scenario?:string;automatic?:boolean}
 type UiGraderSave = UiGraderDefinition & ({intent:"create"}|{intent:"derive"|"revise";sourceGraderId:string});

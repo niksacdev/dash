@@ -7,13 +7,13 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { Contains, ExactMatch, GEval, OpikBaseModel, z } from "opik";
-import {DecisionDispatchError,evaluateDecision} from "./decision-model.cjs";
+import {DecisionDispatchError,evaluateDecision,listLocalDecisionModels,type DecisionProtocol,type DecisionConfig} from "./decision-model.cjs";
 import {catalogRules,scoreCatalogRule} from "./grader-catalog.cjs";
 import {hasEvidence,opikLibraryTemplates,opikMetricKey,scoreOpikMetric} from "./opik-library.cjs";
 import { hash } from "./packs.cjs";
 import {AssessmentStorageError,GradingIssue} from "./grading-errors.cjs";
 import { ProviderFailure,isRecord,type LocalCandidate,type ModelCandidate,type RuntimeAdapters,type ChatTurn } from "./runtime-types.cjs";
-import {type DatasetCaseSource,type GraderProducer,rubricEvidenceView,requiredEvidence,decisionSettings,graderType,savedGrader,storedAssessment,type GraderLibrary,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
+import {type DatasetCaseSource,type GraderProducer,rubricEvidenceView,graderEvidenceView,graderRequiredEvidence,requiredEvidence,decisionSettings,graderType,savedGrader,storedAssessment,type GraderLibrary,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
 import type {ApprovedPrompt} from "./outcome-workflow.cjs";
 export type {GraderSpec,GraderEvidence,GraderAssessment,RecordedAssessment,GraderDefinition} from "./grader-types.cjs";
 export const decodeGraderSpec = (value:unknown):GraderSpec => savedGrader.parse(value);
@@ -181,6 +181,10 @@ function scoringDefinition(g:GraderSpec) {
   const {id,version,library,producer,...definition}=g;
   return definition;
 }
+function requireTaskEvidence(g:GraderSpec,e:GraderEvidence):void {
+  if(graderEvidenceView(g)==="task-answer" && !hasEvidence(e.input))
+    throw new GradingIssue("This grader requires the candidate task. The case is unscored.");
+}
 function disclosedEvidence(e:GraderEvidence) {
   const {input,reference,output,inputSource,trajectory,rubric,sme_rationale,evaluationBrief}=e;
   return {input,reference,output,inputSource,trajectory,rubric,sme_rationale,evaluationBrief};
@@ -231,6 +235,22 @@ function pinnedJudge(m:LocalCandidate):LocalCandidate {
   return {id,kind,provider,model,revision,quantization,nativeChat,reasoningOff};
 }
 export class Graders {
+  // Discovery results belong to this desktop session. Never treat a chat roster entry as a decision endpoint.
+  private readonly decisionInventory = new Map<string, readonly string[]>();
+  async discoverDecisionModels(endpoint:string, protocol:DecisionProtocol="systemone"):Promise<string[]> {
+    const models=await listLocalDecisionModels(endpoint,AbortSignal.timeout(5000),protocol);
+    const key=JSON.stringify([protocol,endpoint]);
+    this.decisionInventory.delete(key);
+    const oldest=this.decisionInventory.keys().next();
+    if(this.decisionInventory.size>=32 && !oldest.done)this.decisionInventory.delete(oldest.value);
+    this.decisionInventory.set(key,models);
+    return models;
+  }
+  private requireDiscovered(config:DecisionConfig):void {
+    const ids=this.decisionInventory.get(JSON.stringify([config.protocol ?? "systemone",config.endpoint]));
+    if(config.provider!=="local" || !ids?.includes(config.model) || (config.fallbackModel && !ids.includes(config.fallbackModel)))
+      throw Error("Find decision models on the selected local server and choose a model it advertises.");
+  }
   constructor(readonly db:DatabaseSync) {
     db.exec(`CREATE TABLE IF NOT EXISTS graders(id TEXT PRIMARY KEY, family TEXT NOT NULL, version INTEGER NOT NULL, spec TEXT NOT NULL, UNIQUE(family,version));
       CREATE TABLE IF NOT EXISTS assessments(id TEXT PRIMARY KEY, run TEXT, candidate TEXT, case_id TEXT, created TEXT NOT NULL, record TEXT NOT NULL);
@@ -322,20 +342,30 @@ export class Graders {
       throw Error("This catalog rule has fixed scoring criteria. Derive the saved rule or choose another scoring method.");
     if (type==="opik-metric" && (!template || template.criteria!==criteria))
       throw Error("Opik library metrics use their built-in criteria. Select a custom judge to change the rubric.");
+    const inherited=graderRequiredEvidence(source);
+    const requested=type==="decision" || type==="opik"?requiredEvidence.optional().parse(input.requiredEvidence):undefined;
+    const evidenceRequirements=intent==="derive"?[...new Set([...inherited,...(requested ?? [])])]:requested ?? inherited;
     const settings=type==="decision" ? decisionSettings.parse({
       decision:input.decision ?? (source?.type==="decision" ? source.decision : undefined), threshold,
-      requiredEvidence:input.requiredEvidence ?? (source?.type==="decision" ? source.requiredEvidence : undefined),
+      requiredEvidence:evidenceRequirements,
     }) : null;
-    const rubricEvidence=type==="opik" ? requiredEvidence.optional().parse(input.requiredEvidence ??
-      (source?.type==="opik" ? source.requiredEvidence : undefined)) : undefined;
-    const evidenceView=type==="opik"?rubricEvidenceView.optional().parse(input.evidenceView ?? (source?.type==="opik"?source.evidenceView:undefined)):undefined;
-    if(evidenceView==="answer-only" && rubricEvidence?.length)throw Error("Choose case evidence for a rubric that requires a reference or observed agent steps.");
+    const decisionView=type==="decision"?rubricEvidenceView.optional().parse(input.decisionView ?? graderEvidenceView(source)):undefined;
+    if(settings && decisionView && decisionView!=="case" && settings.requiredEvidence?.length)
+      throw Error("Choose case evidence for a decision that requires a reference or observed agent actions.");
+    if(settings && (input.confirmNative===true || decisionView && settings.decision.provider==="local")){
+      const previous=source?.type==="decision" ? source.decision : undefined;
+      const same=previous && isDeepStrictEqual({...previous,failAt:settings.decision.failAt},settings.decision);
+      if(input.confirmNative===true || !same)this.requireDiscovered(settings.decision);
+    }
+    const rubricEvidence=type==="opik" ? evidenceRequirements : undefined;
+    const evidenceView=type==="opik"?rubricEvidenceView.optional().parse(input.evidenceView ?? graderEvidenceView(source)):undefined;
+    if(evidenceView && evidenceView!=="case" && rubricEvidence?.length)throw Error("Choose case evidence for a rubric that requires a reference or observed agent steps.");
     const definition={name,category,industry,type,criteria,threshold,judge,...(evidenceView && {evidenceView}),
       ...(rubricEvidence?.length && {requiredEvidence:[...rubricEvidence].sort()}),
       ...((type==="opik" || type==="decision" || type==="opik-metric") ? {opikEngine:opikVersion} : {}),
       ...(type==="catalog" && source?.type==="catalog" && {ruleKey:source.ruleKey,ruleVersion:source.ruleVersion}),
       ...(metricKey && {metricKey}),
-      ...(settings && {decision:settings.decision}),
+      ...(settings && {decision:settings.decision}),...(decisionView && {decisionView}),
       ...(settings?.requiredEvidence?.length && {requiredEvidence:[...settings.requiredEvidence].sort()}),
       ...((origin ?? source?.origin) ? {origin:origin ?? source?.origin} : {})};
     const oldId=hash(definition);
@@ -455,11 +485,12 @@ export class Graders {
         requirePinnedSdk(g.opikEngine);
         if (provider==="openrouter" && allowHostedDecision!==true)
           throw new GradingIssue("Allow this operation to send grading evidence to OpenRouter first.");
-        if (g.requiredEvidence?.includes("reference") && (e.reference==null || (typeof e.reference==="string" && !e.reference.trim())))
+        requireTaskEvidence(g,e);
+        if (g.requiredEvidence?.includes("reference") && !hasEvidence(e.reference))
           throw new GradingIssue("This decision criterion requires a reference answer. The case has none.");
         if (g.requiredEvidence?.includes("trajectory") && !Array.isArray(e.trajectory))
           throw new GradingIssue("This decision criterion requires an observed agent trajectory. The case has none.");
-        const result=await evaluateDecision(g.decision,g.threshold,g.criteria,disclosedEvidence(e),signal);
+        const result=await evaluateDecision(g.decision,g.threshold,g.criteria,disclosedEvidence(e),signal,g.decisionView);
         const evaluator=`dash-decision/1 · ${opikVersion} · decision_criterion`;
         signal.throwIfAborted();
         return {...base,...result,evaluator};
@@ -477,6 +508,7 @@ export class Graders {
         reason=({field:passed?"Output field matched the reference.":"Output field differed from the reference or the output was invalid JSON.",
           trajectory:passed?"The required actions occurred in order.":"One or more required actions were missing or out of order."})[g.type];
       } else if(g.type==="opik") {
+        requireTaskEvidence(g,e);
         if(g.requiredEvidence?.includes("reference") && !hasEvidence(e.reference))throw new GradingIssue("This rubric requires a case reference. The case is unscored.");
         if(g.requiredEvidence?.includes("trajectory") && !Array.isArray(e.trajectory))throw new GradingIssue("This rubric requires an observed agent trajectory. The case is unscored.");
         if (g.opikEngine===undefined) {
@@ -485,10 +517,11 @@ export class Graders {
         } else {
           requirePinnedSdk(g.opikEngine);
           const answerOnly=g.evidenceView==="answer-only";
+          const evidence=answerOnly?{output:e.output}:g.evidenceView==="task-answer"?{input:e.input,output:e.output}:disclosedEvidence(e);
           const metric=new GEval({name:g.name,trackMetric:false,temperature:0,
             taskIntroduction:answerOnly?"Grade only what the candidate wrote in the JSON output field. The rubric describes what to look for. It is never candidate evidence. Cite the candidate's own words for each required element. If an element is absent, apply the omission rule. Return the rubric's integer score from 0 to 10 with a concise reason.":"Grade the candidate output against the approved rubric. Use the supplied input and output as evidence. A trajectory field contains observed agent actions when supplied. Do not infer tool use from the answer. Score on the integer scale from 0 to 10. Give 10 for full credit, 5 for half credit, and 0 for no credit. For a binary requirement, give 10 if met or 0 if missed. Convert any rubric-specific scale to this scale. Give a one-sentence reason citing the decisive evidence.",
             evaluationCriteria:g.criteria,model:new DashJudgeModel(g.judge,adapters,signal)});
-          ({value,reason}=await metric.score({output:JSON.stringify(answerOnly?{output:e.output}:disclosedEvidence(e))}));
+          ({value,reason}=await metric.score({output:JSON.stringify(evidence)}));
           base.evaluator=opikVersion;
         }
       } else if(g.type==="judge") {
