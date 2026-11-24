@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 if (process.platform !== "darwin") throw new Error("Build the Finder launcher on a Mac.");
 const project = fileURLToPath(new URL("../", import.meta.url));
-const out = join(project, "..", "dist", "macos");
+const out = process.argv[2] ? resolve(process.argv[2]) : join(homedir(), "Applications");
 await mkdir(out, { recursive: true });
 const work = await mkdtemp(join(out, ".dash-launcher-"));
 try {
