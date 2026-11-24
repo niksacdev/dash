@@ -203,10 +203,19 @@ export class Bench {
     const options = this.graders.quickOptions(this.workflow.get(approvedPromptId), this.servers.flatMap(s => s.models));
     return {...options, automatic:this.automaticGraders(false)};
   }
+  graderDatasetIds(graderId:string):string[] {
+    const grader=this.graders.get(graderId);
+    const snapshots=this.db.prepare("SELECT dataset_id, pack, json_extract(metadata,'$.industry') AS industry FROM dataset_catalog ORDER BY rowid");
+    const ids:string[]=[];
+    for (const row of snapshots.iterate()) {
+      if (this.graders.appliesToDataset(grader,stringValue(row.industry),stringValue(row.pack))) ids.push(stringValue(row.dataset_id));
+    }
+    return ids;
+  }
   datasetGraderOptions(datasetId:string) {
     const dataset = this.dataset(datasetId);
     const pack = this.pack(dataset.pack).pack;
-    return {automatic:this.automaticGraders(pack.outputSchema !== null), available:this.graders.list().filter(g=>this.graders.appliesToDataset(g,dataset.metadata.industry,pack.id))};
+    return {hasReferences:dataset.rows.some(row=>hasEvidence(row.reference ?? row.gold)), automatic:this.automaticGraders(pack.outputSchema !== null), available:this.graders.list().filter(g=>this.graders.appliesToDataset(g,dataset.metadata.industry,pack.id))};
   }
   graderRuns(id:string) {
     this.graders.get(id);

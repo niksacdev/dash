@@ -100,6 +100,7 @@ function initialize():void {
     z.string().min(1).max(240).parse(raw), AbortSignal.timeout(5000),
     z.enum(["systemone","mlx-vlm"]).optional().parse(protocol)),1);
   bind("saveGrader",value=>bench.graders.save(value,bench.servers.flatMap(s=>s.models)));
+  bind("graderDatasetIds", id=>bench.graderDatasetIds(identifier(id)));
   bind("datasetGraderOptions", id=>bench.datasetGraderOptions(identifier(id)));
   bind("graderRuns", id=>bench.graderRuns(identifier(id)));
   bind("setGeneralGraderDefault",(id,enabled)=>bench.setGeneralGraderDefault(identifier(id),z.boolean().parse(enabled)));

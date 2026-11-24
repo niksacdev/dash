@@ -55,14 +55,24 @@ function selectedGraderIds() {
   if(selected.some(id=>!datasetGradingChoices?.available.some(g=>g.id===id)))throw Error("Remove unavailable grader versions before starting this run.");
   return selected;
 }
+function selectedGradersLabel(chosen:Set<string>) {
+  const names=[...chosen].map(id=>{const g=state.graders.find(row=>row.id===id);return g ? g.name+" v"+g.version : "Unavailable version";});
+  return names.length ? "Selected graders · "+names.join(", ") : "Add optional graders";
+}
+function selectedJudgeNotice(chosen:Set<string>) {
+  const pending=state.graders.filter(g=>chosen.has(g.id) && g.judge && !models().some(m=>m.id===g.judge?.id && m.loaded));
+  if(!pending.length)return "";
+  const names=[...new Set(pending.map(g=>g.judge?.model))].join(", ");
+  return 'Check the local judge before starting · '+esc(names)+' · '+link("Local runtimes","providers","link");
+}
 function graderPicker(){
   const scope=activeDatasetGraderScope(),chosen=datasetGradeSelection(scope);
   const available=datasetGradingChoices?.available || [];
   const missing=[...chosen].filter(id=>!available.some(g=>g.id===id));
-  return automaticChecks(datasetGradingChoices?.automatic || [])+gradeDesignerView(scope)+'<details class="card grader-picker" data-grade-scope="'+esc(scope)+'"><summary>Optional graders · '+chosen.size+' selected</summary>'+
+  return automaticChecks(datasetGradingChoices?.automatic || [])+gradeDesignerView(scope)+'<details class="card grader-picker" data-grade-scope="'+esc(scope)+'"><summary>'+esc(selectedGradersLabel(chosen))+'</summary>'+
     catalogChoices(available,chosen,"custom-grader")+(available.length?"":"<p>No optional graders are available for this snapshot.</p>")+
     missing.map(id=>'<label class="choice"><input type="checkbox" name="custom-grader" value="'+esc(id)+'" checked>Unavailable · '+esc(state.graders.find(g=>g.id===id)?.name || id)+'</label>').join("")+
-    link("Open grader library →","graders","link")+'</details>';
+    link("Open grader library →","graders","link")+'</details><div id="dataset-judge-note" role="status" class="wf-hint">'+selectedJudgeNotice(chosen)+'</div>';
 }
 function decisionSource(provider:UiDecisionConfig["provider"]) {
   return provider==="local" ? "Local decision server" : "OpenRouter";
@@ -193,16 +203,159 @@ function gradeCreate(){
     (graderDraft || graderTemplate?'<button type="button" data-new-grader>Cancel edit</button>':'')+'</div></form>';
   if(editing)return '<details class="panel" open><summary>'+esc(caption)+'</summary>'+manual+'</details>';
   const assisted=graderAuthoringMode==="agent";
-  return '<details id="grader-authoring" class="panel" open><summary>Create a grader</summary>'+
+  return '<details id="grader-authoring" data-own-open class="panel" '+(showGraderAuthoring ? "open":"")+'><summary>Create a grader</summary><p>Propose checks from your objective and success measures, then review and save the versions you want to use.</p>'+
     '<fieldset class="wf-domain gc-authoring-options"><legend>Authoring method</legend><div>'+
     (["agent","manual"] as const).map(mode=>'<label><input type="radio" name="grader-authoring-mode" value="'+mode+'" '+
-      (graderAuthoringMode===mode?'checked':'')+'><span>'+(mode==="agent"?'Design with an agent':'Write manually')+'</span></label>').join("")+'</div></fieldset>'+
+      (graderAuthoringMode===mode?'checked':'')+'><span>'+(mode==="agent"?'AI-assisted':'Write manually')+'</span></label>').join("")+'</div></fieldset>'+
     '<div data-authoring-panel="agent" '+(assisted?'':'hidden')+'>'+gradeDesignerView(workspaceGradeScope,true)+'</div>'+
     '<div data-authoring-panel="manual" '+(assisted?'hidden':'')+'>'+manual+'</div></details>';
 }
-function gradeSelect(){return '<select name="grader" required>'+opt("","Choose a grader","")+catalogSections.map(({scope,title})=>{
+interface SavedGraderChoice {id:string;label:string}
+let savedWorkspaceGraders:SavedGraderChoice[]=[];
+let savedDesignDataset:string|undefined;
+let showGraderAuthoring=false;
+let samplePanelOpen=false;
+// Keep the submitted draft in memory while its assessment is running, including across route renders.
+interface SampleInput {grader:string;input:string;output:string;reference:string;trajectory:string}
+let pendingSample:SampleInput|null=null;
+let retrySample:{draft:SampleInput;error:string}|null=null;
+
+function readSample(form:HTMLFormElement):SampleInput {
+  const read=(key:string)=>formText(form,key);
+  return {grader:read("grader"),input:read("input"),output:read("output"),reference:read("reference"),trajectory:read("trajectory")};
+}
+function sampleRecovery(){
+  if(!retrySample)return "";
+  return (retrySample.error?'<p data-action-error role="alert" class="wf-error">'+esc(retrySample.error)+'</p>':'')+
+    '<button type="button" data-sample-clear>Discard sample</button>';
+}
+function editSampleRetry(form:HTMLFormElement){
+  if(!retrySample || pendingSample)return;
+  retrySample={draft:readSample(form),error:""};
+  form.querySelector("[data-action-error]")?.remove();
+}
+
+function updateSampleLock(){
+  const busy=!!pendingSample;
+  const form=dashElement("#grade-sample",HTMLFormElement);
+  if(form){
+    requireElement("fieldset",HTMLFieldSetElement,form).disabled=busy;
+    const submit=requireElement("button[type=submit]",HTMLButtonElement,form);
+    submit.disabled=busy || !state.graders.length;
+    submit.textContent=busy?"Scoring…":"Score this output";
+    form.setAttribute("aria-busy",String(busy));
+  }
+  for(const b of document.querySelectorAll<HTMLButtonElement>("[data-grade-test]"))b.disabled=busy;
+}
+
+function recordWorkspaceSave(items:SavedGraderChoice[],scope?:string) {
+  savedWorkspaceGraders=items;
+  const source=scope ? gradeScopeRecord(scope) : null;
+  savedDesignDataset=source && "pack" in source ? source.id : source && "datasetId" in source ? source.datasetId || undefined : undefined;
+  showGraderAuthoring=false;samplePanelOpen=false;
+}
+function needsGraderReference(g:UiGrader) {
+  return g.type==="field" || g.metricKey==="hallucination" || !!g.requiredEvidence?.includes("reference");
+}
+function showSampleEvidence(g:UiGrader) {
+  const reference=needsGraderReference(g);
+  const steps=g.type==="trajectory" || !!g.requiredEvidence?.includes("trajectory");
+  const detail=requireElement("#grade-sample [data-sample-evidence]",HTMLDetailsElement);
+  if(reference || steps)detail.open=true;
+  const needed=[...(reference?["a reference answer"]:[]),...(steps?["observed agent steps"]:[])];
+  $("summary",detail).textContent=needed.length ? "This grader needs "+needed.join(" and ") : "Reference and agent trajectory";
+}
+function graderUseActions(g:UiGrader,source?:string) {
+  const sampleOnly=g.type==="trajectory" || g.requiredEvidence?.includes("trajectory");
+  const sampleAvailable=g.type!=="catalog";
+  const run=!g.library?.automatic && !sampleOnly;
+  if (!run && !sampleAvailable) return "";
+  return '<div class="gc-use" data-use-version="'+esc(g.id)+'"'+(source?' data-source-dataset="'+esc(source)+'"':'')+'>'+
+    (run?'<button type="button" data-grade-run>Use in a dataset run</button>':'')+
+    (sampleAvailable?'<button type="button" class="gc-secondary" data-grade-test '+(pendingSample?"disabled":"")+'>Test one output</button>':'')+
+    (sampleOnly?'<small>Supply observed agent steps in the output test.</small>':'')+
+    '<div class="gc-target" hidden></div></div>';
+}
+function snapshotLabel(d:UiDataset) {
+  return [d.metadata.family || d.name,d.version,d.split,d.metadata.industry || d.pack,d.count+" cases"].join(" · ");
+}
+function snapshotChooser(snapshots:UiDataset[]) {
+  return formField("Choose a dataset snapshot",'<select data-grade-snapshot>'+opt("","Select a snapshot","")+
+    snapshots.map(d=>opt(d.id,snapshotLabel(d),"")).join("")+'</select>')+
+    '<button type="button" data-grade-continue>Continue to dataset run</button> <button type="button" class="gc-secondary" data-grade-cancel>Cancel</button>';
+}
+let graderActionSequence=0;
+async function openGraderRun(g:UiGrader,d:UiDataset,isCurrent:()=>boolean) {
+  const options=await api.datasetGraderOptions(d.id);
+  if(!isCurrent())return;
+  const w=workflows.dataset;
+  if(state.active || w.busy)throw Error("Another run or preparation is active. Finish it before setting up a dataset run.");
+  if(!options.available.some(row=>row.id===g.id))throw Error("This version applies to a different industry or scenario.");
+  if(needsGraderReference(g) && !options.hasReferences)throw Error("This grader needs a held-out reference. Choose a snapshot with reference answers or import one.");
+  const keepVariant=!!w.approved && w.approved.datasetId===d.id;
+  const scope=keepVariant && w.approved?"prompt:"+w.approved.id:"dataset:"+d.id;
+  const chosen=datasetGradeSelection(scope);
+  if(!chosen.has(g.id) && chosen.size>=8)throw Error("This setup already has eight graders. Remove one in Dataset run and try again.");
+  if(!keepVariant && (w.draft || w.approved || w.variant || w.parentId || w.objective.trim()) &&
+    !window.confirm("Switch the dataset setup to "+snapshotLabel(d)+"? This will replace the open prompt setup."))return;
+  if (!keepVariant && (w.variant || w.draft || w.approved || w.parentId || w.objective.trim()))workflows.dataset=plannerState("dataset");
+  workflows.dataset.datasetId=d.id;workflows.dataset.error="";packId=d.pack;datasetId=d.id;
+  chosen.add(g.id);writeGraderAttachment(scope,chosen);
+  if(d.pack==="reference")datasetScorerChoices.set(d.id,"selected-graders");
+  location.hash="new";
+}
+async function chooseGraderAction(button:HTMLButtonElement,host:HTMLElement,g:UiGrader) {
+  const request=++graderActionSequence;
+  const isCurrent=()=>request===graderActionSequence && host.isConnected && trail()[0]==="graders";
+  const target=$(".gc-target",host);
+  if(button.hasAttribute("data-grade-cancel")){target.hidden=true;$("[data-grade-run]",host).focus();return;}
+  if(button.hasAttribute("data-grade-test")){
+    if(pendingSample)return;
+    const panel=requireElement("#grade-sample-panel",HTMLDetailsElement);
+    panel.open=true;
+    requireElement("#grade-sample [name=grader]",HTMLSelectElement).value=g.id;
+    showSampleEvidence(g);editSampleRetry(requireElement("#grade-sample",HTMLFormElement));
+    $("#grade-sample [name=output]").focus();return;
+  }
+  button.disabled=true;target.hidden=false;
+  try {
+    if(button.hasAttribute("data-grade-continue")){
+      const selected=requireElement("[data-grade-snapshot]",HTMLSelectElement,target);
+      const d=state.datasets.find(d=>d.id===selected.value);
+      if(!d){selected.focus();throw Error("Select the dataset snapshot to evaluate.");}
+      await openGraderRun(g,d,isCurrent);
+    }else{
+      target.textContent="Finding dataset snapshots…";
+      const ids=new Set(await api.graderDatasetIds(g.id));
+      if(!isCurrent())return;
+      const snapshots=state.datasets.filter(d=>ids.has(d.id));
+      if(!snapshots.length){target.innerHTML='<p>No snapshot matches '+esc([g.industry,graderScenario(g)].filter(Boolean).join(" · "))+'. '+link("Import a dataset","datasets","link")+'</p>';return;}
+      const d=snapshots.find(d=>d.id===host.dataset.sourceDataset) || (snapshots.length===1?snapshots[0]:null);
+      target.innerHTML=snapshots.length>1?snapshotChooser(snapshots):"";
+      if(d)await openGraderRun(g,d,isCurrent);
+      else requireElement("[data-grade-snapshot]",HTMLSelectElement,target).focus();
+    }
+  }catch(error){
+    if(!isCurrent())return;
+    target.querySelector('[role="alert"]')?.remove();
+    if(!target.querySelector("[data-grade-snapshot]"))target.replaceChildren();
+    target.insertAdjacentHTML("beforeend",'<p class="wf-error" role="alert">'+esc(errorText(error))+'</p>'+(!target.querySelector("[data-grade-snapshot]") ? link("Browse datasets","datasets","link"):""));
+  }finally{button.disabled=false;}
+}
+function workspaceGraderReceipt() {
+  if (!savedWorkspaceGraders.length) return "";
+  return '<section id="grader-receipt" class="panel gc-receipt" tabindex="-1"><h2>Ready to evaluate</h2>'+
+    savedWorkspaceGraders.map(item=>{
+      const g=state.graders.find(row=>row.id===item.id);
+      const source=state.datasets.find(d=>d.id===savedDesignDataset);
+      return '<div><p><strong>'+esc(g ? g.name+" v"+g.version : item.label)+'</strong> · Saved in the grader library</p>'+
+        (source?'<p class="muted">'+esc(snapshotLabel(source))+'</p>':"")+
+        (g?graderUseActions(g,savedDesignDataset):'')+'</div>';
+    }).join("")+'</section>';
+}
+function gradeSelect(selected=""){return '<select name="grader" required>'+opt("","Choose a grader",selected)+catalogSections.map(({scope,title})=>{
   const list=(state.graders||[]).filter(g=>graderScope(g)===scope);
-  return list.length?'<optgroup label="'+title+'">'+list.map(g=>opt(g.id,[g.name+" v"+g.version,g.category,decisionTarget(g)].filter(Boolean).join(" · "),"")).join("")+'</optgroup>':"";
+  return list.length?'<optgroup label="'+title+'">'+list.map(g=>opt(g.id,[g.name+" v"+g.version,g.category,decisionTarget(g)].filter(Boolean).join(" · "),selected)).join("")+'</optgroup>':"";
 }).join("")+'</select>';}
 function catalogRevision(g:UiGrader,latest:boolean) {
   const scope=graderScope(g);
@@ -220,9 +373,9 @@ function catalogRevision(g:UiGrader,latest:boolean) {
     esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc([g.category,graderApplicability(g)].filter(Boolean).join(" · "))+'</small></div>'+
     '<small>'+esc(use)+'</small></div><p>'+esc(g.criteria)+'</p>'+
     (ancestry?'<small class="block">'+esc(ancestry)+'</small>':"")+
-    '<div class="gc-actions"><button type="button" data-'+edit+'="'+esc(g.id)+'">'+(edit==="revise"?"Revise":"Customize")+'</button>'+
+    graderUseActions(g)+'<details class="gc-manage"><summary>Manage version</summary><div class="gc-actions"><button type="button" data-'+edit+'="'+esc(g.id)+'">'+(edit==="revise"?"Revise":"Customize")+'</button>'+
     '<button type="button" data-grade-history="'+esc(g.id)+'" aria-expanded="false">Runs using v'+esc(g.version)+'</button>'+defaultToggle+'</div>'+(replaced?'<small>Using this version on new runs replaces '+esc(replaced.name+' v'+replaced.version)+' as the automatic metric.</small>':'')+
-    '<div class="gc-uses" data-grade-uses hidden role="status"></div></article>';
+    '<div class="gc-uses" data-grade-uses hidden role="status"></div></details></article>';
 }
 function nativeMetricTemplates() {
   return state.opikLibraryTemplates.length?'<div class="gc-templates"><h4>Opik metric templates</h4>'+
@@ -261,17 +414,34 @@ function applyCatalogFilter(){
   const empty=document.getElementById("gc-no-matches");
   if(empty)empty.hidden=!query || !!document.querySelector(".gc-section:not([hidden])");
 }
+async function sampleHistory(){
+  try{
+    const rows=await api.graderSamples();
+    return rows.length?bar("Recent output tests")+scoreRows(rows):"";
+  }catch(error){
+    return '<p role="alert">Could not read recent output tests. '+esc(errorText(error))+'</p><button type="button" data-grade-retry>Retry recent tests</button>';
+  }
+}
+async function refreshSampleHistory(){
+  const sameVisit=currentVisit(),history=await sampleHistory();
+  const scores=document.getElementById("grade-sample-scores");
+  if(!sameVisit() || !scores)return null;
+  scores.innerHTML=history;
+  return scores;
+}
 async function gradersPage(){
-  const list=state.graders||[], samples=await api.graderSamples();
-  return heading("Workspace","Graders","Choose a versioned check, customize it for your domain, or grade a saved output.")+
-    gradeCreate()+bar("Grader library")+formField("Search graders",'<input type="search" id="grade-filter" value="'+esc(gradeFilter)+'" placeholder="Name, industry, scenario or criterion">')+
-    catalogSections.map(s=>catalogSection(s.scope,s.title)).join("")+'<p id="gc-no-matches" hidden role="status">No matching graders.</p>'+
-    bar("Grade an output")+'<form id="grade-sample" class="panel">'+formField("Grader",gradeSelect())+
-    '<div class="cols">'+formField("Task or input",'<textarea name="input" required></textarea>')+formField("Model or agent output",'<textarea name="output" required></textarea>')+'</div>'+
-    '<details><summary>Reference and agent trajectory</summary>'+formField("Reference (JSON or text)",'<textarea name="reference"></textarea>')+
-    formField("Agent steps in order (JSON array)",'<textarea name="trajectory" placeholder=\'[{"tool":"search"},{"tool":"summarize"}]\'></textarea>')+'</details>'+
-    '<button class="yellow spacer" '+(list.length?"":"disabled")+'>Run grader</button></form>'+
-    (samples.length?bar("Recent evaluations")+'<div class="panel">'+scoreRows(samples)+'</div>':"");
+  const history=await sampleHistory(),draft=pendingSample ?? retrySample?.draft;
+  const group=pendingSample ? ' disabled' : '';
+  const outputTest='<details id="grade-sample-panel" data-own-open class="panel" '+(samplePanelOpen || retrySample?.error?'open':'')+'><summary>Test one output</summary><p>Paste the task and an existing answer to see the score and rationale from one grader.</p><form id="grade-sample" aria-busy="'+!!pendingSample+'"><fieldset class="gc-sample-fields"'+group+'><legend class="visually-hidden">Output test</legend>'+formField("Grader",gradeSelect(draft?.grader))+
+    '<div class="cols">'+formField("Task or input",'<textarea name="input" required>'+esc(draft?.input)+'</textarea>')+formField("Model or agent output",'<textarea name="output" required>'+esc(draft?.output)+'</textarea>')+'</div>'+
+    '<details data-sample-evidence '+(draft?.reference || draft?.trajectory?'open':'')+'><summary>Reference and agent trajectory</summary>'+formField("Reference (JSON or text)",'<textarea name="reference">'+esc(draft?.reference)+'</textarea>')+
+    formField("Agent steps in order (JSON array)",'<textarea name="trajectory" placeholder=\'[{"tool":"search"},{"tool":"summarize"}]\'>'+esc(draft?.trajectory)+'</textarea>')+'</details>'+
+    '<button class="yellow spacer" type="submit" '+(pendingSample || !state.graders.length?'disabled':'')+'>'+(pendingSample?'Scoring…':'Score this output')+'</button></fieldset><div data-sample-recovery>'+sampleRecovery()+'</div></form>'+
+    '<div id="grade-sample-scores" tabindex="-1">'+history+'</div></details>';
+  return heading("Workspace","Graders","A grader scores a model or agent answer against your success criteria. Create one or use a saved version below.")+
+    workspaceGraderReceipt()+gradeCreate()+outputTest+bar("Grader library")+
+    formField("Search graders",'<input type="search" id="grade-filter" value="'+esc(gradeFilter)+'" placeholder="Name, industry, scenario or criterion">')+
+    [...catalogSections].reverse().map(s=>catalogSection(s.scope,s.title)).join("")+'<p id="gc-no-matches" hidden role="status">No matching graders.</p>';
 }
 function caseGrading(run:UiRunDetail,r:UiResult,index:number){
   const rows=(run.assessments||[]).filter(a=>a.caseId===r.caseId && a.candidate===r.candidateId);
@@ -287,8 +457,17 @@ document.addEventListener("change",e=>{
     const chosen=datasetGradeSelection(picker.dataset.gradeScope);
     if(e.target.checked)chosen.add(e.target.value);else chosen.delete(e.target.value);
     writeGraderAttachment(picker.dataset.gradeScope,chosen);
-    $("summary",picker).textContent="Optional graders · "+chosen.size+" selected";
+    $("summary",picker).textContent=selectedGradersLabel(chosen);
+    const notice=document.getElementById("dataset-judge-note");
+    if(notice)notice.innerHTML=selectedJudgeNotice(chosen);
     updateDatasetGradingControls();
+  }
+  if(e.target.matches("#grade-sample [name=grader]")){
+    if(e.target.form)editSampleRetry(e.target.form);
+    const id=e.target.value;
+    const g=state.graders.find(row=>row.id===id);
+    if(g)showSampleEvidence(g);
+    else $("#grade-sample [data-sample-evidence] summary").textContent="Reference and agent trajectory";
   }
   if(e.target.id==="grade-type"){
     const f=e.target.form;
@@ -331,6 +510,7 @@ document.addEventListener("change",e=>{
 });
 document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
+  if(e.target.form?.id==="grade-sample")editSampleRetry(e.target.form);
   if(e.target.name==="decision-endpoint" && e.target.form)resetDecisionDiscovery(e.target.form);
   if(e.target.id==="grade-filter"){gradeFilter=e.target.value;applyCatalogFilter();}
 });
@@ -345,6 +525,29 @@ document.addEventListener("change",e=>{
 });
 document.addEventListener("click",async e=>{
   if (!(e.target instanceof Element)) return;
+  const action=e.target.closest<HTMLButtonElement>("[data-grade-run],[data-grade-continue],[data-grade-cancel],[data-grade-test]");
+  const host=action?.closest<HTMLElement>("[data-use-version]");
+  if(action && host){
+    const grader=state.graders.find(g=>g.id===host.dataset.useVersion);
+    if(grader)await chooseGraderAction(action,host,grader);
+    return;
+  }
+  const clear=e.target.closest<HTMLButtonElement>("[data-sample-clear]");
+  if(clear?.form && !pendingSample){
+    retrySample=null;
+    for(const field of clear.form.querySelectorAll("textarea")) {
+      field.defaultValue="";
+      field.value="";
+    }
+    const grader=requireElement("[name=grader]",HTMLSelectElement,clear.form);
+    for(const option of grader.options)option.defaultSelected=option.value==="";
+    grader.value="";
+    const details=requireElement("[data-sample-evidence]",HTMLDetailsElement,clear.form);
+    details.open=false;$("summary",details).textContent="Reference and agent trajectory";
+    $("select",clear.form).focus();$("[data-sample-recovery]",clear.form).replaceChildren();return;
+  }
+  const retry=e.target.closest<HTMLButtonElement>("[data-grade-retry]");
+  if(retry){retry.disabled=true;await refreshSampleHistory();return;}
   const starter=e.target.closest<HTMLButtonElement>("[data-decision-starter]");
   const kind=starter?.dataset.decisionStarter;
   if(starter?.form && (kind==="earnings" || kind==="inspection")){
@@ -374,7 +577,7 @@ document.addEventListener("click",async e=>{
   }
   const template=e.target.closest<HTMLButtonElement>("[data-grade-template]");
   if(template){
-    graderDraft=null;graderEditIntent="create";
+    showGraderAuthoring=true;graderDraft=null;graderEditIntent="create";
     graderTemplate=state.opikLibraryTemplates.find(t=>t.key===template.dataset.gradeTemplate) || null;
     await render();dashElement("#grade-create input",HTMLInputElement)?.focus();return;
   }
@@ -396,14 +599,53 @@ document.addEventListener("click",async e=>{
   const edit=e.target.closest<HTMLButtonElement>("[data-revise],[data-customize],[data-new-grader]");
   if(!edit)return;
   graderTemplate=null;
+  showGraderAuthoring=true;
   graderDraft=state.graders.find(g=>g.id===(edit.dataset.revise || edit.dataset.customize)) || null;
   graderEditIntent=edit.dataset.revise?"revise":edit.dataset.customize?"derive":"create";
   void render().then(()=>{if(graderDraft)dashElement("#grade-create input",HTMLInputElement)?.focus();});
 });
+document.addEventListener("toggle",e=>{
+  const details=e.target;
+  if(!(details instanceof HTMLDetailsElement) || !details.isConnected)return;
+  if(details.id==="grader-authoring")showGraderAuthoring=details.open;
+  if(details.id==="grade-sample-panel")samplePanelOpen=details.open;
+},true);
+async function scoreSample(form:HTMLFormElement) {
+  if(pendingSample)return;
+  const sameVisit=currentVisit();
+  const draft=readSample(form);
+  try{
+    let reference:unknown=draft.reference.trim() || null,trajectory:unknown;
+    try{reference=JSON.parse(draft.reference);}catch{ /* A plain-text reference is also valid. */ }
+    if(draft.trajectory.trim()){
+      try{trajectory=JSON.parse(draft.trajectory);}catch{throw Error("Enter observed agent steps as a valid JSON array.");}
+      if(!Array.isArray(trajectory))throw Error("Agent steps must be a JSON array.");
+    }
+    const consent=graderConsentById([draft.grader],"this provided output");
+    if(!consent)return;
+    retrySample=null;$("[data-sample-recovery]",form).replaceChildren();
+    pendingSample=draft;updateSampleLock();
+    const result=await api.assess({grader:draft.grader,...consent,evidence:{input:draft.input,output:draft.output,reference,
+      ...(Array.isArray(trajectory) && {trajectory})}});
+    if(trail()[0]!=="graders")return;
+    const scores=await refreshSampleHistory();
+    if(scores && sameVisit()){
+      message(result.pass==null?"Unscored · "+result.reason:"Evaluation saved.");
+      if(form.contains(document.activeElement))scores.focus();
+    }
+  }catch(error){
+    retrySample={draft,error:errorText(error)};
+    const recovery=document.querySelector<HTMLElement>("#grade-sample [data-sample-recovery]");
+    if(recovery && trail()[0]==="graders")recovery.innerHTML=sampleRecovery();
+  }finally{
+    pendingSample=null;updateSampleLock();
+  }
+}
 document.addEventListener("submit",async e=>{
   if (!(e.target instanceof HTMLFormElement)) return;
 
-  if(!["grade-case","grade-sample","grade-create"].includes(e.target.id))return;
+  if(e.target.id==="grade-sample"){e.preventDefault();await scoreSample(e.target);return;}
+  if(!["grade-case","grade-create"].includes(e.target.id))return;
   e.preventDefault();const f=e.target,b=requireElement("button:not([type=button])",HTMLButtonElement,f);
   const field=(name:string)=>formText(f,name),stillHere=currentVisit();
   if(b.disabled)return;
@@ -434,31 +676,25 @@ document.addEventListener("submit",async e=>{
         const checked=new FormData(f).getAll("decision-evidence");
         definition.requiredEvidence=(["reference","trajectory"] as const).filter(key=>checked.includes(key));
       }
-      await api.saveGrader(graderEditIntent==="create" || !graderDraft ? {...definition,intent:"create"} :
+      const savedId=await api.saveGrader(graderEditIntent==="create" || !graderDraft ? {...definition,intent:"create"} :
         {...definition,intent:graderEditIntent,sourceGraderId:graderDraft.id});
       if(!stillHere() || !f.isConnected)return;
       graderEditIntent="create";graderTemplate=null;
-      graderDraft=null; message("Grader version saved.");
+      graderDraft=null; recordWorkspaceSave([{id:savedId,label:definition.name}]);
     }
     else {
       b.textContent="Grading…";
-      let request:UiGradeRequest;
+      if(!f.dataset.id)throw Error("Reopen the saved case before grading it.");
       const grader=field("grader");
-      if(f.id==="grade-case" && f.dataset.id){request={grader,run:f.dataset.id,index:Number(f.dataset.index)};}
-      else {
-        const raw=field("reference");
-        let reference:unknown=raw || null;
-        try{reference=JSON.parse(raw);}catch{}
-        const supplied=field("trajectory").trim();
-        let trajectory:unknown;
-        if(supplied){try{trajectory=JSON.parse(supplied);}catch{throw Error("Enter observed agent steps as a valid JSON array.");}}
-        if (supplied && !Array.isArray(trajectory)) throw Error("Agent steps must be a JSON array.");
-        request={grader,evidence:{input:field("input"),output:field("output"),reference,...(Array.isArray(trajectory) && {trajectory})}};
-      }
-      const consent=graderConsentById([grader],f.id==="grade-case"?"this saved case":"this provided output");
+      const request:UiGradeRequest={grader,run:f.dataset.id,index:Number(f.dataset.index)};
+      const consent=graderConsentById([grader],"this saved case");
       if(!consent)return;
-      const result=await api.assess({...request,...consent});if(!stillHere())return;message(result.pass==null?"Unscored · "+result.reason:"Evaluation saved.");
+      const result=await api.assess({...request,...consent});
+      if(!stillHere())return;
+      message(result.pass==null?"Unscored · "+result.reason:"Evaluation saved.");
     }
     await render();
+    if(!stillHere())return;
+    if(f.id==="grade-create")document.getElementById("grader-receipt")?.focus();
   }catch(error){inlineError(f,error);}finally{b.disabled=false;b.textContent=title;}
 });

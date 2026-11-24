@@ -42,7 +42,9 @@ function referenceScoringIssue() {
   const meaningful=graders.filter(g=>!(g.type==="catalog" && ["response-present","completion","json-valid"].includes(g.ruleKey || "")));
   if(d.casesWithRubric && !meaningful.some(g=>["judge","opik","decision"].includes(g.type)))
     return "Choose a rubric-aware judge to score the case-specific instructions.";
-  if(d.casesWithoutReference && !meaningful.some(g=>g.type!=="field" && g.type!=="trajectory" && g.metricKey!=="hallucination" && !g.requiredEvidence?.length))
+  if(d.casesWithoutReference && !meaningful.some(g=>g.type==="opik" && g.requiredEvidence?.length ?
+    !g.requiredEvidence.includes("trajectory") && datasetGradingChoices?.hasReferences :
+    g.type!=="field" && g.type!=="trajectory" && g.metricKey!=="hallucination" && !g.requiredEvidence?.length))
     return "Choose a grader that can score the input and response without a reference, such as Opik Usefulness.";
   return meaningful.length ? "" : "Choose a saved grader or enable an automatic Opik metric to evaluate these responses.";
 }
@@ -72,6 +74,7 @@ function datasetRunPage(w:UiWorkflow) {
     '<details class="wf-options"><summary>Token limits</summary><div class="cols">'+
     '<label class="field"><span>Max input tokens</span><input name="inputCap" type="number" min="1" max="1000000" value="'+esc(w.inputCap)+'" placeholder="Automatic"></label>'+
     '<label class="field"><span>Max output tokens</span><input name="outputCap" type="number" min="1" max="1000000" value="'+esc(w.outputCap)+'" placeholder="Automatic"></label></div></details>'+
+    (!rosterModels().some(m=>!m.needsKey)?'<p class="wf-hint">Connect a candidate in '+link("Local runtimes","providers","link")+' or use Connect a model endpoint below to start this run.</p>':"")+
     modelPicker("dataset",d.count)+'</form>'+endpointForm()+hostingLegend()+
     (reference ? '' : '<div class="wf-actions"><button id="wf-variant" type="button">Test a prompt variant</button><small>Draft an alternate instruction for the same saved cases.</small></div>')+
     fixtureControl(w)+'</section>';

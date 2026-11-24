@@ -60,7 +60,7 @@ type UiGraderScope = "general" | "industry" | "customer";
 interface UiGraderLibrary {scope:UiGraderScope;familyId:string;parentRevisionId?:string;scenario?:string;automatic?:boolean}
 type UiGraderSave = UiGraderDefinition & ({intent:"create"}|{intent:"derive"|"revise";sourceGraderId:string});
 interface UiGraderRun {id:string;title:string;created:string}
-interface UiGraderOptions {automatic:UiGrader[];available:UiGrader[]}
+interface UiGraderOptions {hasReferences?:boolean;automatic:UiGrader[];available:UiGrader[]}
 interface UiGrader extends UiGraderDefinition {library?:UiGraderLibrary;ruleKey?:string;ruleVersion?:number;id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
 interface UiQuickOptions extends UiGraderOptions {recommended:UiGrader[];generated:UiGraderDefinition|null;judges:UiModel[]}
 interface UiQuickPlan {options:UiQuickOptions|null; saved:Set<string>; enabled:boolean;designed:boolean;
@@ -118,6 +118,7 @@ interface DashBridge {
  designGraders(request:UiDesignGraderRequest):Promise<UiGraderDesign>;confirmGraders(request:UiPlanApproval):Promise<string[]>;
  listDecisionModels(baseUrl:string,protocol?:UiDecisionProtocol):Promise<string[]>;
  saveGrader(request:UiGraderSave):Promise<string>;graderSamples():Promise<UiAssessment[]>;
+ graderDatasetIds(id:string):Promise<string[]>;
  setGeneralGraderDefault(id:string,enabled:boolean):Promise<void>;graderRuns(id:string):Promise<UiGraderRun[]>;datasetGraderOptions(id:string):Promise<UiGraderOptions>;
  quickGraderOptions(id:string):Promise<UiQuickOptions>;previewQuickBudget(id:string,models:string[]):Promise<UiLaneBudget[]>;
  assess(request:UiGradeRequest):Promise<UiAssessment>;diagnostics(id:string):Promise<UiDiagnostic>;

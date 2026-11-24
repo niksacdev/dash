@@ -18,6 +18,8 @@ A team evaluating an earnings extractor or an inspection reviewer needs to see w
 - A customer can accept an applicable existing revision or review new criteria from a business outcome. A fork records its parent, remains independently editable and cannot change earlier runs. An old case rerun retains its original manifest even after a library upgrade.
 - Opik owns its SDK metrics, datasets, experiments and feedback. DASH owns domain applicability, the reviewed definitions and local pins. Never infer readiness, factual accuracy or observed agent tool use from response syntax. Never send held-out grading context to a candidate.
 
+A first-time operator can open **Create a grader**, request a proposal, edit it and save. The receipt identifies each version, offers a one-output test where applicable and opens the regular Dataset run form for eligible graders. Choosing a snapshot preserves the exact grader version, even after a successor is published. Saving and setting up the run each require a separate operator action from starting inference.
+
 ## Review findings
 
 The product and technical reviewers found that keyword overlap could attach a literal grader to an unrelated Quick task and that lowercased display names coupled unrelated grader histories. Require an explicit business selection, stable family identity and an exact saved revision. Score structural checks as diagnostics and preserve domain-specific failures in the comparison. Inspect both working paths and missing-evidence cases with synthetic data. Use the actual SDK behind scoring and verify the Electron review, version and reuse flow.

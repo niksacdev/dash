@@ -638,7 +638,7 @@ async function smoke() {
   process.env.OPENROUTER_API_KEY="synthetic-workflow-smoke-key";
   const localAlias="qa/decision", localQuestions:string[]=[];
   const checkpoint=mkdtempSync(path.join(profile,"synthetic-checkpoint-"));
-  let mlxGrades=0;
+  let mlxGrades=0,sampleGate:Promise<void>|undefined;
   const server=createServer(async(req,res)=>{
     res.setHeader("content-type","application/json");
     if(req.method==="GET" && req.url==="/health"){
@@ -664,6 +664,7 @@ async function smoke() {
         const question=decisionQuestion.parse(JSON.parse(body));
         assert.equal(question.model,localAlias);
         localQuestions.push(question.state);
+        if(sampleGate)await sampleGate;
         res.end(JSON.stringify(decisionAnswer(localAlias,question.state.includes("UNCERTAIN")?.5:.92)));
       } catch {res.statusCode=400;res.end("{}");}
       return;
@@ -681,10 +682,12 @@ async function smoke() {
     win.setContentSize(390,720);
     await wait(()=>js("innerWidth<=400"),"Phone-width catalog");
     assert.ok(await js("document.documentElement.scrollWidth<=innerWidth+1"),"Catalog fits a phone viewport");
-    assert.ok(await js("document.querySelector('[data-customize]').getBoundingClientRect().height>=44"),"Touch-size catalog action");
+    assert.ok(await js("document.querySelector('[data-grade-run]').getBoundingClientRect().height>=44"),"Touch-size catalog action");
     win.setContentSize(1280,850);
     // Workspace creation reviews several checks without attaching them to a run.
     const designer="#grader-authoring [data-gd-workspace]";
+    assert.equal(await js("document.querySelector('#grader-authoring').open"),false);
+    await click("#grader-authoring>summary");
     const source=designer+" [data-gd-source]";
     const goal="Review the active drawing before accepting a synthetic inspection lot.";
     const proposedCount=()=>Number(db.prepare("SELECT COUNT(*) AS n FROM graders").get()?.n);
@@ -711,11 +714,27 @@ async function smoke() {
     await click(designer+" [data-gd-check='1'] [data-gd-field=included]");
     assert.equal(proposedCount(),initial);
     await click(designer+" [data-gd-action=confirm]");
-    await wait(()=>exists(designer+" .gd-saved"),"Confirmed workspace grader");
+    await wait(()=>js("document.querySelector('#grader-receipt')?.innerText.includes("+q(name+" v1")+")"),"Saved version and next actions");
     assert.equal(proposedCount(),initial+1);
     assert.equal(await js("localStorage.getItem('dash.attachedGraders.v1.'+"+q(snapshot)+")"),attachmentBefore);
     const saved=await js("window.dash.list().then(s=>s.graders.find(g=>g.name==="+q(name)+"))");
     assert.equal(z.object({threshold:z.literal(.75),type:z.literal("opik"),version:z.literal(1)}).safeParse(saved).success,true);
+    const savedId=z.object({id:z.string()}).parse(saved).id;
+    if(process.env.DASH_GRADER_PREVIEW_DIR){
+      await wait(()=>js("document.querySelector('#msg').hidden"),"Clear unrelated transient notices from preview");
+      const frame=await win.webContents.capturePage();
+      writeFileSync(path.join(process.env.DASH_GRADER_PREVIEW_DIR,"saved-grader.png"),frame.toPNG());
+    }
+    await click("#grader-receipt [data-grade-test]");
+    assert.equal(await text("document.querySelector('#grade-sample [name=grader]').value"),savedId);
+    assert.equal(await js("document.activeElement===document.querySelector('#grade-sample [name=output]')"),true);
+    // The earlier synthetic workflow may still have an open prompt variant.
+    await js("window.confirm=message=>message.startsWith('Switch the dataset setup to ');true");
+    await click("#grader-receipt [data-grade-run]");
+    await wait(()=>js("document.querySelector('#ds')?.value==="+q(snapshot.slice(8))),"Use source dataset without a second selection");
+    assert.ok(await js("document.querySelector('[name=custom-grader][value="+q(savedId)+"]')?.checked"));
+    await click('[name=custom-grader][value="'+savedId+'"]');
+    await route("graders");await click("#grader-authoring>summary");
     await click('#grader-authoring [name="grader-authoring-mode"][value="manual"]');
     assert.equal(await js("document.querySelector('#grade-create').checkVisibility()"),true);
     await fill("#grade-type","decision");
@@ -753,14 +772,58 @@ async function smoke() {
     await wait(()=>manualCount()===manualStart+1,"Missing required evidence recorded");
     await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('Unscored')"),"Unscored evidence shown");
     assert.equal(localQuestions.length,0);
-    await provideSample(localId,"Hold lot B.","Current drawing calls for a hold.");
-    await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('P(yes) 0.92')"),"Local decision probability");
+    let releaseSample=()=>{};
+    sampleGate=new Promise<void>(resolve=>{releaseSample=resolve;});
+    try{
+      await provideSample(localId,"Hold lot B.","Current drawing calls for a hold.");
+      await wait(()=>localQuestions.length===1,"Judge received the submitted sample");
+      await route("datasets");await wait(()=>exists("#catalog-search"),"Other workspace navigation while scoring");
+      await route("graders");await wait(()=>exists('#grade-sample[aria-busy=true]'),"Pending grade restored on return");
+      assert.equal(await text("document.querySelector('#grade-sample [name=output]').value"),"Hold lot B.");
+      assert.equal(await js("document.querySelectorAll('[data-grade-test]:enabled').length"),0);
+      assert.equal(await js("[...document.querySelectorAll('#grade-sample textarea,#grade-sample select,#grade-sample button')].every(e=>e.matches(':disabled'))"),true);
+      await js("document.querySelector('#grade-sample').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));true");
+      await click("#grader-authoring>summary");await click('#grader-authoring [name=grader-authoring-mode][value=manual]');
+      await fill("#grade-create [name=name]","Another grader draft");
+    }finally{releaseSample();sampleGate=undefined;}
+    await wait(()=>js("document.querySelector('#grade-sample[aria-busy=false]') && document.querySelector('#grade-sample-scores').textContent.includes('P(yes) 0.92')"),"Pending score finishes without replacing the workspace");
+    assert.equal(await text("document.querySelector('#grade-create [name=name]').value"),"Another grader draft");
+    assert.equal(await js("document.querySelectorAll('[data-grade-test]:disabled').length"),0);
+    assert.equal(manualCount(),manualStart+2);
     assert.match(await text("document.querySelector('#screen table').innerText"),/Alternate model used/);
     assert.equal(localQuestions.length,1);
     assert.match(localQuestions[0],/Current drawing calls for a hold/);
     await provideSample(localId,"UNCERTAIN: hold for reinspection.","Current drawing calls for a hold.");
     await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('Abstained · unscored')"),"Uncertain decision excluded from numeric scores");
     assert.equal(manualCount(),manualStart+3);
+    const failureFixture=new DatabaseSync(path.join(profile,"dash.sqlite"));
+    try{
+      failureFixture.exec("CREATE TRIGGER fail_sample_save BEFORE INSERT ON assessments WHEN NEW.run IS NULL BEGIN SELECT RAISE(ABORT,'Synthetic sample store unavailable'); END");
+      await provideSample(localId,"Keep this response for retry.","Current drawing calls for a hold.");
+      await wait(()=>exists("#grade-sample [data-action-error]"),"Sample persistence failure stays at the output test");
+      assert.equal(await text("document.querySelector('#grade-sample [name=output]').value"),"Keep this response for retry.");
+      assert.equal(await js("document.querySelector('#grade-sample button[type=submit]').disabled"),false);
+      const attempts=localQuestions.length;
+      sampleGate=new Promise<void>(resolve=>{releaseSample=resolve;});
+      try{
+        await provideSample(localId,"Recover this after navigation.","Current drawing calls for a hold.");
+        await wait(()=>localQuestions.length===attempts+1,"Judge received the second sample");
+        await route("datasets");await wait(()=>exists("#catalog-search"),"Leave before sample persistence fails");
+      }finally{releaseSample();sampleGate=undefined;}
+      await wait(()=>js("pendingSample===null"),"Failure settles while another page is open");
+      assert.equal(await js("location.hash"),"#datasets");
+      await route("graders");await wait(()=>exists("#grade-sample [data-action-error]"),"Recover failed sample on return");
+      for(const [key,value] of [["grader",localId],["output","Recover this after navigation."],["reference","Current drawing calls for a hold."]]){
+        assert.equal(await text("document.querySelector("+q("#grade-sample [name="+key+"]")+").value"),value);
+      }
+      assert.equal(await js("document.querySelector('#grade-sample button[type=submit]').disabled"),false);
+      await click("[data-sample-clear]");
+      assert.ok(await js("Array.from(document.querySelectorAll('#grade-sample textarea')).every(el=>el.value==='' && el.defaultValue==='' && el.textContent==='')"),"Discard clears the live and original evidence");
+      await js("document.querySelector('#grade-sample').reset();true");
+      assert.ok(await js("Array.from(document.querySelectorAll('#grade-sample textarea,#grade-sample select')).every(el=>el.value==='')"),"Reset cannot restore discarded sample data or its selected grader");
+      assert.equal(localQuestions.length,attempts+1,"Returning or discarding does not retry the model");
+      assert.equal(manualCount(),manualStart+3);
+    }finally{try{failureFixture.exec("DROP TRIGGER IF EXISTS fail_sample_save");}finally{failureFixture.close();}}
     await click('[data-revise="'+localId+'"]');
     await wait(()=>js("document.querySelector('#grade-create [name=decision-model]').value==="+q(primaryAlias)),"Pinned model in the revision editor");
     await fill("[name=decision-provider]","openrouter");
@@ -889,7 +952,22 @@ async function smoke() {
     await reveal(optionFor(inspectionRule));await click(optionFor(inspectionRule));
     // The earlier explicitly chosen hosted grader remains attached to this snapshot.
     if(await js("document.querySelector("+q(optionFor(hostedId))+")?.checked"))await click(optionFor(hostedId));
-    await click(optionFor(v2));
+    await route("graders");
+    const runsBeforeSetup=runCount();
+    const revisionAction='[data-grade-version="'+v2+'"] [data-use-version="'+v2+'"]';
+    await click(revisionAction+" [data-grade-run]");
+    await wait(()=>js("location.hash==='#new' || !!document.querySelector("+q(revisionAction+" [data-grade-snapshot]")+")"),"Select or open eligible dataset");
+    if(await exists(revisionAction+" [data-grade-snapshot]")){
+      assert.equal(await exists(revisionAction+' option[value="'+scenario+'"]'),false);
+      await click(revisionAction+" [data-grade-cancel]");
+      assert.equal(await js("location.hash"),"#graders");
+      await click(revisionAction+" [data-grade-run]");
+      await fill(revisionAction+" [data-grade-snapshot]",inspectionId);
+      await click(revisionAction+" [data-grade-continue]");
+    }
+    await wait(()=>js("document.querySelector('#ds')?.value==="+q(inspectionId)),"Dataset form for the requested grader");
+    assert.ok(await js("document.querySelector('.grader-picker>summary').innerText.includes("+q(alias+" v2")+")"));
+    assert.equal(runCount(),runsBeforeSetup,"Opening setup requires explicit GO");
     const uses:string[]=[];
     for(const count of [5,6]){
       await wait(()=>js("document.querySelector("+q(optionFor(v2))+")?.checked"),"Selected revision restored");
@@ -898,6 +976,9 @@ async function smoke() {
       assert.ok(run.graders.some(g=>g.id===v2));assert.ok(run.graders.some(g=>g.id===inspectionRule));
       assert.ok(run.graders.some(g=>g.type==="catalog" && g.ruleKey==="json-valid"));
       assert.ok(!run.graders.some(g=>g.id===v1 || g.id===relevance));
+      await wait(()=>js("!![...document.querySelectorAll('.er-metric h3')].find(h=>h.textContent.includes("+q(alias)+"))"),"Completed evaluation shows the selected grader");
+      await js("document.querySelectorAll('.er-metric h3').forEach(h=>{if(h.textContent.includes("+q(alias)+"))h.closest('article').querySelector('summary').click()});true");
+      await wait(()=>js("!![...document.querySelectorAll('.er-metric')].find(m=>m.querySelector('h3').textContent.includes("+q(alias)+") && m.querySelector('.er-evidence table a'))"),"Grader rationale links to a scored case");
       if(count===5){
         await route("graders");await click('[data-revise="'+v2+'"]');
         await wait(()=>js("document.querySelector('#grade-create [name=criteria]').value==='QA'"),"Reopen customer v2");
@@ -933,7 +1014,19 @@ async function smoke() {
     await route("new");await fill("#pack","reference");await fill("#ds",inputOnly);
     await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('without a reference')"),"Structural checks alone cannot grade an input-only case");
     assert.equal(await js("document.querySelector('#dataset-run-form .go-button').disabled"),true);
-    await route("graders");await click('[data-grade-default="'+relevance+'"]');
+    await route("graders");
+    const referenceOnly='[data-grade-version="'+localId+'"] [data-use-version]';
+    await reveal(referenceOnly+" [data-grade-test]");await click(referenceOnly+" [data-grade-test]");
+    assert.equal(await js("document.querySelector('#grade-sample [data-sample-evidence]').open"),true);
+    assert.match(await text("document.querySelector('#grade-sample [data-sample-evidence] summary').textContent"),/needs a reference answer/);
+    await reveal(referenceOnly+" [data-grade-run]");await click(referenceOnly+" [data-grade-run]");
+    await fill(referenceOnly+" [data-grade-snapshot]",inputOnly);
+    await click(referenceOnly+" [data-grade-continue]");
+    await wait(()=>js("document.querySelector("+q(referenceOnly+" [role=alert]")+")?.textContent.includes('held-out reference')"),"Unscorable snapshot explains missing reference");
+    assert.equal(await js("location.hash"),"#graders");
+    assert.equal(await js("JSON.parse(localStorage.getItem("+q("dash.attachedGraders.v1.dataset:"+inputOnly)+") || '{}').ids?.includes("+q(localId)+") || false"),false);
+    await click(referenceOnly+" [data-grade-cancel]");
+    await click('[data-grade-default="'+relevance+'"]');
     await wait(()=>exists('[data-grade-default="'+relevance+'"][aria-pressed=true]'),"Enable the local semantic default");
     await route("new");await fill("#ds",mixed);
     await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('rubric-aware')"),"Case-specific rubric still needs its own judge");

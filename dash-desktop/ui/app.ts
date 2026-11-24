@@ -929,7 +929,7 @@ async function render() {
     const selection = editing && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && active.selectionStart!==null ? [active.selectionStart,active.selectionEnd] as const : null;
     const focus = active instanceof HTMLElement ? active.dataset.act : undefined;
     const open = Array.from(
-      document.querySelectorAll("details[open] summary"),
+      document.querySelectorAll("details[open]:not([data-own-open]) > summary"),
       (el) => el.textContent,
     );
     renderedLocation=place;
@@ -948,7 +948,7 @@ async function render() {
     for (const car of document.querySelectorAll<SVGElement>(".car[data-progress]"))
       car.style.left =
         "calc((100% - 39px) * " + Number(car.dataset.progress) / 100 + ")";
-    for (const d of document.querySelectorAll("details"))
+    for (const d of document.querySelectorAll<HTMLDetailsElement>("details:not([data-own-open])"))
       if (open.includes(d.querySelector("summary")?.textContent ?? "")) d.open = true;
     if (focus)
       document

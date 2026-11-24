@@ -6,7 +6,7 @@ Choose this workflow when you want to ask the same questions again after changin
 
 1. Open **Dataset run**. Choose **Earnings release capture** for financial extraction or **Incoming inspection triage** for manufacturing, then verify the dataset snapshot and split.
 2. Review the authored inputs and scenario grader. Use the saved case prompts for a baseline. **Test a prompt variant** is for an intentional change to the prompt.
-3. Expand **Optional graders** if you want another measure, such as an Opik relevance score. The [grader guide](graders.md) explains how to save a metric first.
+3. Expand **Add optional graders** (or **Selected graders** when a version is attached) if you want another measure, such as an Opik relevance score. The [grader guide](graders.md) explains how to save a metric first.
 4. Select one or two connected models in the **Model roster**, check the **Starting line**, and choose **GO**. With five cases and two candidates, expect ten candidate responses on a completed run.
 5. In the completed run, inspect **Business outcomes** and **Cases**. In the Manufacturing example, check the active drawing, its limits, and the part disposition. A plausible measurement alone cannot justify release against an older drawing.
 

@@ -68,6 +68,7 @@ const bridge:DashBridge = {
   listDecisionModels: (baseUrl,protocol) => invoke("listDecisionModels",baseUrl,protocol),
   saveGrader: (definition) => invoke("saveGrader", definition),
   graderSamples: () => invoke("graderSamples"),
+  graderDatasetIds: id => invoke("graderDatasetIds",id),
   datasetGraderOptions: id => invoke("datasetGraderOptions",id),
   graderRuns: id => invoke("graderRuns",id),
   setGeneralGraderDefault: (id,enabled) => invoke("setGeneralGraderDefault",id,enabled),
