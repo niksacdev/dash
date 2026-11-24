@@ -48,6 +48,9 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 
 ## Continuous learning
 
+- When an operator-visible workflow, metric, UI label or setup step changes, update its [operator guide chapter](docs/reader/src/SUMMARY.md) in the same PR. Verify the example and the reader build before committing. Explain in the PR when a change leaves operator guidance unaffected.
+- Every merge to `main` republishes the reader. Verify the **Operator guide** deployment for the merged commit and open the affected live chapter and link or download. Recover failed publication using the [publishing guide](docs/reader/README.md).
+
 - Before committing, check the changed behavior against its spec, setup guide, agent instructions and ADRs. Update affected documentation in the same change. If the behavior did not change, record the verification in the PR.
 - When a real run, incident or review exposes a repeatable failure, capture the smallest reproducible case with synthetic inputs. Fix the cause, add a regression check, and document what the evidence established. Label assumptions and distinguish a simulated transport from a live integration.
 - When a lesson applies across future tasks, Codex should call it out in its update or PR, propose a concrete change to this file, and include the change for review. Put task-specific findings in the owning guide or ADR. Keep instructions short and retire superseded guidance.

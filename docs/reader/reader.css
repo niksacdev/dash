@@ -1,0 +1,25 @@
+.light {
+  --bg: #fafaf8;
+  --fg: #202a32;
+  --links: #9f2638;
+  --sidebar-bg: #f0f1ef;
+  --sidebar-active: #9f2638;
+}
+.navy {
+  --bg: #161c23;
+  --fg: #e9edf0;
+  --links: #ffb0ad;
+  --sidebar-bg: #11171d;
+  --sidebar-active: #ffb0ad;
+}
+.content main { max-width: 50rem; margin: 0 auto; }
+.content { overflow-wrap: break-word; }
+.content p, .content li { line-height: 1.66; }
+.content h1, .content h2 { letter-spacing: -.025em; line-height: 1.18; }
+.content h2 { margin-top: 2em; }
+.content pre, .content table { overflow-x: auto; max-width: 100%; }
+.content table { display: block; }
+.content th, .content td { text-align: start; }
+.content .circuit { background: #442026 url("circuit.jpg") center 55% / cover no-repeat; border-radius: .6rem; height: clamp(5rem, 13vw, 10rem); margin: 0 0 1.5rem; }
+.content a:focus-visible, .sidebar a:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+@media (min-width: 780px) { .content main { max-width: 72rem; } }

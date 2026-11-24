@@ -1,0 +1,22 @@
+[book]
+title = "DASH Operator Guide"
+description = "Choose models, run domain evaluations, and interpret the evidence in DASH."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../dist/reader"
+create-missing = false
+
+[output.html]
+site-url = "/dash/"
+additional-css = ["reader.css"]
+no-section-label = true
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/niksacdev/dash"
+edit-url-template = "https://github.com/niksacdev/dash/edit/main/docs/reader/{path}"
+hash-files = false
+
+[output.html.print]
+enable = false

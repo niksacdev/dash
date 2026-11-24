@@ -1,5 +1,7 @@
 # DASH
 
+[**Read the operator guide**](https://niksacdev.github.io/dash/) [![Reader publication](https://github.com/niksacdev/dash/actions/workflows/reader.yml/badge.svg?branch=main)](https://github.com/niksacdev/dash/actions/workflows/reader.yml) [Apache 2.0](LICENSE)
+
 **Domain Assessment & Scoring Harness** is a local-first Electron workbench for evaluating model and agent outputs against a business objective. Start with a domain scenario, agree on what a good answer looks like, then compare candidates on the same evidence. The first domain packs cover financial earnings extraction and manufacturing inspection triage.
 
 ![DASH workbench in dark mode](docs/design/overview-dark.png)
@@ -19,16 +21,15 @@ To run the Opik service locally with Docker, use `npm run setup:local` before st
 
 On macOS, you can also open `Open DASH.command` after installing dependencies. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
 
-### First evaluation in five minutes
+### Choose a workflow
 
-1. Open **Dataset run** and select **Earnings release capture**. Expand the recorded-response grader test and start it. This scores eight synthetic cases without requiring a model or API key.
-2. Open the result for **eps-gaap**. The recorded answer substitutes adjusted EPS for reported GAAP EPS. Compare the candidate output to the held-out reference and inspect the grader’s explanation.
-3. For live inference, start the LM Studio local server on port `1234` or Ollama on port `11434`, load a chat model, then use **Local runtimes → Refresh models**. In **Dataset run**, click one or two models onto the starting line and choose **GO**.
-4. For **Quick compare**, load an LFM3 chat model for planning. Describe a business objective, such as “Flag incoming parts that exceed the drawing tolerance and cite the measurement.” Choose **Suggest Metrics**, edit the criteria, then draft and approve the prompt. Choose two candidates for the comparison. An OpenAI planning fallback can be configured under **Domain agents**.
-
-### Choose and reuse graders
-
-Open **Workspace → Graders**. General checks follow new evaluations automatically. Industry checks cover earnings extraction in Financial Services and incoming inspection in Manufacturing. **My graders** holds the checks you write, approve from a business outcome or customize from the library. Select an existing revision for another run or save a new revision to change the grading policy. [Grader library guide](docs/guides/workbench.md#choose-a-grader-for-a-run)
+| If you want to… | Start here |
+| --- | --- |
+| Understand what DASH catches before connecting a model | [Replay eight earnings cases and investigate a wrong GAAP figure](https://niksacdev.github.io/dash/first-run.html) |
+| Compare two answers to one objective | [Connect models and use Quick compare](https://niksacdev.github.io/dash/models.html) |
+| Repeat an evaluation across models or versions | [Start a dataset run](https://niksacdev.github.io/dash/dataset-runs.html) or [import two labeled Manufacturing cases](https://niksacdev.github.io/dash/datasets.html) |
+| Decide whether an answer meets your criteria | [Choose, configure and reuse a grader](https://niksacdev.github.io/dash/graders.html) |
+| Explain a score or slow response | [Read case evidence and timings](https://niksacdev.github.io/dash/results.html) or [inspect the experiment in Opik](https://niksacdev.github.io/dash/opik.html) |
 
 ### Design graders and inspect scores
 
@@ -58,6 +59,8 @@ To use an independently managed deployment, set `DASH_OPIK_API_URL` before start
 Run history preserves prompt versions, selected models, grader versions and measured telemetry in the Electron user-data directory. For dataset import, add a family, industry, snapshot version and split. A case can contain a prompt or conversation, an optional reference, an SME rationale and a rubric. Model-visible inputs and held-out evidence are stored separately. [Dataset and runtime guide](docs/guides/workbench.md)
 
 ## Development
+
+Browse work by GitHub issue label. [`bug`](https://github.com/niksacdev/dash/labels/bug) [`enhancement`](https://github.com/niksacdev/dash/labels/enhancement) [`documentation`](https://github.com/niksacdev/dash/labels/documentation) [`accessibility`](https://github.com/niksacdev/dash/labels/accessibility) [`good first issue`](https://github.com/niksacdev/dash/labels/good%20first%20issue) · [All labels](https://github.com/niksacdev/dash/labels)
 
 DASH pins the TypeScript 7 native compiler as a development dependency. Install optional npm dependencies so npm can select the compiler for your OS and CPU. From `dash-desktop/`, the compiler checks the renderer, main process, and test suite with strict TypeScript. To build and run all desktop checks:
 
