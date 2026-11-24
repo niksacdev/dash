@@ -19,7 +19,7 @@
     "opik:stop": "node --experimental-strip-types scripts/local-opik.mts stop",
     "build:test": "npm run build && tsc -p tsconfig.tests.json",
     "docs:check": "node --experimental-strip-types scripts/check-docs.mts",
-    "package:mac": "npm run build && node --experimental-strip-types scripts/package-mac.mts"
+    "package:mac": "npm run build && install-electron && node --experimental-strip-types scripts/package-mac.mts"
   },
   "engines": {
     "node": ">=22.13"
