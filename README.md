@@ -6,6 +6,19 @@
 
 ![DASH workbench in dark mode](docs/design/overview-dark.png)
 
+## Capabilities
+
+| Overview slide | What you can do |
+| --- | --- |
+| **1. Run domain-specific use cases** | Check a reported earnings figure in Financial Services or inspect a bearing against its drawing in Manufacturing. Automotive is planned. [Replay an earnings case](https://niksacdev.github.io/dash/first-run.html) · [Import a Manufacturing dataset](https://niksacdev.github.io/dash/datasets.html) |
+| **2. Task Objective, Success Metrics (AI Optimized)** | Describe a task such as flagging out-of-tolerance bearings. Review AI-suggested metrics for the share of defective parts caught and the share of good parts incorrectly flagged. [Prepare a Quick compare](https://niksacdev.github.io/dash/models.html#try-one-objective-in-quick-compare) |
+| **3. Compare and benchmark multiple models** | Test two models on the same prompt and rubric. Run a local model on your device or on-premises, or connect a closed model through an OpenAI-compatible API. [Connect models](https://niksacdev.github.io/dash/models.html) |
+| **4. Grade each answer against your rubric** | Choose reusable **AI Industry Graders** or review a grader drafted from your criteria. Apply a saved grader version to the answers in a dataset run. [Choose graders](https://niksacdev.github.io/dash/graders.html) · [Run a dataset](https://niksacdev.github.io/dash/dataset-runs.html) |
+| **5. Traceability and Observability** | Inspect why an answer passed or failed. DASH includes per-case tracing through Opik OSS. Sync a saved run to review its traces, response latency, available token counts and grader scores. [Read case evidence](https://niksacdev.github.io/dash/results.html) · [Inspect a run in Opik](https://niksacdev.github.io/dash/opik.html) |
+| **6. Hardware in the Loop · FUTURES** | The planned test connects a physical controller to a simulated motor. Drive commands go to the simulator and speed feedback returns to the controller. |
+
+[Preview all six slides](docs/design/overview-capabilities.png) · [Read the DASH Operator Guide](https://niksacdev.github.io/dash/)
+
 ## Run it locally
 
 Install Node.js 22.13 or later and npm. The desktop application has been exercised on Apple Silicon macOS. Dependency installation needs an internet connection. The recorded example runs offline.
@@ -20,18 +33,6 @@ npm start
 To run the Opik service locally with Docker, use `npm run setup:local` before starting DASH. The command configures the local dashboard and API for this user. [Local Opik guide](docs/guides/local-opik.md)
 
 On macOS, double-click `Open DASH.command` after installing dependencies to build and open **DASH.app** from your user Applications folder (`~/Applications`). To build it without opening a window, run `npm run package:mac` from `dash-desktop/`. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
-
-### Choose a workflow
-
-Browse the [DASH Operator Guide](https://niksacdev.github.io/dash/) or jump to a task below.
-
-| If you want to… | Start here |
-| --- | --- |
-| Understand what DASH catches before connecting a model | [Replay eight earnings cases and investigate a wrong GAAP figure](https://niksacdev.github.io/dash/first-run.html) |
-| Compare two answers to one objective | [Connect models and use Quick compare](https://niksacdev.github.io/dash/models.html) |
-| Repeat an evaluation across models or versions | [Start a dataset run](https://niksacdev.github.io/dash/dataset-runs.html) or [import two labeled Manufacturing cases](https://niksacdev.github.io/dash/datasets.html) |
-| Decide whether an answer meets your criteria | [Choose, configure and reuse a grader](https://niksacdev.github.io/dash/graders.html) |
-| Explain a score or slow response | [Read case evidence and timings](https://niksacdev.github.io/dash/results.html) or [inspect the experiment in Opik](https://niksacdev.github.io/dash/opik.html) |
 
 ### Design graders and inspect scores
 

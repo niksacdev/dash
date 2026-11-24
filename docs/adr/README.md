@@ -33,6 +33,8 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0017 · Overview controls and photography](0017-overview-controls-and-photography.md) | Accepted | Nik requested the Light/Dark and slide controls lose their yellow fill and the photography blend into a consistent background. | [Design decision](0017-overview-controls-and-photography.md) |
 | 2026-11-24 | [0018 · Capability diagrams](0018-capability-diagrams.md) | Proposed | Give each evaluation task its own illustration while preserving the shared banner palette. | [Design guide](../design/README.md) |
 | 2026-11-24 | [0018 · Capability diagrams](0018-capability-diagrams.md) | Accepted | Nik selected one benchmark race and distinct capability diagrams alongside the approved industry photographs. Extends 0015 and 0017. | [Carousel implementation](../../dash-desktop/ui/capabilities.ts) |
+| 2026-11-24 | [0019 · Domain-first Overview](0019-domain-first-overview.md) | Proposed | Begin with the industries, then show a measurable task and model choices. | [Overview guide](../reader/src/index.md) |
+| 2026-11-24 | [0019 · Domain-first Overview](0019-domain-first-overview.md) | Accepted | Nik selected the 3–1–2 opening sequence, Manufacturing metrics, clearer grading and report titles, and a closed-loop hardware example under FUTURES. | [Carousel implementation](../../dash-desktop/ui/capabilities.ts) |
 
 ## Maintaining the history
 
