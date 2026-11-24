@@ -52,7 +52,13 @@ export interface GraderEvidence {
   trajectory?:readonly unknown[]; rubric?:string; sme_rationale?:string;
   evaluationBrief?:{objective:string;metrics:readonly string[];criteria:readonly string[]};
 }
+const datasetCaseSource = z.object({
+  datasetId:z.string(),datasetName:z.string(),datasetVersion:z.string(),caseId:z.string(),
+  scenarioId:z.string(),scenarioVersion:z.string(),contractHash:z.string(),
+});
+export type DatasetCaseSource = z.infer<typeof datasetCaseSource>;
 export const storedAssessment = z.object({
+  datasetCase:datasetCaseSource.optional(),
   graderId:z.string(),name:z.string(),version:z.number(),category:z.string(),engine:graderType,threshold:z.number(),
   judge:z.string().nullable(),value:z.number().min(0).max(1).nullable(),pass:z.boolean().nullable(),reason:z.string(),
   decisionRequest:z.object({
@@ -65,7 +71,7 @@ export const storedAssessment = z.object({
   evidence:z.object({output:z.string()}).passthrough().optional(),
 });
 export type AssessmentEntry = z.infer<typeof storedAssessment>;
-export type GraderAssessment = Omit<AssessmentEntry,"id"|"created"|"evidence">;
+export type GraderAssessment = Omit<AssessmentEntry,"id"|"created"|"evidence"|"datasetCase">;
 export type RecordedAssessment = AssessmentEntry & {candidate:string;caseId:string};
 interface DefinitionFields {
   name:string;category:string;industry:string;criteria:string;threshold:number;

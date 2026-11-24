@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import {validateMetricAudit} from "../lib/metric-audit.cjs";
 import { Bench } from "../lib/bench.cjs";
 import { designGraderPlan, confirmGraderPlan } from "../lib/grader-designer.cjs";
 
@@ -281,4 +282,65 @@ test("handoff requirement is assessed on the future answer; post-dispatch warran
   const empty=await designGraderPlan(bench,{domainId:"Manufacturing",objective:external});
   assert.equal(empty.checks.length,0);assert.equal(attempts,2);assert.equal(empty.designer,null);
   smuggle=true;await assert.rejects(designGraderPlan(bench,request),/cannot earn credit for achieving/);
+});
+
+test("the earnings brief keeps aggregate gaps separate from an anchored task rubric",async t=>{
+  const model:LocalCandidate={kind:"model",id:"lmstudio/lfm3-fixture",provider:"lmstudio",model:"lfm3-fixture",loaded:true};
+  const inv=[inventory([model])];
+  const objective="Identify earnings figures needing review. Cite the reported basis and period. Synthetic release: for the quarter ended June 30, diluted GAAP EPS was $0.74 and adjusted EPS was $0.85. No reconciliation was supplied.";
+  const metric="Percentage of figures lacking a reconciliation across all releases";
+  let requests=0;
+  const b=new Bench(":memory:",{discover:async()=>inv,invoke:async(_model,messages,options)=>{
+    requests++;
+    const input=z.object({objective:z.string(),focus:z.string(),automatic:z.array(z.unknown())}).parse(JSON.parse(messages[1].content));
+    assert.equal(input.objective,objective);
+    if(input.focus==="success-measures"){
+      assert.ok(!allowedChoices(options.structured,"M1").some(value=>/^A\d+$/.test(value)));
+      return reply(JSON.stringify({M1:{choice:"SKIP",reason:"The denominator across all releases is unavailable."}}));
+    }
+    assert.equal(input.focus,"task-objective");
+    assert.equal(input.automatic.length,0);
+    return reply(JSON.stringify({M1:{choice:"NEW:judge",name:"Reported EPS and review flag",criteria:"Compare the answer's EPS basis, period and reconciliation flag with the source.",
+      threshold:0.8,reason:"Use the release to verify the accounting basis and identify the missing reconciliation.",
+      anchors:{full:requests===2?"Both figures and bases from the 2025 release.":"Both figures and bases, the reported period and the missing reconciliation match the release.",
+        partial:"Both figures and bases are correct but the period or review flag is omitted.",zero:"The answer swaps a basis or invents a reconciliation.",evidence:"reference"}}}));
+  }});
+  t.after(()=>b.db.close());b.servers=inv;
+  const ds=present(b.list().datasets.find(d=>d.pack==="earnings"));
+  const plan=await designGraderPlan(b,{datasetId:ds.id,objective,metrics:metric});
+  assert.equal(requests,3);assert.equal(plan.agent.version,5);
+  assert.deepEqual(plan.gaps,[{measure:metric,reason:"The denominator across all releases is unavailable."}]);
+  const rule=present(plan.checks[0]);
+  assert.equal(rule.type,"opik");assert.equal(rule.evidenceView,"case");
+  assert.match(rule.criteria,/Zero credit \(0\): The answer swaps a basis/);
+  assert.doesNotMatch(rule.criteria,/nonconforming|denominator|2024/);
+  const [id]=confirmGraderPlan(b,{draftId:plan.draftId,choices:[{index:0,action:"create",definition:{
+    name:rule.name,category:rule.category,threshold:rule.threshold,criteria:rule.criteria,judgeId:model.id}}]});
+  const grader=b.graders.get(id);
+  const good="Quarter ended June 30: diluted GAAP EPS $0.74 and adjusted EPS $0.85. Flag the missing reconciliation.";
+  const partial="Diluted GAAP EPS was $0.74 and adjusted EPS was $0.85.";
+  const swap="For the quarter ended June 30, diluted GAAP EPS was $0.85 and adjusted EPS was $0.74. Flag missing reconciliation.";
+  let scores=0;
+  const adapter:RuntimeAdapters={discover:async()=>inv,invoke:async(_,messages)=>{
+    const request=opikJudgeRequest(messages);
+    if(request?.stage!=="geval-score")return reply("Check whether the answer matches the requested basis, period and review flag.");
+    assert.equal(request.evidence.input,objective);assert.ok(request.evidence.reference);scores++;
+    const score=request.evidence.output===good?10:request.evidence.output===partial?5:0;
+    return reply(JSON.stringify({score,reason:score===10?"All requested facts match.":score===5?"The reporting period is absent.":"The accounting bases are reversed."}));
+  }};
+  const score=(output:string,reference:string|null)=>b.graders.assess(grader,{input:objective,output,reference},adapter,AbortSignal.timeout(5000));
+  for(const [output,expected,pass] of [[good,1,true],[partial,.5,false],[swap,0,false]] as const){
+    const result=await score(output,objective);assert.equal(result.value,expected);assert.equal(result.pass,pass);
+  }
+  const missing=await score(good,null);assert.equal(missing.value,null);assert.equal(missing.pass,null);assert.equal(scores,3);
+});
+
+test("automatically proposed measures stay grounded and explicitly requested measures stay available for review",()=>{
+  const row=(metric:string,criterion:string)=>({metric,criterion,status:"needs-evidence",evidence:"A labeled source.",method:"Compare case evidence.",reason:"Check the supported result."});
+  const earnings=row("Share of EPS figures with the correct accounting basis","Match the GAAP and adjusted EPS figures to their release labels.");
+  const drift=row("Count of nonconforming items identified in sampled data","Check each sampled lot for out-of-tolerance parts.");
+  const objective="Identify earnings figures for analyst review and cite each accounting basis and reporting period.";
+  const review=(selected:{metric:string;criterion:string}[]|null)=>validateMetricAudit({audit:[earnings,drift]},objective,null,undefined,"",[],selected);
+  assert.deepEqual(review(null).map(r=>r.metric),[earnings.metric]);
+  assert.deepEqual(review([{metric:drift.metric,criterion:drift.criterion}]).map(r=>r.metric),[drift.metric]);
 });

@@ -108,7 +108,7 @@ function scoreRows(rows:UiAssessment[]){
     const probability=d?'<small class="block">P(yes) '+esc(d.probabilityYes)+' · fail ≤ '+esc(d.failAt)+' · pass ≥ '+esc(d.passAt)+'</small>':"";
     const native=r.opikMetric?'<small class="block">Opik '+(r.opikMetric.direction==="higher-is-risk"?"raw risk":"native score")+' · '+esc(r.opikMetric.nativeScore)+'</small>':"";
     const outcome=r.pass==null ? d ? "Abstained · unscored" : "Unscored" : r.pass ? "Passed" : (d || r.engine==="decision") ? "Failed" : "Review";
-    return [esc(r.name+" v"+r.version)+model+requested+usedFallback,esc([r.candidate,r.caseId].filter(Boolean).join(" / ")||"Provided output"),
+    return [esc(r.name+" v"+r.version)+model+requested+usedFallback,esc(r.datasetCase ? [r.datasetCase.datasetName,r.datasetCase.datasetVersion,r.datasetCase.caseId].join(" · ") : [r.candidate,r.caseId].filter(Boolean).join(" / ") || "Provided output"),
       r.value==null?"—":esc(metricNumber(r.value)),esc(outcome),esc(r.reason)+probability+native];
   })):"";
 }
@@ -185,7 +185,7 @@ function gradeCreate(){
     {name:"",category:"",industry:"Cross-industry",criteria:"",type:"opik",threshold:1};
   const inherited=graderDraft?.library?.scenario;
   const lockIndustry=!!inherited;
-  const caption=graderTemplate?"Set up "+graderTemplate.name:graderEditIntent==="derive"?"Customize "+(graderDraft?.name || "grader"):graderEditIntent==="revise"?"Revise "+(graderDraft?.name || "grader"):"Create a grader";
+  const caption=graderTemplate?"Set up "+graderTemplate.name:graderEditIntent==="derive"?"Create a personal version of "+(graderDraft?.name || "grader"):graderEditIntent==="revise"?"Revise "+(graderDraft?.name || "grader"):"Create a grader";
   const editing=!!(graderDraft || graderTemplate);
   const manual='<form id="grade-create" data-method="'+esc(g.type)+'" class="spacer">'+(graderDraft?'<p class="muted">'+esc((graderEditIntent==="derive"?"Based on ":"Previous revision · ")+graderDraft.name+" v"+graderDraft.version+
       (inherited?" · "+graderScenario(graderDraft):""))+'</p>':'')+'<div class="cols">'+
@@ -265,14 +265,17 @@ function showSampleEvidence(g:UiGrader) {
   const needed=[...(reference?["a reference answer"]:[]),...(steps?["observed agent steps"]:[])];
   $("summary",detail).textContent=needed.length ? "This grader needs "+needed.join(" and ") : "Reference and agent trajectory";
 }
-function graderUseActions(g:UiGrader,source?:string) {
+function graderUseActions(g:UiGrader,source?:string,versionAction?:"revise"|"customize") {
   const sampleOnly=g.type==="trajectory" || g.requiredEvidence?.includes("trajectory");
+  const caseTest=g.type==="catalog" && !!g.library?.scenario;
   const sampleAvailable=g.type!=="catalog";
   const run=!g.library?.automatic && !sampleOnly;
-  if (!run && !sampleAvailable) return "";
+  if (!run && !sampleAvailable && !caseTest && !versionAction) return "";
   return '<div class="gc-use" data-use-version="'+esc(g.id)+'"'+(source?' data-source-dataset="'+esc(source)+'"':'')+'>'+
-    (run?'<button type="button" data-grade-run>Use in a dataset run</button>':'')+
-    (sampleAvailable?'<button type="button" class="gc-secondary" data-grade-test '+(pendingSample?"disabled":"")+'>Test one output</button>':'')+
+    (versionAction?'<button type="button" data-'+versionAction+'="'+esc(g.id)+'">Create Version</button>':'')+
+    (caseTest?'<button type="button" data-industry-test>Test</button>':
+      sampleAvailable?'<button type="button" class="gc-secondary" data-grade-test '+(pendingSample?"disabled":"")+'>'+(versionAction?"Test":"Test one output")+'</button>':'')+
+    (run?'<button type="button" data-grade-run>'+(versionAction?'Use in Run':'Use in a dataset run')+'</button>':'')+
     (sampleOnly?'<small>Supply observed agent steps in the output test.</small>':'')+
     '<div class="gc-target" hidden></div></div>';
 }
@@ -369,12 +372,21 @@ function catalogRevision(g:UiGrader,latest:boolean) {
   const ancestry=parent ? (parent.library?.familyId && parent.library.familyId===g.library?.familyId?"Previous revision":"Based on")+" · "+parent.name+" v"+parent.version : "";
   const text=[g.name,g.category,g.industry,g.criteria,graderScenario(g),graderTypes[g.type]];
   const edit=scope==="customer" && latest ? "revise":"customize";
-  return '<article class="grader-row" data-grade-version="'+esc(g.id)+'" data-filter="'+esc(text.join(" ").toLowerCase())+'"><div class="gc-revision-head"><div><strong>'+
-    esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc([g.category,graderApplicability(g)].filter(Boolean).join(" · "))+'</small></div>'+
-    '<small>'+esc(use)+'</small></div><p>'+esc(g.criteria)+'</p>'+
-    (ancestry?'<small class="block">'+esc(ancestry)+'</small>':"")+
-    graderUseActions(g)+'<details class="gc-manage"><summary>Manage version</summary><div class="gc-actions"><button type="button" data-'+edit+'="'+esc(g.id)+'">'+(edit==="revise"?"Revise":"Customize")+'</button>'+
-    '<button type="button" data-grade-history="'+esc(g.id)+'" aria-expanded="false">Runs using v'+esc(g.version)+'</button>'+defaultToggle+'</div>'+(replaced?'<small>Using this version on new runs replaces '+esc(replaced.name+' v'+replaced.version)+' as the automatic metric.</small>':'')+
+  const industry=scope==="industry";
+  const summary=g.criteria.split(/(?<=[.!?])\s|\n/)[0] || g.category;
+  const description=summary.length>155 ? summary.slice(0,152).replace(/\s+\S*$/,"")+"…" : summary;
+  const detailsId="grader-info-"+g.id;
+  const more='<p>'+esc(g.criteria)+'</p><small>'+esc(graderApplicability(g))+'</small><small>'+esc("Pass threshold · "+g.threshold+" / 1")+'</small>';
+  const title='<strong>'+esc(g.name)+'</strong> <small class="gc-version">v'+esc(g.version)+'</small>';
+  return '<article class="grader-row'+(industry?' gc-card':'')+'" data-grade-version="'+esc(g.id)+'" data-filter="'+esc(text.join(" ").toLowerCase())+'">'+
+    '<div class="gc-revision-head"><div>'+title+'</div>'+(industry?'<button type="button" class="gc-info" data-grader-details aria-expanded="false" aria-controls="'+esc(detailsId)+'">Details</button>':'<small>'+esc(use)+'</small>')+'</div>'+
+    '<p class="gc-description">'+esc(industry?description:g.criteria)+'</p>'+
+    (ancestry?'<small class="block">'+esc(ancestry)+'</small>':'')+
+    graderUseActions(g,undefined,edit)+
+    (industry?'<div class="gc-detail-body" id="'+esc(detailsId)+'" hidden>'+more+'</div>':'')+
+    '<details class="gc-manage"><summary>'+(industry?'Run history':'Manage version')+'</summary><div class="gc-actions">'+
+    '<button type="button" data-grade-history="'+esc(g.id)+'" aria-expanded="false">Runs using v'+esc(g.version)+'</button>'+defaultToggle+'</div>'+
+    (replaced?'<small>Using this version on new runs replaces '+esc(replaced.name+' v'+replaced.version)+' as the automatic metric.</small>':'')+
     '<div class="gc-uses" data-grade-uses hidden role="status"></div></details></article>';
 }
 function nativeMetricTemplates() {
@@ -390,10 +402,19 @@ function familyRevisionList(items:UiGrader[]) {
 }
 function catalogSection(scope:UiGraderScope,title:string) {
   const items=state.graders.filter(g=>graderScope(g)===scope);
-  const body=scope==="industry"?[...new Set(items.map(g=>g.industry))].sort().map(industry=>
-    '<div class="gc-industry"><h4>'+esc(industry)+'</h4>'+familyRevisionList(items.filter(g=>g.industry===industry))+'</div>').join(""):familyRevisionList(items);
+  const groups=new Map<string,UiGrader[]>();
+  if(scope==="industry") for(const item of items){
+    const group=groups.get(item.industry);
+    if(group)group.push(item);else groups.set(item.industry,[item]);
+  }
+  const body=scope==="industry"?'<div class="gc-shelves">'+[...groups].sort(([a],[b])=>a.localeCompare(b)).map(([industry,graders])=>{
+    const icon=industry==="Financial Services"?"finance-i":industry==="Manufacturing"?"factory-i":"case-i";
+    const count=new Set(graders.map(g=>g.library?.familyId || g.id)).size;
+    return '<section class="gc-industry"><div class="gc-shelf-head"><span class="gc-domain-mark '+icon+'">'+svg(icon)+'</span><h4>'+esc(industry)+'</h4>'+
+      '<small>'+count+' '+(count===1?'grader':'graders')+'</small></div>'+familyRevisionList(graders)+'</section>';
+  }).join("")+'</div>':familyRevisionList(items);
   const templates=scope==="general"?nativeMetricTemplates():"";
-  return '<section class="panel gc-section" data-catalog-scope="'+scope+'"><h3>'+title+'</h3>'+body+templates+
+  return '<section class="panel gc-section" data-catalog-scope="'+scope+'" tabindex="-1"><h3>'+title+'</h3>'+body+templates+
     (!items.length && !templates?'<p class="muted">'+(scope==="customer"?"Save a grader or customize a shipped version to start your collection.":"No graders in this section.")+'</p>':'')+'</section>';
 }
 function applyCatalogFilter(){
@@ -411,9 +432,46 @@ function applyCatalogFilter(){
   });
   for(const section of document.querySelectorAll<HTMLElement>(".gc-section,.gc-industry,.gc-templates"))
     section.hidden=!!query && !section.querySelector(".grader-row:not([hidden])");
+  for(const jump of document.querySelectorAll<HTMLButtonElement>("[data-catalog-jump]")){
+    jump.disabled=!!document.querySelector('[data-catalog-scope="'+jump.dataset.catalogJump+'"][hidden]');
+  }
   const empty=document.getElementById("gc-no-matches");
   if(empty)empty.hidden=!query || !!document.querySelector(".gc-section:not([hidden])");
 }
+function setCardDetails(card:HTMLElement,open:boolean) {
+  const button=card.querySelector<HTMLButtonElement>("[data-grader-details]");
+  const detail=card.querySelector<HTMLElement>(".gc-detail-body");
+  if(!button || !detail)return;
+  button.setAttribute("aria-expanded",String(open));
+  detail.hidden=!open;
+}
+function previewCard(event:PointerEvent,open:boolean) {
+  if(event.pointerType!=="mouse" || !(event.target instanceof Element))return;
+  const card=event.target.closest<HTMLElement>(".gc-card");
+  if(!card || card.hasAttribute("data-info-pinned") || (event.relatedTarget instanceof Node && card.contains(event.relatedTarget)))return;
+  if(!open && card.querySelector("[data-grader-details]:focus-visible"))return;
+  setCardDetails(card,open);
+}
+document.addEventListener("pointerover",event=>previewCard(event,true));
+document.addEventListener("pointerout",event=>previewCard(event,false));
+document.addEventListener("focusin",event=>{
+  if(event.target instanceof HTMLElement && event.target.matches("[data-grader-details]:focus-visible")){
+    const card=event.target.closest<HTMLElement>(".gc-card");
+    if(card)setCardDetails(card,true);
+  }
+});
+document.addEventListener("focusout",event=>{
+  if(!(event.target instanceof HTMLElement) || !event.target.matches("[data-grader-details]"))return;
+  const card=event.target.closest<HTMLElement>(".gc-card");
+  if(card && !card.hasAttribute("data-info-pinned"))setCardDetails(card,false);
+});
+document.addEventListener("keydown",event=>{
+  if(event.key!=="Escape")return;
+  for(const card of document.querySelectorAll<HTMLElement>(".gc-card:has([data-grader-details][aria-expanded=true])")){
+    delete card.dataset.infoPinned;
+    setCardDetails(card,false);
+  }
+});
 async function sampleHistory(){
   try{
     const rows=await api.graderSamples();
@@ -439,9 +497,10 @@ async function gradersPage(){
     '<button class="yellow spacer" type="submit" '+(pendingSample || !state.graders.length?'disabled':'')+'>'+(pendingSample?'Scoring…':'Score this output')+'</button></fieldset><div data-sample-recovery>'+sampleRecovery()+'</div></form>'+
     '<div id="grade-sample-scores" tabindex="-1">'+history+'</div></details>';
   return heading("Workspace","Graders","A grader scores a model or agent answer against your success criteria. Create one or use a saved version below.")+
-    workspaceGraderReceipt()+gradeCreate()+outputTest+bar("Grader library")+
+    gradeCreate()+workspaceGraderReceipt()+bar("Grader library",'<div class="gc-jumps"><button type="button" data-catalog-jump="customer">My Graders ↓</button><button type="button" data-catalog-jump="general">General ↓</button></div>')+
     formField("Search graders",'<input type="search" id="grade-filter" value="'+esc(gradeFilter)+'" placeholder="Name, industry, scenario or criterion">')+
-    [...catalogSections].reverse().map(s=>catalogSection(s.scope,s.title)).join("")+'<p id="gc-no-matches" hidden role="status">No matching graders.</p>';
+    catalogSection("industry","Industry catalogue")+catalogSection("customer","My Graders")+catalogSection("general","General")+
+    '<p id="gc-no-matches" hidden role="status">No matching graders.</p>'+outputTest;
 }
 function caseGrading(run:UiRunDetail,r:UiResult,index:number){
   const rows=(run.assessments||[]).filter(a=>a.caseId===r.caseId && a.candidate===r.candidateId);
@@ -525,6 +584,18 @@ document.addEventListener("change",e=>{
 });
 document.addEventListener("click",async e=>{
   if (!(e.target instanceof Element)) return;
+  const detail=e.target.closest<HTMLButtonElement>("[data-grader-details]");
+  const card=detail?.closest<HTMLElement>(".gc-card");
+  if(card){
+    const pinned=card.toggleAttribute("data-info-pinned");
+    setCardDetails(card,pinned);return;
+  }
+  const jump=e.target.closest<HTMLButtonElement>("[data-catalog-jump]");
+  if(jump){
+    const section=[...document.querySelectorAll<HTMLElement>("[data-catalog-scope]")].find(s=>s.dataset.catalogScope===jump.dataset.catalogJump);
+    if(section && !section.hidden){section.focus({preventScroll:true});section.scrollIntoView({block:"start"});}
+    return;
+  }
   const action=e.target.closest<HTMLButtonElement>("[data-grade-run],[data-grade-continue],[data-grade-cancel],[data-grade-test]");
   const host=action?.closest<HTMLElement>("[data-use-version]");
   if(action && host){

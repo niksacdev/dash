@@ -6,6 +6,7 @@ import type {DatabaseSync} from "node:sqlite";
 import {graderProducer,rubricEvidenceView,type GraderSpec} from "./grader-types.cjs";
 import {randomUUID,createHash} from "node:crypto";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
+import {isInformationalRule} from "./grader-catalog.cjs";
 import {getOpikTemplate} from "./opik-library.cjs";
 import type {Graders} from "./graders.cjs";
 import type {ApprovedPrompt} from "./outcome-workflow.cjs";
@@ -37,7 +38,8 @@ const proposedSchema=z.object({name:z.string(),category:z.string(),industry:z.st
   type:z.enum(["contains","exact","field","trajectory","judge","opik","decision","catalog","opik-metric"]),reason:z.string(),
   evidenceView:rubricEvidenceView.optional(),requiredEvidence:z.array(z.enum(["reference","trajectory"])).optional(),action:z.enum(["reuse","derive","create"]),source:sourceSchema.nullable()});
 type Proposed=z.infer<typeof proposedSchema>;
-const draftSchema=z.object({request:designRequest,producer:graderProducer.optional(),checks:z.array(proposedSchema).max(8)});
+const coveredMeasureSchema=z.object({measure:z.string(),reason:z.string(),grader:z.object({id:textId,name:z.string(),version:z.number().int().positive()})});
+const draftSchema=z.object({request:designRequest,producer:graderProducer.optional(),checks:z.array(proposedSchema).max(8),covered:z.array(coveredMeasureSchema).optional()});
 const editableMethod=z.enum(["opik","contains","exact","field","trajectory"]);
 const reviewFields=z.strictObject({evidenceView:rubricEvidenceView.optional(),type:editableMethod.optional(),industry:z.string().trim().min(1).max(100).optional(),name:z.string().trim().min(1).max(100),category:z.string().trim().min(1).max(100),
   criteria:z.string().trim().min(1).max(6000),threshold:z.number().gt(0).lte(1),judgeId:textId.nullable().optional()});
@@ -63,13 +65,13 @@ function gradingBrief(bench:DesignerBench, request:z.infer<typeof designRequest>
   if (request.domainId && !isDomain(request.domainId)) throw Error("Choose a registered domain.");
   const domain = approved?.domain || dataset?.metadata.industry || request.domainId || "Cross-industry";
   const industry = bounded(domain,100,"an industry");
-  const target = approved || dataset ? "response" : request.target === "agent" ? "agent" : "response";
+  const target = dataset || request.target !== "agent" ? "response" : "agent";
   const references = dataset?.rows.map(r=>r.reference ?? r.gold) || [];
   const referenceFields = Object.keys(references[0] && typeof references[0]==="object" && !Array.isArray(references[0]) ? references[0] : {})
     .filter(k=>references.every(item=>isRecord(item) && Object.hasOwn(item,k)));
   const referenceCount=references.filter(value=>value!=null && value!=="").length;
   const referenceCoverage=referenceCount===0?"none":referenceCount===references.length?"all":"partial";
-  return { objective, metrics, industry, target, criteria:approved?.requirements || [], referenceFields,referenceCoverage,
+  return { objective, ...(approved && {approvedPrompt:approved.prompt,metricAudit:approved.metricAudit?.filter(row=>metrics.includes(row.metric))}), metrics, industry, target, criteria:approved?.requirements || [], referenceFields,referenceCoverage,
     outputFields:Object.keys(pack?.outputSchema?.properties || {}), existingScorer:pack?.kind==="reference"?null:pack?.scorer };
 }
 
@@ -96,9 +98,11 @@ type Request=z.infer<typeof designRequest>;
 function choicesFor(bench:DesignerBench,request:Request,industry:string):CatalogOptions {
   if(request.promptId){
     const prompt=bench.workflow.get(request.promptId);
-    if(prompt.mode==="quick") return bench.quickGraderOptions(request.promptId);
-    if(!prompt.datasetId) throw Error("The approved dataset prompt has no saved snapshot.");
-    return bench.datasetGraderOptions(prompt.datasetId);
+    if(prompt.mode==="dataset"){
+      if(!prompt.datasetId) throw Error("The approved dataset prompt has no saved snapshot.");
+      return bench.datasetGraderOptions(prompt.datasetId);
+    }
+    if(request.target!=="agent") return bench.quickGraderOptions(request.promptId);
   }
   if(request.datasetId) return bench.datasetGraderOptions(request.datasetId);
   const entries=bench.graders.list();
@@ -193,18 +197,20 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
     const candidates=candidatesFor(options,brief);
     const choices=candidates.map((g,i)=>({option:"G"+(i+1),name:g.name,version:g.version,scope:g.library?.scope ?? "customer",
       method:g.type,criterion:g.criteria.slice(0,1000),category:g.category}));
-    const automatic=options.automatic.map(g=>({name:g.name,criteria:g.criteria}));
+    const describeDefault=(g:GraderSpec)=>({name:g.name,criteria:g.criteria,diagnostic:g.type==="catalog" && isInformationalRule(g.ruleKey)});
+    const localDefaults=options.automatic.map((g,i)=>({...describeDefault(g),option:"A"+(i+1)}));
+    const defaultSource=new Map(localDefaults.map((entry,i)=>[entry.option,options.automatic[i]]));
     const methods=supportedMethods(brief,literals);
-    const goals=[...new Set(brief.metrics)].map((metric,i)=>({key:"M"+(i+1),metric,external:isExternalOutcomeMetric(metric),answerContent:asksForAnswerContent(metric)}));
+    const goals=[...new Set(brief.metrics)].map((metric,i)=>({key:"M"+(i+1),metric,external:brief.metricAudit?.some(row=>row.metric===metric && row.status==="external") || isExternalOutcomeMetric(metric),answerContent:asksForAnswerContent(metric)}));
     if(!goals.length)throw Error("Enter at least one success measure.");
-    const numberedAutomatic=(rows:typeof automatic)=>rows.map((g,i)=>({...g,option:"A"+(i+1)}));
     const route=await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),()=>{});
     const agent=loadAgent("grader-designer");
     type Visible=typeof choices;
-    type Defaults=ReturnType<typeof numberedAutomatic>;
-    function proposalSchema(visible:Visible,defaults:Defaults){
+    type Defaults=typeof localDefaults;
+    type Goals=typeof goals;
+    function proposalSchema(goals:Goals,visible:Visible,defaults:Defaults){
       const catalogOptions=visible.map(x=>x.option);
-      const simple=["SKIP",...catalogOptions,...defaults.map(x=>x.option)];
+      const simple=(metric:string)=>["SKIP",...catalogOptions,...defaults.filter(d=>!d.diagnostic || d.name.toLowerCase()===metric.toLowerCase()).map(d=>d.option)];
       const comment={type:"string",minLength:1,maxLength:400};
       const writeFields={reason:comment,name:{type:"string",minLength:1,maxLength:100},criteria:{type:"string",minLength:1,maxLength:1900},
         threshold:{type:"number",exclusiveMinimum:0,maximum:1}};
@@ -212,8 +218,8 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
       const evidence=["response",...(brief.referenceCoverage==="none"?[]:["reference"]),...(brief.target==="agent"?["trajectory"]:[]),
         ...(brief.referenceCoverage!=="none" && brief.target==="agent"?["reference-and-trajectory"]:[])];
       const mechanical=methods.filter(m=>m!=="judge").map(m=>"NEW:"+m);
-      const resolution=(answerContent:boolean)=>({anyOf:[
-        ...(!answerContent || catalogOptions.length?[{type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:answerContent?catalogOptions:simple},reason:comment}}]:[]),
+      const resolution=(answerContent:boolean,metric:string)=>({anyOf:[
+        ...(!answerContent || catalogOptions.length?[{type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:answerContent?catalogOptions:simple(metric)},reason:comment}}]:[]),
         ...(mechanical.length?[{type:"object",additionalProperties:false,required:["choice","reason","name","criteria","threshold"],
           properties:{choice:{type:"string",enum:mechanical},...writeFields}}]:[]),
         {type:"object",additionalProperties:false,required:["choice","reason","name","criteria","threshold","anchors"],properties:{
@@ -222,18 +228,22 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
             properties:{full:anchor,partial:anchor,zero:anchor,evidence:{type:"string",enum:evidence}}}}},
       ]});
       return {type:"object",additionalProperties:false,required:goals.map(g=>g.key),
-        properties:Object.fromEntries(goals.map(g=>[g.key,g.external?{anyOf:[{type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:["SKIP"]},reason:comment}}]}:resolution(g.answerContent)]))};
+        properties:Object.fromEntries(goals.map(g=>[g.key,g.external?{anyOf:[{type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:["SKIP"]},reason:comment}}]}:resolution(g.answerContent,g.metric)]))};
     }
-    function parsePlan(output:Record<string,unknown>,visible:Visible,defaults:Defaults){
+    function parsePlan(goals:Goals,output:Record<string,unknown>,visible:Visible,defaults:Defaults){
       if(Object.keys(output).length!==goals.length || goals.some(g=>!Object.hasOwn(output,g.key)))
         throw Error("Return one assignment per measure key. Do not return lists of new checks and catalog choices.");
       const checks:Proposed[]=[];
       const summaries:string[]=[];
+      const gaps:{measure:string;reason:string}[]=[];
+      const covered:z.infer<typeof coveredMeasureSchema>[]=[];
       const byDefinition=new Map<string,Proposed>();
       const sameText=(a:string,b:string)=>a.trim().toLowerCase()===b.trim().toLowerCase();
       for(const {key,metric,external,answerContent} of goals){
         if(external){
-          summaries.push(metric+" — unscored. Verify the realized outcome with operating records and a comparable baseline.");
+          const reason="Verify the realized outcome with operating records and a comparable baseline.";
+          gaps.push({measure:metric,reason});
+          summaries.push(metric+" — unscored. "+reason);
           continue;
         }
         const pick=assignmentSchema.parse(output[key]);
@@ -243,10 +253,17 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
         if(!editing && !creating && "criteria" in pick)throw Error("An exact reuse or skip cannot contain modified criteria. Choose ADAPT for a changed rubric.");
         if(pick.choice==="SKIP"){
           if(answerContent || /\bskip (?:is not|isn\x27t) appropriate\b/i.test(rationale) || skipsFutureAnswer(rationale))throw Error(key+": the candidate answer is guaranteed at scoring time. Design the per-answer check. Skip only if a specific independent source is required and unavailable");
+          gaps.push({measure:metric,reason:rationale});
           summaries.push(metric+" — unscored. "+rationale);continue;
         }
-        if(auto && answerContent)throw Error("A general completion or response-presence diagnostic cannot grade the requested details in an answer. Select a fitting catalog check or design a rubric");
-        if(auto){summaries.push(metric+" — already checked by "+auto.name+".");continue;}
+        if(auto && (answerContent || (auto.diagnostic && !sameText(auto.name,metric))))throw Error("A runtime diagnostic cannot evaluate this success measure. Choose a matching business rubric or explain the missing evidence.");
+        if(auto){
+          const source=defaultSource.get(auto.option);
+          if(!source)throw Error("The automatic grader version is unavailable. Prepare a new plan.");
+          covered.push({measure:metric,reason:rationale,grader:{id:source.id,name:source.name,version:source.version}});
+          summaries.push(metric+" — already checked by "+source.name+" v"+source.version+".");
+          continue;
+        }
         const handle=editing?pick.choice.slice(6):pick.choice;
         const existing=visible.find(v=>v.option===handle);
         const source=existing?candidates[choices.indexOf(existing)]:undefined;
@@ -272,6 +289,12 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
           if(method==="judge"){
             if(!anchors || new Set([anchors.full,anchors.partial,anchors.zero].map(v=>v.toLowerCase())).size!==3)
               throw Error("Provide three distinct observable anchors for full, partial and zero credit.");
+            // A journal year or quoted amount added by the designer becomes an invalid
+            // grading target. Only the approved brief or an explicitly adapted rule can supply one.
+            const factualLiterals=(text:string)=>text.match(/\b(?:19|20)\d{2}\b|[$€£¥]\s*\d[\d,]*(?:\.\d+)?/gu) ?? [];
+            const supplied=new Set(factualLiterals([brief.objective,brief.approvedPrompt,...brief.metrics,...brief.criteria,source?.criteria].join(" ")));
+            if(factualLiterals([criteria,anchors.full,anchors.partial,anchors.zero].join(" ")).some(value=>!supplied.has(value)))
+              throw Error("The rubric invented a year or currency amount. Compare the answer with each case's stated period and amount without inserting a date or figure.");
             if(rewardsExternalOutcome(criteria,anchors.full,anchors.partial))
               throw Error("Grade the observable success measure. A candidate answer cannot earn credit for achieving or claiming a real-world financial or operational outcome");
             requiredEvidence=[];
@@ -284,7 +307,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
             const instructions=binaryCount?["Count this answer once if it meets every stated condition in the measure.",
               "Full credit (10): the candidate answer explicitly includes every element required by this measure.","Partial credit (5): unavailable for this binary count.",
               "Zero credit (0): one or more required conditions are absent. Use only 0 or 10."]:
-              [criteria,"Full credit (10): "+anchors.full,"Partial credit (5): "+anchors.partial,"Zero credit (0): "+anchors.zero,
+              [criteria,"Only the candidate output establishes what the candidate said. Compare its claims with the supplied evidence. Do not credit facts stated only in the task, reference or rubric.","Full credit (10): "+anchors.full,"Partial credit (5): "+anchors.partial,"Zero credit (0): "+anchors.zero,
               "Apply the zero-credit condition first. Use partial credit only if that condition is absent. For a binary policy, use only 0 or 10."];
             criteria=bounded(["Success measure: "+metric,...instructions,requiredEvidence.length?"Missing "+requiredEvidence.join(" or ")+" evidence leaves the case unscored.":
                 "Use the selected evidence view. External outcomes require separate records."].join("\n"),6000,"grading criteria");
@@ -305,26 +328,43 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown) {
           (check.action==="reuse"?" v"+check.source?.version:"")+".");
       }
       if(checks.length>8)throw Error("These measures require more than eight distinct graders. Group related measures or use separate runs.");
-      return {summary:summaries.join("\n"),checks};
+      return {summary:summaries.join("\n"),checks,gaps,covered};
     }
     const publicChoices=choices.filter(c=>c.scope!=="customer");
-    const publicDefaults=numberedAutomatic(options.automatic.flatMap(g=>g.library?.scope==="general"?[{name:g.name,criteria:g.criteria}]:
-      g.type==="opik-metric"?[getOpikTemplate(g.metricKey)]:[]));
-    const localDefaults=numberedAutomatic(automatic);
-    const payload={evaluationPhase:{now:"Design a grader BEFORE inference.",atScoring:"Every grader receives the dispatched task and the candidate's generated answer, even without a dataset.",
-      aggregate:"For a share or rate of answers meeting a stated requirement, score the requirement once per answer. The run counts those cases.",
-      references:brief.referenceCoverage,observedAgentSteps:brief.target==="agent"?"when recorded":"none"},
-      ...brief,goals,allowedLiterals:literals,automatic:localDefaults,catalog:choices};
+    const publicDefaults=options.automatic.flatMap((g,i)=>{
+      const entry=localDefaults[i];
+      if(g.library?.scope==="general")return [entry];
+      if(g.type!=="opik-metric")return [];
+      const {name,criteria}=getOpikTemplate(g.metricKey);
+      return [{option:entry.option,name,criteria,diagnostic:false}];
+    });
+    async function assign(measures:Goals,focus:"success-measures"|"task-objective"){
+      // Coverage of the task itself is separate from the operator's aggregate KPIs.
+      const defaults=focus==="task-objective"?[]:localDefaults;
+      const sharedDefaults=focus==="task-objective"?[]:publicDefaults;
+      const payload={evaluationPhase:{now:"Design a grader BEFORE inference.",atScoring:"Every grader receives the dispatched task and the candidate's generated answer, even without a dataset.",
+        aggregate:"A per-answer check can define a numerator. Do not claim to have measured a population or an operational outcome.",
+        references:brief.referenceCoverage,observedAgentSteps:brief.target==="agent"?"when recorded":"none"},
+        ...brief,focus,goals:measures,allowedLiterals:literals,automatic:defaults,catalog:choices};
+      return route.ask("Grader designer",agent.instructions,payload,proposalSchema(measures,choices,defaults),
+        Math.min(4500,820*measures.length+320),output=>parsePlan(measures,output,choices,defaults),{
+          payload:{...payload,automatic:sharedDefaults,catalog:publicChoices},schema:proposalSchema(measures,publicChoices,sharedDefaults),
+          validate:output=>parsePlan(measures,output,publicChoices,sharedDefaults),
+        });
+    }
     const externalOnly=goals.every(goal=>goal.external);
-    const result=externalOnly?parsePlan(Object.fromEntries(goals.map(({key})=>[key,null])),[],[]):await route.ask("Grader designer",agent.instructions,payload,proposalSchema(choices,localDefaults),
-      Math.min(4500,820*goals.length+320),output=>parsePlan(output,choices,localDefaults),{
-        payload:{...payload,automatic:publicDefaults,catalog:publicChoices},schema:proposalSchema(publicChoices,publicDefaults),
-        validate:output=>parsePlan(output,publicChoices,publicDefaults),
-      });
+    const result=externalOnly?parsePlan(goals,Object.fromEntries(goals.map(({key})=>[key,null])),[],[]):await assign(goals,"success-measures");
+    if (!externalOnly && !result.checks.length && result.gaps.length && !isExternalOutcomeMetric(brief.objective)) {
+      const measure={key:"M1",metric:"Task response quality",answerContent:asksForAnswerContent(brief.objective),external:false};
+      const coverage=await assign([measure],"task-objective");
+      result.checks.push(...coverage.checks);
+      // Keep the original measure gaps visible even when an objective rubric is usable.
+      if(coverage.checks.length)result.summary+="\n"+coverage.summary;
+    }
     const draftId=randomUUID();draftTable(bench.db);
     bench.db.prepare("DELETE FROM grader_design_drafts WHERE created < ?").run(Date.now()-7*24*60*60*1000);
-    bench.db.prepare("INSERT INTO grader_design_drafts(id,created,draft) VALUES(?,?,?)").run(draftId,Date.now(),JSON.stringify(draftSchema.parse({request,checks:result.checks,...(route.designer && {producer:{agent:agentPin(agent),model:route.designer}})})));
-    return {draftId,...result,editableMethods:methods.map(m=>m==="judge"?"opik" as const:m),automatic:automatic.map(g=>g.name),designer:route.designer,agent:agentPin(agent),industry:brief.industry};
+    bench.db.prepare("INSERT INTO grader_design_drafts(id,created,draft) VALUES(?,?,?)").run(draftId,Date.now(),JSON.stringify(draftSchema.parse({request,checks:result.checks,covered:result.covered,...(route.designer && {producer:{agent:agentPin(agent),model:route.designer}})})));
+    return {draftId,...result,editableMethods:methods.map(m=>m==="judge"?"opik" as const:m),automatic:localDefaults.map(g=>g.name),designer:route.designer,agent:agentPin(agent),industry:brief.industry};
   } finally {bench.designing=false;}
 }
 export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
