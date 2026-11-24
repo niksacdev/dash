@@ -34,7 +34,7 @@ jobs:
       - run: npm ci
       - name: Build the Finder launcher from a fresh install
         run: |
-          npm run package:mac
+          npm run package:mac -- "$RUNNER_TEMP/DASH Applications"
           test -x node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
       - run: npm run check
       - name: Verify the macOS Finder launcher

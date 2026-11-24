@@ -19,7 +19,7 @@ npm start
 
 To run the Opik service locally with Docker, use `npm run setup:local` before starting DASH. The command configures the local dashboard and API for this user. [Local Opik guide](docs/guides/local-opik.md)
 
-On macOS, double-click `Open DASH.command` after installing dependencies to build and open the local **DASH.app** Finder launcher with its red D icon. To build it without opening a window, run `npm run package:mac` from `dash-desktop/`. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
+On macOS, double-click `Open DASH.command` after installing dependencies to build and open **DASH.app** from your user Applications folder (`~/Applications`). To build it without opening a window, run `npm run package:mac` from `dash-desktop/`. Switch **Light / Dark** beside **New run**. Your choice is saved on this device. [Light appearance](docs/design/overview-light.png)
 
 ### Choose a workflow
 

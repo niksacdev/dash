@@ -75,8 +75,9 @@ try {
     });
     require("./dist/main.cjs");
   `);
-  execFileSync(process.execPath, ["--experimental-strip-types", join(project, "scripts", "package-mac.mts")], {timeout:60_000});
-  const launcher = join(project, "..", "dist", "macos", "DASH.app");
+  const applications = join(temp, "User Applications");
+  execFileSync(process.execPath, ["--experimental-strip-types", join(project, "scripts", "package-mac.mts"), applications], {timeout:60_000});
+  const launcher = join(applications, "DASH.app");
   const plist = join(launcher, "Contents", "Info.plist");
   const value = (key:string) => execFileSync("plutil", ["-extract", key, "raw", plist], {encoding:"utf8"}).trim();
   assert.equal(value("CFBundleDisplayName"), "DASH");
