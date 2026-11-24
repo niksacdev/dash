@@ -74,6 +74,23 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     `document.documentElement.dataset.appearance === "${value}" &&
      document.querySelector('#appearance input[value="${value}"]').checked &&
      getComputedStyle(document.documentElement).colorScheme === "${value}"`;
+  async function checkControlColors() {
+    const colors = await js(`(() => {
+      const fill = element => getComputedStyle(element).backgroundColor;
+      return {
+        action: fill(document.querySelector('.header-actions .button')),
+        readout: fill(document.querySelector('.device-stat')),
+        selected: fill(document.querySelector('#appearance input:checked + span')),
+        idle: fill(document.querySelector('#appearance input:not(:checked) + span')),
+        carousel: Array.from(document.querySelectorAll('[data-carousel]'), fill),
+      };
+    })()`);
+    const palette = z.object({action:z.string(), readout:z.string(), selected:z.string(), idle:z.string(), carousel:z.array(z.string()).length(3)}).parse(colors);
+    assert.equal(palette.action, "rgb(255, 207, 0)");
+    assert.notEqual(palette.selected, palette.idle, "The selected theme has a distinct surface");
+    for (const fill of [palette.readout, palette.selected, palette.idle, ...palette.carousel])
+      assert.notEqual(fill, palette.action, "Presentation controls have a separate style from New run");
+  }
   const open = "document.querySelector('#device-details').matches(':popover-open')";
 
   try {
@@ -96,6 +113,7 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     })()`);
     assert.equal(artLoaded, true, "The actual banner artwork must load");
     await send("Emulation.setEmulatedMedia", {features:[{name:"prefers-reduced-motion",value:"reduce"}]});
+    await checkControlColors();
     await screenshot("overview-light.png");
     const lightCanvas = await js("getComputedStyle(document.documentElement).backgroundColor");
 
@@ -112,6 +130,7 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
       {label:"Light",value:"light",checked:false},
       {label:"Dark",value:"dark",checked:true},
     ],"Appearance choices and checked label must survive a restart");
+    await checkControlColors();
     await screenshot("overview-dark.png");
 
     assert.equal(detailedSamples,0,"Idle Overview must only request the lightweight power reading");

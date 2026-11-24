@@ -22,8 +22,8 @@ body:has(.overview) .desk > header .button {
   position: relative;
   isolation: isolate;
   color: #f7fafe;
-  background: radial-gradient(ellipse at 65% 110%, #46212a, transparent 64%),
-    linear-gradient(110deg, #111b25, #20232b 48%, #20161c);
+  /* One exposure for the whole banner. Slides change artwork on top of it. */
+  background: linear-gradient(108deg, #131820 8%, #1b1b24 48%, #311822 79%, #481621);
 }
 .hero-copy {
   min-width: 0;
@@ -51,8 +51,8 @@ body:has(.overview) .desk > header .button {
 
 .capability-reel {
   --cut: clamp(32px, 4.5cqw, 76px);
-  --track-paper: #fffaf7;
-  --track-secondary: #ffe1d4;
+  --track-paper: #faf6f3;
+  --track-secondary: #e3cfd1;
   isolation: isolate;
   position: relative;
   min-width: 0;
@@ -71,15 +71,16 @@ body:has(.overview) .desk > header .button {
 .capability-reel::before {
   clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%);
   background:
-    linear-gradient(180deg, #160c1380, transparent 25%, transparent 70%, #070a104d),
-    linear-gradient(90deg, #600f19bd, #47101c57 55%, #140b131c),
-    url("assets/scarlet-circuit.jpg") center / cover no-repeat,
-    linear-gradient(110deg, #7a1521, #281925);
+    linear-gradient(0deg, #17161d6b, transparent 46%),
+    url("assets/scarlet-circuit.jpg") 64% 52% / cover no-repeat;
+  mask-image: linear-gradient(105deg, transparent 2%, #0005 32%, #000 78%);
+  opacity: .86;
+  transition: opacity 350ms ease-out;
 }
 .capability-reel::after {
   width: calc(var(--cut) + 2px);
   clip-path: polygon(var(--cut) 0, 100% 0, 2px 100%, 0 100%);
-  background: linear-gradient(#ffb393, #e5564b 55%, #7c3038);
+  background: linear-gradient(170deg, #da5a65a6, #9c364853 63%, transparent);
 }
 .capability-toolbar {
   display: flex;
@@ -91,7 +92,16 @@ body:has(.overview) .desk > header .button {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 1px;
+  padding: 1px 3px;
+  border: 1px solid #f1e4eb33;
+  border-radius: 999px;
+  background: #161820e8;
+  --button-ink: #f7f3f4;
+  --button-fill: transparent;
+  --button-border: transparent;
+  --button-hover: #37353f;
+  --button-active: #4c4550;
 }
 .capability-controls button {
   width: 34px;
@@ -100,6 +110,11 @@ body:has(.overview) .desk > header .button {
   padding: 0;
   border-radius: 50%;
   font: 500 20px/1 Arial, sans-serif;
+}
+.capability-controls button:focus-visible {
+  outline: 2px solid white;
+  outline-offset: -2px;
+  box-shadow: none;
 }
 .capability-position { font: 550 10px/1 var(--mono); white-space: nowrap; color: var(--track-paper); }
 .capability-controls [data-carousel="playback"] span {
@@ -129,32 +144,36 @@ body:has(.overview) .desk > header .button {
 .capability-reel[data-visual="industries"] .capability-standard { visibility: hidden; }
 .capability-reel[data-visual="industries"] .industry-view { visibility: visible; }
 .capability-reel[data-visual="industries"]::before {
-  background: linear-gradient(115deg, #39242d, #182731 72%, #17222c);
+  opacity: 0;
 }
 .industry-examples {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: clamp(4px, .7cqw, 10px);
-  margin-top: 6px;
+  --overlap: clamp(12px, 1.5cqw, 24px);
+  margin-top: 8px;
 }
-.industry-examples figure {
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  border-radius: 5px;
-  background: #18232e;
-  box-shadow: inset 0 0 0 1px #ffffff24;
-}
+.industry-examples figure { min-width: 0; margin: 0; }
 .industry-examples img {
   display: block;
   width: 100%;
-  height: clamp(58px, 7cqw, 88px);
+  height: clamp(66px, 7.4cqw, 94px);
   object-fit: cover;
+  mask-image: linear-gradient(to bottom, #000a, #000 9%, #000 60%, transparent),
+    linear-gradient(103deg, transparent, #000 var(--overlap));
+  mask-composite: intersect;
 }
-.industry-examples figcaption { padding: 5px 6px 7px; line-height: 1.22; }
+.industry-examples figure + figure img {
+  width: calc(100% + var(--overlap));
+  margin-inline-start: calc(-1 * var(--overlap));
+}
+.industry-examples figure:last-child img {
+  mask-image: linear-gradient(to bottom, #000a, #000 9%, #000 60%, transparent),
+    linear-gradient(103deg, transparent, #000 var(--overlap), #000 88%, transparent);
+}
+.industry-examples figcaption { position: relative; margin-top: -3px; padding: 0 4px 2px; line-height: 1.25; }
 .industry-examples strong, .industry-examples small { display: block; }
-.industry-examples strong { color: #fff; font-size: 12px; }
-.industry-examples small { margin-top: 3px; color: #d0dae4; font-size: 11px; }
+.industry-examples strong { color: var(--track-paper); font-size: 12px; }
+.industry-examples small { margin-top: 3px; color: #e0d4d8; font-size: 11px; }
 .capability-sizer, .capability-frame { grid-area: 1 / 1; }
 .capability-sizer { visibility: hidden; }
 .capability-context {
@@ -285,10 +304,15 @@ body:has(.overview) .desk > header .button {
 .timing-strip > a { color: var(--muted); }
 .timing-strip > a:hover { background: var(--selected); }
 .timing-strip .device-stat {
+  --button-fill: transparent;
+  --button-hover: var(--selected);
+  --button-active: var(--surface-soft);
+  --button-ink: var(--muted);
   height: 100%; min-height: 0; padding-inline: 9px;
-  border-inline-start-color: var(--button-border); anchor-name: --device-stat;
+  border: 0; border-inline-start: 1px solid var(--border); border-radius: 0;
+  anchor-name: --device-stat;
 }
-.timing-strip .device-stat strong { color: inherit; }
+.timing-strip .device-stat strong { color: var(--ink); }
 #device-details {
   position: fixed; inset: auto; position-anchor: --device-stat; left: anchor(left); top: anchor(bottom);
   width: min(305px, calc(100vw - 78px)); margin: 0; padding: 14px 16px;
