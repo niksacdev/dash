@@ -140,8 +140,7 @@ function repaintGradeDesigner(scope:string,workspace:boolean) {
   }
 }
 function syncGraderDesignLaunch() {
-  const quick=dashElement("#quick-models .go-button",HTMLButtonElement);
-  if (quick) quick.disabled=!canStartQuick();
+  if(document.getElementById("quick-models"))updateQuickGradingControls();
   const ds=dashElement("#dataset-models .go-button",HTMLButtonElement);
   if (ds) ds.disabled=!canStartDataset();
 }

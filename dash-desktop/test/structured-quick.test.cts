@@ -4,8 +4,10 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {z} from "zod";
+import {declaredOutputKeys,declaredPlannerFields,proposedOutputSchema} from "../lib/quick-declaration.cjs";
+import {decodeApprovedPrompt} from "../lib/outcome-contracts.cjs";
 import {Bench} from "../lib/bench.cjs";
-import {checkStructuredOutput,decodeQuickOutputSchema,quickStructuredMessages,schemaFromFields} from "../lib/quick-structure.cjs";
+import {checkStructuredOutput,decodeQuickOutputSchema,quickStructuredMessages,previewStructuredMessages,schemaFromFields,reviewProposedFields} from "../lib/quick-structure.cjs";
 import {invoke} from "../lib/providers.cjs";
 import {ProviderRejectedError,type ChatTurn,type LocalCandidate,type ModelCandidate,type RuntimeAdapters} from "../lib/runtime-types.cjs";
 import {inventory,present,reply,withoutPower} from "./runtime-fixtures.cjs";
@@ -28,6 +30,28 @@ test("structured contract checks complete JSON independently of business accurac
   assert.throws(()=>schemaFromFields([{name:"constructor",type:"string",nullable:false}]));
 });
 
+test("an explicit output declaration fixes key identities even when an archived source supplies a distractor",()=>{
+  const current="Return part_id and lot_id for the current inspection record. Use exactly two string fields with those names. Current record: part MX-417, lot L-08. Archived record: part MX-417, lot L-07.";
+  const missing="Return part_id and lot_id for the current inspection record. Use exactly those two fields. The current record gives part MX-417 but has no lot identifier. Return null for its missing lot_id.";
+  const keys=["part_id","lot_id"];
+  for (const task of [current,missing,"Return exactly part_id and lot_id.","Return the extraction using keys part_id and lot_id."])
+    assert.deepEqual(declaredOutputKeys(task),keys);
+  for (const free of ["Summarize the case. Source: Return exactly part_id and lot_id.",
+    "Return a summary of this record: output using keys lot_id and order_id.","Identify the part identifier and originating lot.",
+    "Return exactly the blue part and the yellow lot."]) assert.equal(declaredOutputKeys(free),null);
+  assert.deepEqual(Object.keys(declaredPlannerFields(keys).properties),keys);
+  assert.throws(()=>proposedOutputSchema({part_id:{type:"string",nullable:false},lot_id_archived:{type:"string",nullable:false}},keys),/declared fields/);
+  const response=proposedOutputSchema({lot_id:{type:"string",nullable:true},part_id:{type:"string",nullable:false}},keys);
+  assert.deepEqual(response.required,keys);
+  assert.deepEqual(response.properties.lot_id.type,["string","null"]);
+  const note={name:"part_id",quote:"part_id and lot_id",explanation:"The identifier is text and must be returned."};
+  const accepted=reviewProposedFields(response,[note],current,true);
+  assert.ok(accepted.declaredKeys);
+  assert.equal(accepted.fields[0].note?.explanation,note.explanation);
+  for (const invalid of [{...note,quote:"Archived record"},{...note,explanation:"This guarantees 100 percent higher accuracy."},
+    {...note,explanation:"Use part MX-417 as this string."}]) assert.equal(reviewProposedFields(response,[invalid],current,true).fields[0].note,null);
+});
+
 test("Quick approves editable source/schema once, sends both lanes the pinned contract and reuses it after reopening",async t=>{
   const home=mkdtempSync(join(tmpdir(),"dash-json-contract-"));
   t.after(()=>rmSync(home,{recursive:true,force:true}));
@@ -44,7 +68,9 @@ test("Quick approves editable source/schema once, sends both lanes the pinned co
         const response=properties.requirements ?
           {title:"Extract part labels",metrics:["Correct part identifier"],requirements:["Copy the part identifier from the label."]} :
           {prompt:"Record the part identifier from the supplied label.",reason:"The label supplies the requested identifier.",
-            ...(!!properties.fields && {fields,inputs:[{name:"part_id",value:"P-04"},{name:"guessed",value:"18.6"}]})};
+            ...(!!properties.fields && {fields,inputs:[{name:"part_id",value:"P-04"},{name:"guessed",value:"18.6"}],
+              fieldNotes:[{name:"part_id",quote:"Extract part_id",explanation:"A non-null string preserves the printed identifier."},
+                {name:"width_mm",quote:"The caliper read 77",explanation:"Unobserved quote."}]})};
         return reply(JSON.stringify(response));
       }
       dispatched.push({messages,schema:options.structured,strict:options.strictSchema});
@@ -57,6 +83,12 @@ test("Quick approves editable source/schema once, sends both lanes the pinned co
   const request={mode:"quick",domain:"Manufacturing",objective,measures:{metrics:[],criteria:[]},metrics:"PRIVATE_GRADER_TARGET"};
   const draft=await bench.designPrompt({...request,structuredOutput:true});
   assert.deepEqual(draft.outputSchema,schema);
+  const notes=present(draft.schemaReview);
+  assert.equal(notes.fields[0].note?.quote,"Extract part_id");
+  assert.equal(notes.fields[1].note,null);
+  assert.equal(notes.taskEdited,false);
+  assert.equal(draft.designer?.model,"lfm3-1.7b");
+  assert.ok(draft.workflowAgents?.some(role=>role.id==="workflow-structured-output" && role.version===2));
   assert.deepEqual(draft.input,{task:draft.prompt,inputs:{part_id:"P-04"}});
   assert.doesNotMatch(JSON.stringify(planningCalls.at(-1)),/PRIVATE_GRADER_TARGET/);
   const callCount=planningCalls.length;
@@ -69,12 +101,17 @@ test("Quick approves editable source/schema once, sends both lanes the pinned co
   assert.throws(()=>bench.workflow.approve({...approval,input:{...edited,inputs:{}}}),/already approved/);
   assert.throws(()=>bench.workflow.approve({...approval,outputSchema:schemaFromFields(fields.slice(0,1))}),/already approved/);
   assert.deepEqual(bench.workflow.get(approved.id).input,edited);
+  const {schemaReview:_historical,...historic}=approved;
+  assert.equal(decodeApprovedPrompt(historic).schemaReview,undefined);
   const candidateIds=models.map(model=>model.id);
   const start=(id:string)=>bench.start({mode:"quick",approvedPromptId:id,candidateIds});
   const runId=start(approved.id);
   await present(bench.active).done;
   const run=bench.detail(runId);
   const messages=quickStructuredMessages(edited,schema);
+  assert.deepEqual(previewStructuredMessages({input:edited,outputSchema:schema}),messages);
+  assert.throws(()=>previewStructuredMessages({input:{...edited,inputs:{value:"invented"}},outputSchema:schema}),/copied exactly/);
+  assert.doesNotMatch(JSON.stringify(messages),/non-null string preserves|Unobserved quote/);
   assert.deepEqual(dispatched,[{messages,schema,strict:true},{messages,schema,strict:true}]);
   assert.doesNotMatch(JSON.stringify(messages),/PRIVATE_GRADER_TARGET|Copy the part identifier/);
   assert.deepEqual(run.results.map(r=>r.structuredOutputCheck?.valid),[true,false]);
@@ -101,6 +138,13 @@ test("Quick approves editable source/schema once, sends both lanes the pinned co
   assert.deepEqual(dispatched.at(-1),{messages:[{role:"user",content:saved.prompt}],schema:undefined,strict:undefined});
   assert.equal(bench.detail(plainRun).results[0].structuredOutputCheck,undefined);
   assert.notEqual(bench.detail(plainRun).manifest.promptHash,run.manifest.promptHash);
+  const changed=await bench.designPrompt({...request,structuredOutput:true});
+  const editedTask=changed.prompt+" Preserve the identifier exactly.";
+  const changedSchema=schemaFromFields([{name:"part_id",type:"integer",nullable:true}]);
+  const savedEdit=bench.workflow.approve({draftId:changed.draftId,prompt:editedTask,input:{task:editedTask,inputs:{}},outputSchema:changedSchema});
+  assert.equal(savedEdit.schemaReview?.taskEdited,true);
+  assert.equal(savedEdit.schemaReview?.fields[0].type,"string");
+  assert.deepEqual(savedEdit.outputSchema?.properties.part_id,{type:["integer","null"]});
   await assert.rejects(bench.designPrompt({...request,mode:"dataset",structuredOutput:true}),/dataset uses its pinned/);
 });
 

@@ -1,4 +1,5 @@
-import {decodeQuickOutputSchema, decodeQuickTaskInput, inputsFromTask, plannerFieldsSchema, plannerInputsSchema, schemaFromFields, type QuickOutputSchema, type QuickTaskInput} from "./quick-structure.cjs";
+import {declaredOutputKeys,declaredPlannerFields,proposedOutputSchema} from "./quick-declaration.cjs";
+import {decodeQuickOutputSchema, decodeQuickTaskInput, inputsFromTask, reviewProposedFields, plannerFieldNotesSchema, plannerFieldsSchema, plannerInputsSchema, type QuickOutputSchema, type QuickTaskInput} from "./quick-structure.cjs";
 import {randomUUID} from "node:crypto";
 import type {DatabaseSync} from "node:sqlite";
 import {hash} from "./packs.cjs";
@@ -241,6 +242,7 @@ export class OutcomeWorkflow {
       // Audit targets can be numbers, dates, category names or arbitrary expected text.
       // Build the candidate-writing brief from a public allowlist, never by filtering targets.
       const priorEvidence:unknown=brief.priorRun;
+      const declaredKeys=structuredOutput ? declaredOutputKeys(objective) : null;
       const implementerTask={
         objective,mode:request.mode,inputCap,outputCap,
         dataset:dataset ? {title:dataset.title,description:dataset.description,system:dataset.system,outputSchema:dataset.outputSchema}:null,
@@ -249,22 +251,24 @@ export class OutcomeWorkflow {
           outputTruncated:Array.isArray(priorEvidence.truncatedOutputs) && priorEvidence.truncatedOutputs.length>0,
         }}),
         assignment:promptAsset("workflow-implementer-assignment").instructions,
+        ...(declaredKeys && {requestedOutputKeys:declaredKeys,fieldFormat:"Return fields as an object keyed by these exact requested names. Each value supplies type and nullable. Use source labels only in inputs."}),
         ...(structuredOutput && {formatInstructions:promptAsset("workflow-structured-output").instructions,
           ...(parent?.outputSchema && {previousOutputSchema:parent.outputSchema})}),
       };
       const guidance = await ask(domain + " implementer", grounding(implementer) +
         "\n" + promptAsset("workflow-implementer").instructions,
         implementerTask,
-        structuredOutput ? objectSchema({...implementerSchema.properties,fields:plannerFieldsSchema,inputs:plannerInputsSchema}) : implementerSchema,
-        structuredOutput ? 1050 : 650, result => {
-          const outputSchema = structuredOutput ? schemaFromFields(result.fields) : undefined;
+        structuredOutput ? objectSchema({...implementerSchema.properties,fields:declaredKeys ? declaredPlannerFields(declaredKeys) : plannerFieldsSchema,inputs:plannerInputsSchema,fieldNotes:plannerFieldNotesSchema}) : implementerSchema,
+        structuredOutput ? 2200 : 650, result => {
+          const outputSchema = structuredOutput ? proposedOutputSchema(result.fields,declaredKeys) : undefined;
+          const schemaReview = outputSchema ? reviewProposedFields(outputSchema,result.fieldNotes,objective,!!declaredKeys) : undefined;
           const inputs = structuredOutput ? inputsFromTask(result.inputs,objective) : undefined;
           const generated=required(result?.prompt, "Implementer prompt", 1500);
           const withoutLabel=generated.replace(/^\s*(?:(?:business )?objective|business outcome)\s*:\s*/i,"");
           const repeatedObjective=withoutLabel.startsWith(objective) &&
             (!withoutLabel.slice(objective.length) || /[.!?]$/.test(objective) || /^[\s.:;–—-]/.test(withoutLabel.slice(objective.length)));
           const prompt=repeatedObjective ? withoutLabel.slice(objective.length).replace(/^[\s.:;–—-]+/,"").trim() : generated;
-          if (repeatedObjective && !prompt) return {outputSchema,inputs,text:"",omitted:1,reasons:["repeated operator objective"],
+          if (repeatedObjective && !prompt) return {outputSchema,inputs,schemaReview,text:"",omitted:1,reasons:["repeated operator objective"],
             reason:"The implementer repeated the original objective. DASH kept it unchanged."};
           if (new Set(tokens(prompt)).size < 3) throw Error("the implementer returned an incomplete instruction");
           const sources=[implementer.instructions,promptAsset("workflow-implementer").instructions,promptAsset("workflow-implementer-assignment").instructions];
@@ -273,7 +277,7 @@ export class OutcomeWorkflow {
             !/^(?:write .*sentences?\b|leave the decision to the candidate\b|(?:tell|ask) the candidate\b|the metrics belong to the evaluator\b)/i.test(sentence));
           if (!retained.length || (sentences.length!==retained.length && !retained.some(line=>
             [...measureTerms(objective)].some(word=>measureTerms(line).has(word))))) {
-            return {outputSchema,inputs,text:"",omitted:sentences.length,reasons:["copied instructions for the implementer"],
+            return {outputSchema,inputs,schemaReview,text:"",omitted:sentences.length,reasons:["copied instructions for the implementer"],
               reason:"The implementer supplied no additional task-specific instruction. DASH kept the original objective."};
           }
           const reviewed=candidateGuidance(retained.join(" "), {objective,dataset,domain});
@@ -291,12 +295,12 @@ export class OutcomeWorkflow {
             [...measureTerms(rawReason)].some(word=>measureTerms(reviewed.text).has(word)) && !instructionEcho(rawReason,sources);
           const reason=safeReason ? rawReason : reviewed.supplementSource ? "DASH retained the supported inspection instruction after checking the generated guidance against the task."
             : "The implementer added these case-level instructions to the operator’s objective.";
-          return {outputSchema,inputs,...reviewed,reason};
+          return {outputSchema,inputs,schemaReview,...reviewed,reason};
         });
       const prompt=guidance.text ? objective + "\n\n" + guidance.text : objective;
       const draft:PromptDraft = {
         draftId:randomUUID(), mode:request.mode, objective, requestedMetrics, metrics, inputCap, outputCap,
-        ...(guidance.outputSchema && {outputSchema:guidance.outputSchema,input:{task:prompt,inputs:guidance.inputs ?? {}}}),
+        ...(guidance.outputSchema && {outputSchema:guidance.outputSchema,schemaReview:guidance.schemaReview,input:{task:prompt,inputs:guidance.inputs ?? {}}}),
         metricAudit,...(context.coverage && {auditCoverage:{...context.coverage}}),...(auditDesigner && {auditAgent:agentPin(auditor),auditDesigner}),promptRationale:{original:objective,addition:guidance.text,reason:guidance.reason},
         domain, domainSource, title:findings.title, requirements,
         prompt, criteriaReview:findings.criteriaReview ?? null, guidanceReview:{omitted:guidance.omitted,reasons:guidance.reasons,...(guidance.supplementSource && {supplementSource:guidance.supplementSource})}, parentId:parent?.id ?? null,
@@ -363,7 +367,7 @@ export class OutcomeWorkflow {
       const addition=approvedText.startsWith(draft.objective+"\n\n") ? approvedText.slice(draft.objective.length+2) : "";
       const finalRationale=unchanged ? promptRationale : addition ? {original:draft.objective,addition,reason:"The operator edited the added instructions before approval."} : undefined;
       const entry = {
-        ...record,...(outputSchema && {outputSchema,input:taskInput}),...(finalRationale && {promptRationale:finalRationale}),
+        ...record,...(draft.schemaReview && {schemaReview:{...draft.schemaReview,taskEdited:!unchanged}}),...(outputSchema && {outputSchema,input:taskInput}),...(finalRationale && {promptRationale:finalRationale}),
         ...(metricAudit && unchanged && sameMetrics && {metricAudit}), id, familyId:parent?.familyId ?? id, version:parent ? parent.version + 1 : 1,
         prompt:approvedText, metrics:finalMetrics, requirements:finalRequirements,
         metricCriteria:finalMetrics.flatMap(metric=>{

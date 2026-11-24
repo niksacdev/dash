@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import * as os from "node:os";
 import { z } from "zod";
+import {previewStructuredMessages} from "./lib/quick-structure.cjs";
 import {measureGraderRequest} from "./lib/measure-graders.cjs";
 import { operatorProviderMessage } from "./lib/provider-errors.cjs";
 import { desktopFailure } from "./lib/desktop-errors.cjs";
@@ -91,6 +92,7 @@ function initialize():void {
   const onStage=(stage:UiPlanningEvent)=>win?.webContents.send("dash:planningStage",stage);
   bind("designPrompt",value=>{guide.cancel();return bench.designPrompt(value,onStage,"draft");});
   bind("suggestMetrics",value=>{guide.cancel();return bench.designPrompt(value,onStage,"suggest");});
+  bind("previewStructuredPrompt",value=>previewStructuredMessages(value));
   bind("approvePrompt",value=>bench.workflow.approve(value));
   bind("cancelDesign",()=>bench.workflow.cancel());
   bind("saveDomainRole",value=>bench.workflow.saveRole(value));

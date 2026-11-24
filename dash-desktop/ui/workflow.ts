@@ -18,8 +18,8 @@ const roleEdits = new Map<string,{value:string;version:number}>();
 function capLabel(p:UiTokenCaps) {
   return [p.inputCap && p.inputCap + " input tokens", p.outputCap && p.outputCap + " output tokens"].filter(Boolean).join(" · ") || "Runtime token defaults";
 }
-function workflowSteps(index:number) {
-  return '<ol class="wf-steps" aria-label="Evaluation steps">' + ["Business outcome", "Review prompt", "Start run"].map((s,i) =>
+function workflowSteps(index:number,mode:UiMode) {
+  return '<ol class="wf-steps" aria-label="Evaluation steps">' + ["Business outcome", "Review prompt", mode==="quick" ? "Set up evaluation" : "Start run"].map((s,i) =>
     '<li' + (i === index ? ' aria-current="step"' : '') + '><span aria-hidden="true">' + (i < index ? "✓" : i+1) + '</span>' + s + '</li>').join("") + '</ol>';
 }
 function workflowPage(mode:UiMode) {
@@ -28,7 +28,7 @@ function workflowPage(mode:UiMode) {
   if (mode === "dataset" && !w.approved && !w.draft && !w.parentId && !w.variant)
     return datasetRunPage(w);
   const step = w.approved ? 2 : w.draft ? 1 : 0;
-  return '<section class="wf-page"><div class="wf-title"><h1>' + modeName(mode) + '</h1>' + workflowSteps(step) + '</div>' +
+  return '<section class="wf-page"><div class="wf-title"><h1>' + modeName(mode) + '</h1>' + workflowSteps(step,mode) + '</div>' +
     (w.error ? '<div role="alert" class="wf-error">' + esc(w.error) + '</div>' : '') +
     (mode === "dataset" && !w.parentId && !w.busy ? '<button class="quiet" type="button" id="dataset-native">← Use dataset instructions</button>' : '') +
     (w.approved ? workflowReady(w) : w.draft ? workflowReview(w) : workflowCompose(w)) + '</section>';
@@ -167,8 +167,69 @@ function scenarioContract(p:{mode:UiMode;datasetId?:string|null;dataset?:UiPack|
     '</p><h3>Required output schema</h3><pre>' + pretty(s.outputSchema) + '</pre><small>Snapshot ' + esc((d?.name || s.title) + " · " + (s.version || d?.version || "")) +
     ' · Grader ' + esc(s.scorer || state.packs.find(pack => pack.id===d?.pack)?.scorer || "scenario grader") + '</small></div></details>';
 }
+function schemaAttribution(p:UiPrompt) {
+  const role=p.agents?.find(agent=>agent.role==="implementer"), model=p.designer;
+  const proposer=[role ? role.domain+" implementer v"+role.version : "",model ? model.provider+" · "+model.model : "",
+    model?.revision && model.revision!==model.model ? model.revision : ""].filter(Boolean).join(" · ");
+  const audit=p.auditDesigner ? " The metric auditor checked the success measures." : "";
+  return (p.schemaReview?.declaredKeys ? '<p>Your objective specifies the output field names.</p>' : "")+
+    (proposer ? '<p>Schema proposed by <strong>'+esc(proposer)+'</strong>.</p>' : "")+
+    (p.agents?.some(agent=>agent.role==="expert") ? '<p>'+
+      (p.metrics.length ? "The domain expert helped prepare the task and its proposed measures." : "The domain expert helped prepare the task.")+
+      (p.metrics.length ? audit : "")+'</p>' : "");
+}
+function fieldContractFact(field:unknown,required:boolean) {
+  if (!isRecord(field)) return "Complete the field type to preview its rule.";
+  const type=Array.isArray(field.type) ? field.type[0] : field.type;
+  const value=type==="string" ? "text" : type==="number" ? "a JSON number" : type==="integer" ? "a whole number" :
+    type==="boolean" ? "true or false" : null;
+  if (!value || (Array.isArray(field.type) && (field.type.length!==2 || field.type[1]!=="null")))
+    return "Complete the field type to preview its rule.";
+  if (!required) return "List this field in required before approval.";
+  return "The key must appear. Its value must be "+value+(Array.isArray(field.type) ? " or null when unavailable." : ". A null value fails this check.");
+}
+function schemaFieldNotes(p:UiPrompt,currentSchema:unknown,currentTask:string) {
+  if (!isRecord(currentSchema) || !isRecord(currentSchema.properties))
+    return '<p>Complete the JSON schema to inspect the field rules.</p>';
+  const review=p.schemaReview,fields=currentSchema.properties;
+  const required=Array.isArray(currentSchema.required) ? currentSchema.required : [];
+  if (Object.keys(fields).length>12 || required.length>12)
+    return '<p>Use at most 12 required response fields to preview their rules.</p>';
+  let missingNotes=!review;
+  const items=Object.entries(fields).map(([name,field])=>{
+    const proposal=review?.fields.find(f=>f.name===name);
+    const origin=!review ? "Saved contract" : !proposal ? "Added by the operator" : review.declaredKeys ? "Named in your objective" : "Suggested by the implementer";
+    const heading='<strong>'+esc(name)+'</strong> · '+origin+'<p>'+esc(fieldContractFact(field,required.includes(name)))+'</p>';
+    if (!proposal || !review) return '<li>'+heading+'</li>';
+    const original=proposal.nullable ? [proposal.type,"null"] : proposal.type;
+    const typeEdited=!isRecord(field) || JSON.stringify(field.type)!==JSON.stringify(original);
+    const taskEdited=review.taskEdited || currentTask!==p.prompt;
+    const oldType=proposal.type+(proposal.nullable ? " or null" : ", non-null");
+    const change=typeEdited ? '<p>Operator edited the type. Original proposal · '+esc(oldType)+'</p>' :
+      taskEdited ? '<p>The proposal was made for the original task.</p>' : "";
+    const note=proposal.note;
+    if (!note) missingNotes=true;
+    return '<li>'+heading+change+(note ? '<p>Implementer suggestion · '+esc(note.explanation)+'</p><small>Original objective · “'+esc(note.quote)+'”</small>' : "")+'</li>';
+  });
+  const removed=review?.fields.filter(f=>!Object.hasOwn(fields,f.name)).map(f=>f.name) ?? [];
+  return '<ul class="wf-metric-list">'+items.join("")+'</ul>'+
+    (removed.length ? '<p>Removed by the operator · '+esc(removed.join(", "))+'</p>' : '')+
+    (missingNotes ? '<small>Only recorded suggestions with a matching task excerpt are shown. The field rules come directly from the contract.</small>' : '');
+}
+function currentSchemaNotes(w:UiWorkflow) {
+  if (!w.draft) return "";
+  try {
+    const input=readJsonObject(w.reviewInput,"JSON input");
+    return schemaFieldNotes(w.draft,readJsonObject(w.reviewSchema,"Required output schema"),typeof input.task==="string" ? input.task : "");
+  } catch {return '<p>Complete the JSON edits to compare them with the proposal.</p>';}
+}
 function structuredReview(w:UiWorkflow) {
-  return '<label class="field wf-json-field"><span>JSON input for both models</span><textarea id="wf-json-input" required rows="8" spellcheck="false" aria-describedby="wf-json-input-hint">'+
+  const draft=w.draft;
+  if (!draft) return "";
+  return '<section aria-label="Candidate instructions"><h3>What each model receives</h3><p>Both models receive your task and source fields. The system message asks for one JSON object with the approved field names and types.</p>'+
+    '<details id="wf-request-preview" class="wf-options"><summary>Inspect exact system and user messages</summary><div data-exact-messages></div></details></section>'+
+    '<details open class="wf-options"><summary>Why these response fields?</summary>'+schemaAttribution(draft)+'<div data-schema-field-notes>'+currentSchemaNotes(w)+'</div></details>'+
+    '<p id="wf-json-edit-status" role="status" class="wf-error" hidden></p><label class="field wf-json-field"><span>JSON input for both models</span><textarea id="wf-json-input" required rows="8" spellcheck="false" aria-describedby="wf-json-input-hint">'+
     esc(w.reviewInput)+'</textarea></label><p class="wf-hint" id="wf-json-input-hint">Edit the task and its source fields. Each source value must appear verbatim in the task.</p>'+
     '<label class="field wf-json-field"><span>Required output schema</span><textarea id="wf-json-schema" required rows="9" spellcheck="false" aria-describedby="wf-json-schema-hint">'+
     esc(w.reviewSchema)+'</textarea></label><p class="wf-hint" id="wf-json-schema-hint">Use 1–12 required fields. Values can be strings, numbers, integers or booleans. Allow null when the source may omit a value.</p>';
@@ -176,15 +237,43 @@ function structuredReview(w:UiWorkflow) {
 function reviewedPromptContent(p:UiPrompt) {
   if(!p.outputSchema || !p.input)return '<pre>'+esc(p.prompt)+'</pre>';
   return '<div class="wf-json-preview"><h3>Approved JSON input</h3><pre>'+pretty(p.input)+
-    '</pre><h3>Required output schema</h3><pre>'+pretty(p.outputSchema)+'</pre></div>';
+    '</pre><h3>Required output schema</h3><pre>'+pretty(p.outputSchema)+'</pre><details class="wf-options"><summary>Why these response fields?</summary>'+schemaAttribution(p)+schemaFieldNotes(p,p.outputSchema,p.prompt)+'</details></div>';
 }
-function readJsonObject(text:string|undefined,field:string) {
+// Six-character JSON escapes can expand each code unit of a 24,000-character task
+// and eight 2,000-character source values. The source cap also leaves room for keys and formatting.
+const structuredEditorLimits={"JSON input":262144,"Required output schema":16384} as const;
+type StructuredEditor=keyof typeof structuredEditorLimits;
+function sourceLengthError(field:StructuredEditor) {
+  return field+" exceeds the editor limit of "+structuredEditorLimits[field].toLocaleString()+" characters.";
+}
+function readJsonObject(text:string|undefined,field:StructuredEditor) {
+  if (text && text.length>structuredEditorLimits[field]) throw Error(sourceLengthError(field));
   let value:unknown;
   try {value=JSON.parse(text ?? "");}
   catch {throw Error("Enter valid JSON in "+field+" before approving.");}
   if(!isRecord(value))throw Error("Use a JSON object in "+field+".");
   return value;
 }
+async function showExactMessages(panel:HTMLDetailsElement,w:UiWorkflow) {
+  const body=panel.querySelector<HTMLElement>("[data-exact-messages]");
+  if (!body) return;
+  const priorInput=w.reviewInput, priorSchema=w.reviewSchema;
+  const current=()=>panel.open && panel.isConnected && w.reviewInput===priorInput && w.reviewSchema===priorSchema;
+  body.textContent="Checking current JSON…";
+  try {
+    const turns=await api.previewStructuredPrompt({input:readJsonObject(priorInput,"JSON input"),outputSchema:readJsonObject(priorSchema,"Required output schema")});
+    if (current()) body.innerHTML=turns.map(turn=>'<h4>'+esc(turn.role==="system"?"System message":"User message")+'</h4><pre>'+esc(turn.content)+'</pre>').join("");
+  } catch (error) {if(current()) body.textContent=errorText(error);}
+}
+document.addEventListener("toggle",event=>{
+  const panel=event.target,w=activeWorkflow();
+  if (panel instanceof HTMLDetailsElement && panel.id==="wf-request-preview" && panel.open && w) void showExactMessages(panel,w);
+},true);
+document.addEventListener("click",event=>{
+  if (!(event.target instanceof Element) || !event.target.closest("[data-refresh-exact]")) return;
+  const panel=event.target.closest<HTMLDetailsElement>("#wf-request-preview"),w=activeWorkflow();
+  if (panel && w) void showExactMessages(panel,w);
+});
 function structuredApproval(w:UiWorkflow):Partial<UiApproval> {
   if(!w.draft?.outputSchema)return {};
   const input=readJsonObject(w.reviewInput,"JSON input");
@@ -215,12 +304,21 @@ function promptActions(p:UiApproved, {use=false,runId=null,reviseLabel="Revise"}
 function workflowReady(w:UiWorkflow) {
   const p = w.approved;
   if (!p) return "";
+  if(w.mode==="quick") {
+    const fields=p.outputSchema && isRecord(p.outputSchema.properties) ? Object.keys(p.outputSchema.properties).length : 0;
+    const responseFormat=fields ? '<span>JSON response · '+fields+(fields===1?' field':' fields')+'</span>' : '';
+    return '<section class="qc-brief" aria-label="Approved task"><div class="qc-brief-top"><span>Approved task · v'+esc(p.version)+'</span><span>'+esc(p.domain)+'</span>'+responseFormat+'</div>'+
+      '<h2>'+esc(p.title || p.objective)+'</h2>'+(p.title && p.title!==p.objective ? '<p class="qc-objective">'+esc(p.objective)+'</p>' : '')+
+      '<details class="qc-brief-details"><summary>Inspect approved task</summary><div>'+reviewedPromptContent(p)+metricList(p.metrics)+
+      '<small>'+esc(capLabel(p))+'</small>'+planningDetails(p)+promptActions(p,{reviseLabel:"Revise outcome"})+
+      '<button class="wf-new" type="button" data-wf-reset>New outcome</button></div></details></section>'+setupQuick();
+  }
   const ds = state.datasets.find(d => d.id === p.datasetId);
   return '<section class="wf-panel wf-approved"><div class="wf-section-head"><div><small class="wf-eyebrow">Approved prompt · v' +
     esc(p.version) + '</small><h2>' + esc(p.title || p.objective) + '</h2></div>' + tag(p.domain) + '</div>' +
     '<details class="wf-options"><summary>Inspect approved prompt and success metrics</summary><div class="wf-options-body">' + reviewedPromptContent(p) + metricList(p.metrics) + '<small>' + esc(capLabel(p)) + '</small></div></details>' + planningDetails(p) + scenarioContract(p) +
     promptActions(p, {reviseLabel:"Revise outcome"}) + '<button class="wf-new" type="button" data-wf-reset>New outcome</button></section>' +
-    (w.mode === "quick" ? setupQuick() : '<form id="setup" class="wf-panel"><h2>Select models for ' + esc(ds?.metadata?.family || ds?.name || "the dataset") +
+    ('<form id="setup" class="wf-panel"><h2>Select models for ' + esc(ds?.metadata?.family || ds?.name || "the dataset") +
       '</h2>' + graderPicker() + modelPicker("dataset", ds?.count || 0) + '</form>' + endpointForm() + hostingLegend());
 }
 function promptCatalogPage() {
@@ -253,7 +351,7 @@ function roleEditor(r:UiRole) {
 function workflowRecord(id:string) {
   return (state.prompts || []).find(p => p.id === id) || (current?.manifest?.approvedPrompt?.id===id ? current.manifest.approvedPrompt : null);
 }
-function openWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null = null) {
+function useWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null) {
   const w = plannerState(p.mode);
   Object.assign(w, {structuredOutput:!!p.outputSchema,objective:p.objective,metrics:p.requestedMetrics || "",domain:p.domain,inputCap:p.inputCap?.toString()??"",outputCap:p.outputCap?.toString()??"",datasetId:p.datasetId||"",parentId:p.id,sourceRunId});
   if (p.mode === "dataset") {
@@ -267,7 +365,12 @@ function openWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|nul
     w.criteria = (p.requirements || []).join("\n");
   }
   workflows[p.mode] = w;
-  resetModelSelection(p.mode);
+  if(p.mode==="quick" && !revise) recoverQuickLineup(p);
+  else {resetModelSelection(p.mode);if(p.mode==="quick")leaveQuickSetup();}
+  return true;
+}
+function openWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null = null) {
+  if (!useWorkflowPrompt(p,revise,sourceRunId)) return;
   if (trail()[0] === modeRoute(p.mode)) render(); else location.hash=modeRoute(p.mode);
 }
 function workflowRunSummary(m:UiManifest, status:string) {
@@ -355,6 +458,16 @@ document.addEventListener("input", e => {
 
   const w = activeWorkflow();
   if(w && !w.busy && w.draft?.outputSchema) {
+    const field=e.target.id==="wf-json-input" ? "JSON input" : e.target.id==="wf-json-schema" ? "Required output schema" : null;
+    if (field) {
+      const status=document.getElementById("wf-json-edit-status");
+      if (e.target.value.length>structuredEditorLimits[field]) {
+        e.target.value=(field==="JSON input" ? w.reviewInput : w.reviewSchema) ?? "";
+        if(status){status.hidden=false;status.textContent=sourceLengthError(field)+" Your previous edit was kept.";}
+        return;
+      }
+      if (status) status.hidden=true;
+    }
     if(e.target.id==="wf-json-input"){
       w.reviewInput=e.target.value;
       try {
@@ -365,6 +478,12 @@ document.addEventListener("input", e => {
       if(note)note.hidden=w.reviewPrompt.trim()===w.draft.prompt;
     }
     if(e.target.id==="wf-json-schema")w.reviewSchema=e.target.value;
+    if (e.target.id==="wf-json-schema" || e.target.id==="wf-json-input") {
+      const notes=document.querySelector("[data-schema-field-notes]");
+      if (notes) notes.innerHTML=currentSchemaNotes(w);
+      const preview=document.querySelector("#wf-request-preview[open] [data-exact-messages]");
+      if (preview) preview.innerHTML='<p>Input or schema edited.</p><button type="button" class="quiet" data-refresh-exact>Update exact preview</button>';
+    }
   }
   const key = workflowFields[e.target.id];
   if (w && key && !w.busy) {
@@ -476,7 +595,8 @@ document.addEventListener("submit", async e=>{
         if(!state.prompts.some(p=>p.id===w.approved?.id))state.prompts=[w.approved,...state.prompts];
         await proposeReviewedGraders(grader);
       } else if (workflows[w.mode]===w) {
-        resetModelSelection(w.mode);
+        if (w.mode==="quick") recoverQuickLineup(w.approved);
+        else resetModelSelection(w.mode);
       }
     }
   } catch(error) {w.error=errorText(error);}
@@ -534,7 +654,7 @@ document.addEventListener("click", async e=>{
     finally { button.disabled=false; }
     return;
   }
-  if (button.hasAttribute("data-wf-reset") && workflows[mode]===w) workflows[mode]=plannerState(mode);
+  if (button.hasAttribute("data-wf-reset") && workflows[mode]===w) {workflows[mode]=plannerState(mode);if (mode==="quick")leaveQuickSetup();}
   else if (button.hasAttribute("data-wf-edit")) {w.draft=null;w.error="";}
   if(activeGraderPlanning()?.planner===w)repaintGradeDesigner(workspaceGradeScope,true);
   else await render();

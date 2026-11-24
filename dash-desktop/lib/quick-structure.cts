@@ -1,3 +1,4 @@
+import {z} from "zod";
 import { isRecord, type ChatTurn } from "./runtime-types.cjs";
 
 const primitives = ["string", "number", "integer", "boolean"] as const;
@@ -25,6 +26,36 @@ export const plannerFieldsSchema = {
     required:["name","type","nullable"],additionalProperties:false,
   },
 };
+
+// The candidate only gets the approved schema. Proposal notes are retained for operator review.
+const noteText=z.string().trim().min(1).max(220);
+const fieldNote=z.strictObject({name:z.string().max(48),quote:noteText,explanation:noteText});
+export const plannerFieldNotesSchema={
+  type:"array",maxItems:maxFields,items:{type:"object",additionalProperties:false,required:["name","quote","explanation"],
+    properties:{name:{type:"string",maxLength:48},quote:{type:"string",maxLength:220},explanation:{type:"string",maxLength:220}}},
+};
+export const schemaReviewRecord=z.strictObject({taskEdited:z.boolean(),declaredKeys:z.boolean().optional(),
+  fields:z.array(z.strictObject({name:z.string().refine(validName),type:z.enum(primitives),nullable:z.boolean(),
+    note:fieldNote.pick({quote:true,explanation:true}).nullable()})).min(1).max(maxFields)});
+export type SchemaReview=z.infer<typeof schemaReviewRecord>;
+
+export function reviewProposedFields(schema:QuickOutputSchema,raw:unknown,objective:string,declaredKeys=false):SchemaReview {
+  const notes=new Map<string,{quote:string;explanation:string}|null>();
+  if (Array.isArray(raw) && raw.length<=maxFields) for (const row of raw) {
+    const parsed=fieldNote.safeParse(row);
+    if (!parsed.success) continue;
+    const {name,quote,explanation}=parsed.data;
+    const claim=/\b(?:guarantee\w*|boost\w*|improv\w*|increas\w*|reduc\w*|100\s*percent)\b/i.test(explanation);
+    const values=explanation.match(/[A-Za-z0-9]+(?:[./-][A-Za-z0-9]+)*/g) ?? [];
+    const copiesValue=values.some(token=>/\d/.test(token) && token!==name && objective.includes(token));
+    if (Object.hasOwn(schema.properties,name) && objective.includes(quote) && quote!==explanation &&
+        !claim && !copiesValue && (!declaredKeys || quote.includes(name)))
+      notes.set(name,notes.has(name) ? null : {quote,explanation});
+  }
+  return {taskEdited:false,...(declaredKeys && {declaredKeys:true}),fields:Object.entries(schema.properties).map(([name,field])=>({
+    name,type:Array.isArray(field.type) ? field.type[0] : field.type,nullable:Array.isArray(field.type),note:notes.get(name) ?? null,
+  }))};
+}
 
 export function schemaFromFields(raw:unknown):QuickOutputSchema {
   if (!Array.isArray(raw) || !raw.length || raw.length > maxFields)
@@ -92,6 +123,14 @@ export function quickStructuredMessages(input:QuickTaskInput,schema:QuickOutputS
     {role:"system",content:"Complete the task in the JSON input. Return a single JSON object conforming to this schema.\n"+JSON.stringify(schema)},
     {role:"user",content:JSON.stringify(input)},
   ];
+}
+
+export function previewStructuredMessages(raw:unknown):ChatTurn[] {
+  if (!isRecord(raw) || !isRecord(raw.input) || typeof raw.input.task!=="string" ||
+      !raw.input.task.trim() || raw.input.task.length>24000)
+    throw Error("Enter a task of up to 24,000 characters to preview the model request.");
+  const input=decodeQuickTaskInput(raw.input,raw.input.task.trim());
+  return quickStructuredMessages(input,decodeQuickOutputSchema(raw.outputSchema));
 }
 
 export function checkStructuredOutput(text:string,schema:QuickOutputSchema):StructuredOutputCheck {

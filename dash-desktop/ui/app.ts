@@ -622,6 +622,27 @@ function observationLabel(result:UiResult):string|null {
   if (result.dispatchState==="interrupted") return "Observation interrupted";
   return null;
 }
+function quickExecutionProgress(run:UiRunDetail) {
+  const {manifest,partial}=run;
+  const candidate=manifest.candidates.find(c=>c.id===partial?.candidateId);
+  const saved=run.results.filter(r=>r.dispatchState!=="pending");
+  const answers=saved.filter(r=>!r.dispatchState && !r.error && !!r.output?.trim()).length;
+  const issues=saved.length-answers;
+  const grades=run.assessments.length;
+  const total=manifest.candidates.length*manifest.caseIds.length;
+  const estimates=total*manifest.graders.length;
+  let activity=run.status==="queued" ? "Waiting to start" : "Checking model token budgets";
+  if (partial?.stage) activity="Preparing the evaluation report · "+partial.stage;
+  else if (candidate && partial?.grading) activity="Scoring "+displayModel(candidate.model)+" · "+partial.grading.name+" v"+partial.grading.version;
+  else if (candidate) activity=saved.some(r=>r.candidateId===candidate.id)
+    ? "Recording the result for "+displayModel(candidate.model) : "Waiting for "+displayModel(candidate.model)+" to finish its answer";
+  return '<section class="run-activity" aria-label="Evaluation progress"><h2>Evaluation in progress</h2><p role="status">'+esc(activity)+'</p>'+
+    activityMeter(activity)+'<div class="run-activity-counts"><div><strong>'+esc(answers)+' / '+esc(total)+'</strong><span>Answers received</span>'+
+    activityMeter("Candidate answers received",{value:answers,max:Math.max(1,total)})+
+    (issues ? '<small>'+esc(issues)+' interrupted or failed</small>' : '')+'</div>'+
+    (estimates ? '<div><strong>'+esc(grades)+' / '+esc(estimates)+'</strong><span>Grader assessments recorded</span>'+
+      activityMeter("Grader assessments recorded",{value:grades,max:estimates})+'</div>' : '')+'</div></section>';
+}
 async function runPage(id:string, record:string|undefined, seq:number) {
   const run = await api.detail(id),
     m = run.manifest;
@@ -678,9 +699,9 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     tag(run.status, true) + (m.mode==="quick" && !m.industry ? "" : tag(m.industry || state.datasets.find(d=>d.id===m.datasetId)?.metadata?.industry || "Industry unrecorded")) +
     (live ? btn("Stop run", "stop") : btn("Export run JSON", "export")) +
     "</div>";
-  if(live)out+='<div id="live-read-status"></div>';
+  if (live) out+='<div id="live-read-status"></div>'+(m.mode==="quick" ? quickExecutionProgress(run) : "");
   if (m.error) out += '<div class="wf-error spacer" role="alert">' + esc(m.error) + "</div>";
-  if (live && run.partial?.stage) out += '<p role="status">'+esc(run.partial.stage)+' is reviewing the recorded scores…</p>';
+  if (live && m.mode!=="quick" && run.partial?.stage) out += '<p role="status">'+esc(run.partial.stage)+' is reviewing the recorded scores…</p>';
   if (m.guardrailFailure) out += guardrailDetails(m.guardrailFailure);
   if (!live) out += evaluationReport(run);
   if (!live) out += structuredOutputSummary(run);
@@ -861,12 +882,15 @@ async function render() {
     const latest = await api.list();
     if (seq !== token) return;
     state = latest;
+    readQuickSession();
+    if(pendingQuickLineup && state.servers.length && workflows.quick.approved?.id===pendingQuickLineup) recoverQuickLineup(workflows.quick.approved);
+    if (route==="compare") restoreActiveQuick();
     $("#machine").textContent = state.device;
     const navRoute = route === "run" ? "history" : route;
     const items = nav.map(
       ([key, label, ico]) =>
         '<a href="#' +
-        key +
+        (key==="graders" && (route==="compare" || quickLibraryPrompt())?quickLibraryPath():key) +
         '" ' +
         (key === navRoute ? 'aria-current="page"' : "") +
         ">" +
@@ -887,7 +911,7 @@ async function render() {
       case "compare":
         await loadQuickGrading(workflows.quick.approved);
         if (seq !== token) return;
-        html = workflowPage("quick");
+        html=(resumedQuickId && resumedQuickId===workflows.quick.approved?.id ? '<p class="wf-hint" role="status">Resumed your approved Quick setup.</p>' : "")+workflowPage("quick");
         break;
       case "new":{
         const selected=workflows.dataset.approved?.datasetId ?? dataset()?.id;
@@ -906,9 +930,16 @@ async function render() {
       case "datasets":
         html = await catalogPage(id);
         break;
-      case "graders":
+      case "graders":{
+        const origin=quickLibraryPrompt();
+        if (origin) {
+          await loadQuickGrading(origin);
+          if (seq!==token) return;
+          if(replacing)quickChooserFilter="";
+        }
         html = await gradersPage();
         break;
+      }
       case "developer":
         html = await developerPage(id);
         break;
@@ -936,7 +967,7 @@ async function render() {
     renderedLocation=place;
     screen.innerHTML = html;
     if(route==="graders")applyCatalogFilter();
-    if (route==="compare") scheduleBudgetPreview();
+    if (route==="compare") {scheduleBudgetPreview();focusReturnedQuickControl();}
     if (editing) {
       const field=document.getElementById(editing);
       if ((field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) && !field.disabled) {
@@ -997,7 +1028,10 @@ document.addEventListener("submit", async (e) => {
   const candidateIds = selectedModels(runMode);
   if (runMode === "quick" ? !canStartQuick() : !canStartDataset()) return;
   w.busy = "start";
-  requireElement("button[type=submit]",HTMLButtonElement,form).disabled = true;
+  const launchButton=requireElement("button[type=submit]",HTMLButtonElement,form);
+  launchButton.disabled=true;
+  launchButton.setAttribute("aria-busy","true");
+  launchButton.textContent="Starting evaluation…";
   try {
     const grading = runMode === "quick" ? quickGradePayload(quickGradePlan()) : {graderIds:selectedGraderIds()};
     const scope=runMode==="quick"?"this Quick comparison across "+candidateIds.length+" candidates":
@@ -1010,7 +1044,9 @@ document.addEventListener("submit", async (e) => {
       animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
     });
     baseline = "";
-    if (stillHere() && showCurrentWorkflow(w)) location.hash = "run/" + id;
+    const openResult=stillHere() && showCurrentWorkflow(w);
+    if(runMode==="quick" && workflows.quick===w) {leaveQuickSetup();workflows.quick=plannerState("quick");}
+    if (openResult) location.hash = "run/" + id;
   } catch (error) {
     w.error = errorText(error);
 
@@ -1103,7 +1139,13 @@ window.addEventListener("hashchange", () => {
 async function bootWorkspace() {
   const stillHere=currentVisit();
   await render();
-  const servers = await api.refresh();
+  const servers=await api.refresh();
+  quickDiscoverySettled=true;
+  if(pendingQuickLineup && workflows.quick.approved?.id===pendingQuickLineup) {
+    state.servers=servers;
+    recoverQuickLineup(workflows.quick.approved);
+    if (!stillHere() && trail()[0]==="compare") await render();
+  }
   if(!stillHere())return;
   clearBudgetPreviews();
   const route = trail()[0];
@@ -1111,7 +1153,7 @@ async function bootWorkspace() {
   if (route === "home" && count) {
     state.servers = servers;
     count.textContent = loadedModelCount();
-  } else if (["home", "providers", "compare", "new", "developer"].includes(route)) {
+  } else if ((["home", "providers", "compare", "new", "developer"].includes(route) || quickLibraryPrompt())) {
     await render();
   }
 }

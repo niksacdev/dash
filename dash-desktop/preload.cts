@@ -65,6 +65,7 @@ const bridge:DashBridge = {
   runProgress: (id,revision,offset) => invoke("runProgress",id,revision,offset),
   designPrompt: (request) => invoke("designPrompt", request),
   suggestMetrics: (request) => invoke("suggestMetrics", request),
+  previewStructuredPrompt: request => invoke("previewStructuredPrompt",request),
   approvePrompt: (request) => invoke("approvePrompt", request),
   cancelDesign: () => invoke("cancelDesign"),
   saveDomainRole: (request) => invoke("saveDomainRole", request),

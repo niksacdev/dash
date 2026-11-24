@@ -59,7 +59,11 @@ function laneBudgetText(budget:UiLaneBudget,model:UiModel) {
 }
 function laneBudgetMarkup(model:UiModel, approved:UiApproved|null) {
   const budget=laneBudgetState(model, approved);
-  return '<div class="qc-lane-budget" data-qc-budget="'+esc(model.id)+'" data-budget-status="'+esc(budget.status)+'" aria-live="polite">'+laneBudgetText(budget,model)+'</div>';
+  return '<div class="qc-lane-budget" data-qc-budget="'+esc(model.id)+'" data-budget-status="'+esc(budget.status)+'" aria-live="polite">'+quickBudgetContent(budget,model)+'</div>';
+}
+function quickBudgetContent(budget:UiLaneBudget,model:UiModel) {
+  if(budget.status==="blocked")return laneBudgetText(budget,model);
+  return '<details><summary>Token limits</summary><small>'+esc(modelCapacityNote(model))+'</small>'+laneBudgetText(budget,model)+'</details>';
 }
 function paintBudgetPreviews() {
   if (trail()[0]!=="compare" || !document.querySelector("#quick-models")) return;
@@ -68,10 +72,13 @@ function paintBudgetPreviews() {
     const model=roster.find(c=>c.id===node.dataset.qcBudget);
     if (!model) continue;
     const budget=laneBudgetState(model,workflows.quick.approved);
-    const text=laneBudgetText(budget,model);
-    if (node.dataset.budgetStatus!==budget.status || node.innerHTML!==text) {
+    const text=quickBudgetContent(budget,model);
+    if (node.dataset.budgetStatus!==budget.status || (!node.querySelector("details")?.open && node.innerHTML!==text)) {
+      const open=node.querySelector("details")?.open;
       node.dataset.budgetStatus=budget.status;
       node.innerHTML=text;
+      const details=node.querySelector("details");
+      if(details && open)details.open=true;
     }
   }
   updateQuickGradingControls();
@@ -112,18 +119,25 @@ function scheduleBudgetPreview() {
     paintBudgetPreviews();
   },120);
 }
-function canStartQuick() {
+function quickLaunchIssue() {
   const approved=workflows.quick.approved;
-  if (!approved || state.active || workflows.quick.busy || graderDesignDrafts.get("prompt:"+approved.id)?.busy || selectedModels().length!==2 || quickGradeIssue(quickGradePlan())) return false;
-  return !rosterModels().some(c=>selectedModels().includes(c.id) && laneBudgetState(c,approved).status==="blocked");
+  if (!approved) return "Approve a task to start.";
+  if (state.active) return "Wait for the active run to finish.";
+  if (workflows.quick.busy || gradeDesignerDraft("prompt:"+approved.id).busy) return "Wait for the current preparation to finish.";
+  const models=selectedModels();
+  if (models.length!==2) return models.length ? "Choose a second model." : "Choose two models from the roster.";
+  const blocked=rosterModels().find(c=>models.includes(c.id) && laneBudgetState(c,approved).status==="blocked");
+  if (blocked) return "Resolve the token limit for "+displayModel(blocked.model)+" or choose another model.";
+  return quickGradeIssue(quickGradePlan());
 }
+function canStartQuick() {return !quickLaunchIssue();}
 function lineSlots(mode:UiMode){
   const {lanes}=modelSelections[mode];
   const roster=rosterModels();
   return [0,1].map(i=>{
     const model=roster.find(c=>c.id===lanes[i]);
     return '<div class="grid-slot '+(model?'occupied':'')+'"><div class="slot-track">'+svg("car","grid-car")+'</div><div><small>Lane '+(i+1)+'</small>'+
-      (model?'<strong>'+esc(displayModel(model.model))+'</strong>':'<button class="choose-slot" type="button" data-choose-slot="'+i+'">Choose a model <span aria-hidden="true">↗</span></button>')+(model?'<small>'+esc(model.endpoint || model.provider)+'</small><small>'+esc(modelCapacityNote(model))+'</small>' + (mode==="quick" ? laneBudgetMarkup(model,workflows.quick.approved) : ""):'')+'</div>'+
+      (model?'<strong>'+esc(displayModel(model.model))+'</strong>':'<button class="choose-slot" type="button" data-choose-slot="'+i+'">Choose a model <span aria-hidden="true">↗</span></button>')+(model?'<small>'+esc(model.endpoint || (mode==="quick" && model.provider==="lmstudio"?"LM Studio":mode==="quick" && model.provider==="ollama"?"Ollama":model.provider))+'</small>' + (mode==="quick" ? laneBudgetMarkup(model,workflows.quick.approved) : '<small>'+esc(modelCapacityNote(model))+'</small>'):'')+'</div>'+
       (model?'<button type="button" class="remove-model" data-remove="'+esc(model.id)+'" aria-label="Remove '+esc(model.model)+'">×</button>':'')+'</div>';
   }).join("");
 }
@@ -145,27 +159,29 @@ function rosterGroups(mode:UiMode){
   }).join("");
 }
 function canStartDataset() {
-  return !state.active && !workflows.dataset.busy && !graderDesignDrafts.get(activeDatasetGraderScope())?.busy && selectedModels("dataset").length > 0 && !referenceScoringIssue();
+  return !state.active && !workflows.dataset.busy && !gradeDesignerDraft(activeDatasetGraderScope()).busy && selectedModels("dataset").length > 0 && !referenceScoringIssue();
 }
 function modelPicker(mode:UiMode, caseCount=0) {
   const quick = mode === "quick";
   const selection = modelSelections[mode];
   const available = rosterModels();
   selection.lanes = selection.lanes.map(id => available.some(c => c.id === id && !c.needsKey) ? id : null);
-  const status = quick
-    ? '<p id="qc-grade-status" role="status">' + esc(quickGradeStatus()) + '</p>'
-    : '<p class="picker-note">Choose one or two models. Each receives ' + esc(caseCount) + (caseCount===1?' case.':' cases.') + '</p>';
-  const ready = quick ? canStartQuick() : canStartDataset();
+  const status = '<p class="picker-note">Choose one or two models. Each receives ' + esc(caseCount) + (caseCount===1?' case.':' cases.') + '</p>';
   return '<section class="model-picker" data-picker-mode="'+mode+'" id="'+mode+'-models"><div class="qc-launch-row">'+
-    '<div class="picker-heading"><h2>Starting line</h2><span id="pick-count" role="status">'+selectedModels(mode).length+' / 2 ready</span></div>'+
-    '<button type="submit" aria-label="'+(quick?'Go · compare both responses':'Start dataset run')+'" class="go-button" '+(!ready?'disabled':'')+'>GO <b aria-hidden="true">❯</b></button></div>'+
-    '<div class="starting-grid">'+lineSlots(mode)+'</div>'+status+
+    '<div class="picker-heading"><h2>'+(quick?'Models':'Starting line')+'</h2><span id="pick-count" role="status">'+selectedModels(mode).length+' / 2 '+(quick?'selected':'ready')+'</span></div>'+
+    (quick?'':'<button type="submit" aria-label="Start dataset run" class="go-button" '+(!canStartDataset()?'disabled':'')+'>GO <b aria-hidden="true">❯</b></button>')+'</div>'+
+    (quick?'<h3 class="qc-line-label">Starting line</h3>':'')+'<div class="starting-grid">'+lineSlots(mode)+'</div>'+(quick?'<button class="qc-grade-jump" type="button" data-qc-grade-jump>Review graders ↓</button>':status)+
     '<section class="compare-roster" aria-labelledby="roster-heading"><div class="picker-heading"><h2 id="roster-heading">Model roster</h2>'+btn("Refresh","refresh","quiet")+'</div>'+
     '<label class="field"><span class="visually-hidden">Search models</span><input type="search" id="model-search" value="'+esc(selection.search)+'" placeholder="Find a model or runtime"></label>'+
     '<div id="roster-groups">'+rosterGroups(mode)+'</div></section></section>';
 }
 function setupQuick() {
-  return '<form id="setup" class="compare-console">'+quickGradePicker()+modelPicker("quick")+gradeDesignerView("prompt:"+workflows.quick.approved?.id)+'</form>'+endpointForm()+hostingLegend();
+  const issue=quickLaunchIssue();
+  return '<form id="setup" class="compare-console qc-workbench"><div class="qc-setup-columns">'+modelPicker("quick")+
+    '<div class="qc-grader-column">'+quickGradePicker()+gradeDesignerView("prompt:"+workflows.quick.approved?.id)+'</div></div>'+
+    '<div class="qc-launch"><div><strong id="qc-launch-state" role="status">'+esc(issue || "Ready to evaluate both answers.")+'</strong>'+
+    '<p id="qc-setup-counts">'+esc(quickSetupCounts(quickGradeSummary().coverage))+'</p></div><button type="submit" class="go-button" aria-describedby="qc-launch-state" '+
+    (issue?'disabled':'')+'>Run evaluation <b aria-hidden="true">❯</b></button></div></form>'+endpointForm()+hostingLegend();
 }
 function updateGrid(picker:HTMLElement) {
   const mode = picker?.dataset.pickerMode;
@@ -173,8 +189,9 @@ function updateGrid(picker:HTMLElement) {
   const focus = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.model : undefined;
   $(".starting-grid",picker).innerHTML = lineSlots(mode);
   $("#roster-groups",picker).innerHTML = rosterGroups(mode);
-  $("#pick-count",picker).textContent = selectedModels(mode).length + " / 2 ready";
+  $("#pick-count",picker).textContent = selectedModels(mode).length + (mode==="quick" ? " / 2 selected" : " / 2 ready");
   if (mode === "quick") {
+    rememberQuickLineup(true);
     updateQuickGradingControls();
     scheduleBudgetPreview();
   } else {
@@ -203,8 +220,12 @@ document.addEventListener("input",e=>{
 document.addEventListener("click",e=>{
   if (!(e.target instanceof Element)) return;
 
+  if(e.target.closest("[data-qc-grade-jump]")) {
+    const panel=document.getElementById("qc-grading");
+    panel?.focus({preventScroll:true});panel?.scrollIntoView({block:"start"});return;
+  }
   if (e.target.closest("[data-qc-revise]")) {
-    const revision=dashElement(".wf-approved [data-wf-revise]",HTMLButtonElement);
+    const revision=dashElement(".qc-brief [data-wf-revise]",HTMLButtonElement);
     if (revision) {e.preventDefault();revision.click();}
     return;
   }

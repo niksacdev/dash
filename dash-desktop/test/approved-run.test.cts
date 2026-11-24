@@ -155,6 +155,36 @@ test("live polling sends only new Quick text or a changed run revision", async t
   assert.equal(bench.detail(id).liveRevision,null);
 });
 
+test("Quick progress identifies the pinned grader while its score is pending",async t=>{
+  const {bench,ids}=harness(t);
+  await bench.refresh();
+  const draft=await bench.designPrompt({mode:"quick",domain:"Manufacturing",objective:"Review this lot."});
+  const approved=bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
+  let enter=()=>{};
+  let release=()=>{};
+  const reached=new Promise<void>(resolve=>{enter=resolve;});
+  const hold=new Promise<void>(resolve=>{release=resolve;});
+  const assess=bench.graders.assess.bind(bench.graders);
+  bench.graders.assess=async (...args)=>{
+    enter();
+    await hold;
+    return assess(...args);
+  };
+  const runId=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id});
+  const done=completion(bench);
+  try {
+    await reached;
+    const progress=bench.detail(runId), partial=progress.partial;
+    assert.ok(partial && "candidateId" in partial);
+    assert.equal(partial.candidateId,ids[0]);
+    assert.deepEqual(partial.grading,{name:progress.manifest.graders[0].name,version:progress.manifest.graders[0].version});
+    assert.equal(progress.results.length,1);
+    assert.equal(progress.assessments.length,0);
+    assert.equal(bench.runProgress(runId,present(progress.liveRevision),0).kind,"unchanged");
+  } finally {release();await done;}
+  assert.equal(bench.detail(runId).partial,null);
+});
+
 test("idle dataset polls do not repeat previous responses or expose the current case stream", async t=>{
   const {bench,ids}=harness(t);
   await bench.refresh();

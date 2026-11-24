@@ -775,6 +775,10 @@ export class Bench {
             for (const scorer of m.graders || []) {
               if (signal.aborted) break;
               if (rec.error && !scorer.library?.automatic) continue;
+              if (m.mode === "quick") {
+                job.partial = {candidateId:c.id,caseId:row.case_id,text:"",grading:{name:scorer.name,version:scorer.version}};
+                job.revision++;
+              }
               const evidence = graderEvidence(m,row,rec,scorer.type === "catalog",scorer.id);
               await this.graders.record(scorer,evidence,
                 {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
