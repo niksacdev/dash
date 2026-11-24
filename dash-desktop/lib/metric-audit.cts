@@ -69,6 +69,18 @@ export function pairSelection(metrics:string[],criteria:string[],prior:PriorMeas
   } else if (missing.length || unused.size) throw Error(guidance);
   return result;
 }
+// Old-domain pairs may have been reordered, partly replaced, or removed in the two editors.
+export function revisedDomainSelection(metrics:string[],criteria:string[],parent:PriorMeasures):Proposal[]|null {
+  if (!metrics.length) return [];
+  const oldMetric=(metric:string)=>parent.metrics.includes(metric);
+  const oldCriterion=(criterion:string)=>parent.criteria.includes(criterion);
+  if (metrics.every(oldMetric) && criteria.every(oldCriterion)) return null;
+  if (!metrics.some(oldMetric) && !criteria.some(oldCriterion)) return pairSelection(metrics,criteria,null);
+  const selected=pairSelection(metrics,criteria,parent);
+  const edited=selected.filter(row=>!oldMetric(row.metric) || (row.criterion && !oldCriterion(row.criterion)))
+    .map(row=>oldCriterion(row.criterion) ? {...row,criterion:""} : row);
+  return edited.length ? edited : null;
+}
 function anchors(text:string) {
   const stop=new Set("about across against along among and any are but for has have how include into its more must out should than then there those was were whether which will would without you your answer assess available based business case cases check compare dataset correct correctly each evaluate evidence expected from goal input labeled match measure measures metric model objective output performance provide proposed rate records reference reported required response source supplied task that the their this under using value with".split(" "));
   return new Set(words(text).split(" ").filter(w=>w.length>2 && !stop.has(w)).map(w=>w.replace(/(?:ing|ed|s)$/,"")));

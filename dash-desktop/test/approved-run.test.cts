@@ -61,6 +61,25 @@ async function approval(bench:Bench, limits:{inputCap?:number;outputCap?:number}
   return bench.workflow.approve({ draftId:draft.draftId, prompt:"Check the supplied sample against its active drawing." });
 }
 
+test("Quick starter pins the domain in the catalogue, matching graders and completed run",async t=>{
+  const {bench,ids}=harness(t); await bench.refresh();
+  const starter=present(bench.list().packs.find(p=>p.id==="manufacturing")?.starter);
+  const draft=await bench.designPrompt({mode:"quick",objective:starter.quickObjective});
+  const approved=bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
+  const save=(industry:string)=>bench.graders.save({name:industry+" evidence",industry,category:"Inspection",type:"contains",
+    threshold:1,criteria:"inspection"},[]);
+  const manufacturing=save("Manufacturing"),finance=save("Financial Services");
+  const choices=bench.quickGraderOptions(approved.id).available;
+  assert.ok(choices.some(g=>g.id===manufacturing));assert.ok(!choices.some(g=>g.id===finance));
+  const run=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id,graderIds:[manufacturing]});
+  await completion(bench);
+  const detail=bench.detail(run);
+  assert.equal(detail.status,"completed");assert.equal(detail.manifest.industry,"Manufacturing");
+  assert.equal(detail.manifest.approvedPrompt?.domainSource,"starter");
+  assert.equal(bench.list().runs.find(r=>r.id===run)?.industry,"Manufacturing");
+  assert.equal(bench.workflow.get(approved.id).domain,"Manufacturing");
+});
+
 test("a failed cap in a second lane stops both lanes before generation", async t => {
   const checks:string[] = [];
   const { bench, calls, ids } = harness(t, async ({candidate,messages}) => {
