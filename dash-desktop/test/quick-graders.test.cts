@@ -236,3 +236,81 @@ test("invalid or excessive measure assignments roll back generated revisions and
   assert.equal(bench.graders.list().length,count);
   assert.equal(bench.list().runs.length,0);
 });
+
+test("a cross-industry local decision default scores both Quick candidates once and remains pinned on dataset reruns",async t=>{
+  const {bench,models,approved,start}=await setup(t);
+  const model="qa/decision";
+  const settings={name:"Evidence citation",type:"decision",intent:"create",category:"Evidence",
+    criteria:"Does the answer cite a concrete value from the prompt?",industry:"Cross-industry",threshold:0.8,
+    decision:{provider:"local",model,failAt:0.2}};
+  const save=(overrides:Record<string,unknown>={})=>bench.graders.save({...settings,...overrides},[]);
+  const first=save(), other=save({name:"Answer identifies units",criteria:"Does the answer give a unit for each quantity?"});
+  const second=save({intent:"revise",sourceGraderId:first,threshold:0.95});
+  for(const changes of [{industry:"Manufacturing"},{requiredEvidence:["reference"]},{requiredEvidence:["trajectory"]},
+    {decision:{provider:"openrouter",model:"liquid/d1.2",failAt:0.2}}]){
+    const ineligible=save(changes);
+    assert.throws(()=>bench.setGeneralGraderDefault(ineligible,true),/cross-industry.*local decision grader/);
+    assert.equal(bench.list().graders.find(g=>g.id===ineligible)?.generalDefaultKey,null);
+  }
+  const firstKey=present(bench.list().graders.find(g=>g.id===first)?.generalDefaultKey);
+  assert.equal(bench.list().graders.find(g=>g.id===second)?.generalDefaultKey,firstKey);
+  assert.notEqual(bench.list().graders.find(g=>g.id===other)?.generalDefaultKey,firstKey);
+  bench.setGeneralGraderDefault(first,true);
+  bench.setGeneralGraderDefault(other,true);
+  assert.deepEqual(new Set(bench.list().generalGraderDefaults),new Set([first,other]));
+  bench.setGeneralGraderDefault(other,false);
+  assert.ok(bench.quickGraderOptions(approved.id).automatic.some(g=>g.id===first));
+  let offline=false;
+  const graded:Record<string,unknown>[]=[];
+  t.mock.method(globalThis,"fetch",async(url:RequestInfo|URL,options?:RequestInit)=>{
+    assert.equal(new URL(String(url)).origin,"http://127.0.0.1:8080");
+    if(String(url).endsWith("/v1/models"))
+      return Response.json({data:offline?[]:[{id:model,output_modalities:["decisions"]}]});
+    assert.equal(String(url),"http://127.0.0.1:8080/v1/systemone");
+    assert.ok(typeof options?.body==="string");
+    const {state}=z.object({state:z.string()}).parse(JSON.parse(options.body));
+    const {output}=z.object({output:z.string()}).parse(JSON.parse(state));
+    graded.push(z.record(z.string(),z.unknown()).parse(JSON.parse(state)));
+    return Response.json({model,answers:{criterion:{type:"noul",noul:output.includes("GAAP")?0.9:0.1}}});
+  });
+  const quick=start({});
+  await present(bench.active).done;
+  const checked=bench.detail(quick);
+  assert.deepEqual(graded.map(state=>state.output),["GAAP EPS 1.24","Adjusted EPS 1.80"]);
+  assert.ok(graded.every(state=>Object.keys(state).sort().join(",")==="input,output"));
+  assert.deepEqual(checked.manifest.taskAnswerDecisionGraderIds,[first]);
+  assert.deepEqual(checked.assessments.filter(a=>a.graderId===first).map(a=>[a.candidate,a.pass,a.decision?.actualModel]),
+    [[models[0].id,true,model],[models[1].id,false,model]]);
+  assert.equal(checked.manifest.graders.filter(g=>g.id===first).length,1);
+  const [measure]=bench.quickGraderOptions(approved.id).measures;
+  const mapped=start({graderIds:[first],measureGraders:[{metric:measure.metric,kind:"saved",graderId:first}]});
+  await present(bench.active).done;
+  const explicit=bench.detail(mapped).manifest;
+  assert.equal(explicit.taskAnswerDecisionGraderIds,undefined);
+  assert.equal(explicit.measureGraders?.[0].graderId,first);
+  assert.equal(explicit.graders.filter(g=>g.id===first).length,1);
+  assert.ok(graded.slice(2).every(state=>!!state.evaluationBrief));
+  const dataset=present(bench.list().datasets.find(d=>d.pack==="manufacturing"));
+  const candidateIds=models.slice(0,2).map(m=>m.id);
+  const newRun=(parentId?:string)=>bench.start({mode:"dataset",datasetId:dataset.id,caseId:"shaft-superseded-revision",candidateIds,parentId});
+  offline=true;
+  const original=newRun();
+  await present(bench.active).done;
+  const run=bench.detail(original);
+  assert.equal(run.results.filter(result=>result.output).length,2);
+  assert.deepEqual(run.assessments.filter(a=>a.graderId===first).map(a=>[a.candidate,a.value,a.pass,a.decisionRequest?.requestedModel]),
+    [[models[0].id,null,null,model],[models[1].id,null,null,model]]);
+  bench.setGeneralGraderDefault(second,true);
+  bench.setGeneralGraderDefault(first,false);
+  assert.deepEqual(bench.list().generalGraderDefaults,[second]);
+  const rerun=newRun(original);
+  await present(bench.active).done;
+  assert.deepEqual(bench.detail(rerun).manifest.graders,run.manifest.graders);
+  assert.equal(bench.detail(rerun).manifest.policyHash,run.manifest.policyHash);
+  const fresh=newRun();
+  await present(bench.active).done;
+  assert.ok(bench.detail(fresh).manifest.graders.some(g=>g.id===second));
+  assert.notEqual(bench.detail(fresh).manifest.policyHash,run.manifest.policyHash);
+  assert.deepEqual(bench.detail(rerun).manifest.taskAnswerDecisionGraderIds,[first]);
+  assert.equal(graded.length,4);
+});

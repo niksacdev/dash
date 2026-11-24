@@ -53,6 +53,12 @@ Both candidates receive the same task and each returned answer goes to the same 
 
 For earnings extraction, pair relevance with a grader that checks the requested accounting basis. An answer can address EPS directly and still quote adjusted EPS when the question asks for GAAP.
 
+## Run a local decision check on both candidates
+
+Save a **Decision model · yes/no** grader under **Cross-industry** with a local decision server and a criterion you can judge from the prompt and answer. For example, “Does the answer cite a value supplied in the prompt to support its conclusion?” can work across industries when that is part of your team’s policy. Use **Test** to check a known pass, a near miss and a case with insufficient evidence. In **My graders → Manage version**, select **Use on new runs**. Quick compare and Dataset run show the selected revision among their automatic checks and score each candidate separately. Automatic local decisions receive the same task the candidate saw, its answer and the fixed yes/no criterion. If you explicitly select that grader for a run or map it to a success measure, it can also use the available case evidence. A judge failure or a probability between cutoffs leaves that assessment unscored.
+
+Each decision criterion has its own default. Enabling another revision of the same grader replaces the revision for new runs. Case reruns use the versions in the original run. For a domain-specific rule, a criterion that requires reference evidence or agent actions, or a hosted decision model, choose the saved grader explicitly for the run.
+
 ## Reuse or revise a policy
 
 The **General** library also supplies response diagnostics, including response presence and completion. **Industry** contains reusable scenario checks. **My graders** holds your own definitions and versions. A change to a threshold or judge belongs in a new revision so earlier scores remain interpretable.

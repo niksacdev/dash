@@ -58,8 +58,13 @@ export function caseMessages(manifest:{pack?:ScenarioPack|null;effectiveSystem?:
   ];
 }
 
-type GradingManifest = Parameters<typeof caseMessages>[0] & Partial<Pick<RunManifest,"mode"|"fixture"|"approvedPrompt"|"measureGraders">>;
+type GradingManifest = Parameters<typeof caseMessages>[0] & Partial<Pick<RunManifest,"mode"|"fixture"|"approvedPrompt"|"measureGraders"|"taskAnswerDecisionGraderIds">>;
 export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:RunResult, catalogContext=false, graderId?:string):GraderEvidence {
+  const input = result.dispatchedMessages ?? caseMessages(manifest,row);
+  const inputSource = result.dispatchedMessages ? "recorded-dispatch" : manifest.fixture ? "fixture-case" : "reconstructed-case";
+  const output = result.output ?? "";
+  if (graderId && manifest.taskAnswerDecisionGraderIds?.includes(graderId))
+    return {input, inputSource, output, reference:undefined};
   const approved = manifest.mode === "quick" ? manifest.approvedPrompt : null;
   const mapped=graderId && manifest.measureGraders?.find(row=>row.graderId===graderId);
   return {
@@ -67,12 +72,10 @@ export function graderEvidence(manifest:GradingManifest, row:CaseRow, result:Run
     ...(catalogContext && {finishReason:result.reportedFinishReason ?? null}),
     ...(catalogContext && manifest.pack && manifest.pack.kind !== "reference" && {caseContext:{pack:manifest.pack,row}}),
     ...(approved && {evaluationBrief:{objective:approved.objective, metrics:mapped ? [mapped.metric] : approved.auditAgent ? approved.metrics.filter(metric=>!isExternalOutcomeMetric(metric)) : approved.metrics, criteria:mapped ? (mapped.criterion ? [mapped.criterion] : []) : approved.requirements}}),
-    input: result.dispatchedMessages ?? caseMessages(manifest,row),
-    inputSource: result.dispatchedMessages ? "recorded-dispatch" : manifest.fixture ? "fixture-case" : "reconstructed-case",
+    input, inputSource, output,
     reference: row.reference ?? row.gold ?? null,
     ...(row.sme_rationale && {sme_rationale:row.sme_rationale}),
     ...(row.rubric && {rubric:row.rubric}),
-    output:result.output ?? "",
   };
 }
 
