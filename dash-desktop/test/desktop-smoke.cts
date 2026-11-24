@@ -1,6 +1,6 @@
 import {app, BrowserWindow} from "electron";
 import {once} from "node:events";
-import {mkdtempSync, writeFileSync} from "node:fs";
+import {mkdtempSync, readFileSync, writeFileSync} from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import assert from "node:assert/strict";
@@ -183,7 +183,11 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     `document.documentElement.dataset.appearance === "${value}" &&
      document.querySelector('#appearance input[value="${value}"]').checked &&
      getComputedStyle(document.documentElement).colorScheme === "${value}"`;
+  const manifest: unknown = JSON.parse(readFileSync(path.join(__dirname, "../../package.json"), "utf8"));
+  const {version} = z.object({version:z.string()}).parse(manifest);
   async function checkControlColors() {
+    const versionLabel = await js(`document.querySelector("#appearance")?.previousElementSibling?.textContent.trim()`);
+    assert.equal(versionLabel, "DASH version v" + version, "Header identifies the built DASH release beside the theme selector");
     const colors = await js(`(() => {
       const fill = element => getComputedStyle(element).backgroundColor;
       return {
@@ -256,10 +260,10 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     await wait("innerWidth === 390");
     const bounds = await js(`(() => {
       const rect = selector => document.querySelector(selector).getBoundingClientRect();
-      const hero = rect('.hero'), controls = rect('#appearance'), count = rect('#overview-total-runs');
+      const hero = rect('.hero'), controls = rect('#appearance'), label = rect('.app-version'), count = rect('#overview-total-runs');
       return {overflow:document.documentElement.scrollWidth - document.documentElement.clientWidth,
         left: hero.left - rect('aside').right, top: hero.top - rect('header').bottom,
-        controlsFit:controls.left >= hero.left && controls.right <= innerWidth, countFits:count.right <= innerWidth};
+        controlsFit:label.width > 0 && label.left >= hero.left && label.right <= controls.left && controls.right <= innerWidth, countFits:count.right <= innerWidth};
     })()`);
     assert.deepEqual(bounds,{overflow:0,left:0,top:0,controlsFit:true,countFits:true});
     await js("document.activeElement.blur()");
