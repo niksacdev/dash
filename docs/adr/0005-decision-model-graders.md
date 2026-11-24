@@ -1,6 +1,6 @@
 # 0005. Grade a bounded criterion with a selectable decision model
 
-**Status** Proposed
+**Status** Accepted
 
 ## Objective
 

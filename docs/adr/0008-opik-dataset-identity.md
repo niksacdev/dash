@@ -1,6 +1,6 @@
 # 0008. Verify native Opik dataset ownership before reuse
 
-**Status** Proposed
+**Status** Accepted
 
 This extends [ADR 0002](0002-opik-and-offline-runs.md) for multiple local profiles sharing an Opik deployment, including the [self-hosted service](0004-local-opik-service.md).
 

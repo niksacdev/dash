@@ -11,3 +11,5 @@ Run `npm ci`, `npm run docs:check` and `npm run check` inside `dash-desktop/`. D
 For a material product, UX or architecture decision, add a numbered ADR and append its dated event to the [decision log](../docs/adr/README.md) in the same PR. Cite the governing ADR for work that implements an existing choice. On a status change, preserve earlier events and link the review and any predecessor or successor. The repository documentation check verifies that every numbered record appears in the log with its current status.
 
 For an evaluator or experiment feature, check Opik’s existing TypeScript primitives first. Document any DASH-specific behavior needed for domain evidence, hardware telemetry, offline operation, or reproducibility.
+
+Before each commit, follow the [independent staged review workflow](../docs/guides/precommit-review.md). It covers the complete repository, including Electron, the runner, domain packs, Opik, build tooling and documentation.
