@@ -25,7 +25,7 @@ body:has(.compare-console) #screen {max-width:none;margin:0;padding:18px clamp(1
 .compare-console #quick-models {margin:0}
 body:has(.compare-console) #setup {padding:0}
 .model-picker .grid-slot {padding:10px 13px;min-height:64px}
-.choose-slot {padding:0 6px;min-height:30px;font-size:16px;font-weight:600;line-height:1.2;gap:8px}
+.choose-slot {padding:0 6px;min-height:44px;font-size:16px;font-weight:600;line-height:1.2;gap:8px}
 .compare-workarea {display:grid;grid-template-columns:minmax(245px, .82fr) minmax(0,1.18fr);gap:clamp(12px,1.5vw,22px);align-items:start;margin-top:18px;border-top:1px solid var(--border);padding-top:14px}
 .compare-roster,.compare-draft {min-width:0}
 .compare-roster .field {margin:0 0 8px}

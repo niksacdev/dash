@@ -8,7 +8,7 @@ ImageGen received the following prompt.
 
 The [DASH mark](../../dash-desktop/ui/assets/dash-mark.svg) is shared by the sidebar and Overview. The Dock uses its [1024 px PNG](../../dash-desktop/ui/assets/dash-icon.png). To regenerate that raster on macOS, run `sips -s format png dash-desktop/ui/assets/dash-mark.svg --out dash-desktop/ui/assets/dash-icon.png` from the repository root. The Mac bundle builds its icon set from the PNG.
 
-Use racing yellow (`#ffcf00`) with charcoal lettering for workflow actions such as **New run**. Light/Dark uses a bordered selection on the shell surface. The carousel groups its ivory arrows, slide count and playback control on graphite. Both controls have a separate keyboard focus indicator. Style the device power readout with its neighboring telemetry values.
+Use racing yellow (`#ffcf00`) with charcoal lettering for workflow actions such as **New run**. Model cards, lane controls and planning choices use neutral surfaces. A checkmark and accent outline identify a selected model. At two selections, the remaining cards keep their runtime labels and lose their add symbol. Light/Dark uses a bordered selection on the shell surface. The carousel groups its ivory arrows, slide count and playback control on graphite. Both controls have a separate keyboard focus indicator. Style the device power readout with its neighboring telemetry values.
 
 The [light](overview-light.png) and [dark](overview-dark.png) screenshots show the desktop workbench using an isolated test profile.
 

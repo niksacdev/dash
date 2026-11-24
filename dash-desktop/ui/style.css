@@ -77,6 +77,15 @@ button,
   justify-content: center;
   gap: 6px;
 }
+:where(button[aria-pressed], .choose-slot, .remove-model, .wf-domain) {
+  --button-fill: var(--surface-soft);
+  --button-hover: var(--selected);
+  --button-active: var(--selected);
+  --button-ink: var(--ink);
+  --button-border: var(--control-border);
+  --button-disabled: var(--panel);
+  --button-disabled-ink: var(--muted);
+}
 button, .button, :where(.wf-domain label > span) {
   color: var(--button-ink);
   background-color: var(--button-fill);
@@ -89,7 +98,11 @@ button:enabled:active, .button:active, :where(.wf-domain) label:active input:ena
   background-color: var(--button-active);
 }
 button[aria-pressed="true"], :where(.wf-domain) input:checked + span {
-  box-shadow: inset 0 0 0 2px currentColor;
+  --button-fill: var(--selected);
+  --button-border: var(--accent);
+  --button-ink: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  border-color: var(--button-border);
 }
 button:disabled, :where(.wf-domain) input:disabled + span {
   color: var(--button-disabled-ink);
@@ -545,8 +558,14 @@ button:focus-visible, a.button:focus-visible, :where(.wf-domain) input:focus-vis
   outline-offset: 1px;
   box-shadow: 0 0 0 5px #fff, inset 0 0 0 1px var(--button-ink);
 }
-button[aria-pressed="true"]:focus-visible, :where(.wf-domain) input:checked:focus-visible + span {
-  box-shadow: 0 0 0 5px #fff, inset 0 0 0 2px var(--button-ink);
+button:is([aria-pressed], .choose-slot, .remove-model):focus-visible,
+.wf-domain input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+  box-shadow: none;
+}
+button[aria-pressed="true"]:focus-visible, .wf-domain input:checked:focus-visible + span {
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 a.link:hover {
   text-decoration: underline;
@@ -660,7 +679,7 @@ progress::-webkit-progress-value {background:var(--brand);border-radius:2px}
 .grid-slot strong {font-size:17px;line-height:1.2;margin:4px 0}.grid-slot small {font-size:10px}
 .slot-track {width:58px;flex-shrink:0;border-block:1px dashed var(--control-border);padding:3px 0}.grid-car {width:50px;height:31px;color:var(--brand)}.grid-slot:nth-child(2) .grid-car {color:var(--series-b)}
 .grid-slot:not(.occupied) .grid-car {opacity:.27}
-.remove-model {margin-left:auto;min-height:36px;min-width:36px;padding:0}.launch-strip {align-items:stretch;gap:14px;margin:15px 0}
+.remove-model {margin-left:auto;min-height:44px;min-width:44px;padding:0}.launch-strip {align-items:stretch;gap:14px;margin:15px 0}
 .launch-strip>.field {flex:1;margin:0}.launch-strip textarea {min-height:80px}.launch-side {width:165px;display:grid;gap:6px}.launch-side .field {margin:0}
 .go-button {min-height:44px;font:italic 850 21px/1 Arial;letter-spacing:.03em}
 .roster-group {display:grid;grid-template-columns:110px 1fr;border-top:1px solid var(--border);padding:9px 0;gap:12px}
@@ -668,7 +687,11 @@ progress::-webkit-progress-value {background:var(--brand);border-radius:2px}
 .roster-list {display:grid;grid-template-columns:repeat(auto-fill,minmax(min(195px,100%),1fr));gap:5px}
 .roster-model {min-width:0;min-height:54px;text-align:left;justify-content:flex-start;border-radius:7px;padding:6px 9px;gap:9px}
 .roster-model .model-logo {width:28px;height:28px;border-radius:4px}.roster-model .model-logo img {width:21px;height:21px}
-.roster-model b {font-size:12px;line-height:1.2}.roster-model small {font-size:10px;margin-top:3px;color:inherit}.roster-model i {margin-left:auto}
+.roster-model b {font-size:12px;line-height:1.2}.roster-model small {font-size:10px;margin-top:3px;color:var(--muted)}
+.roster-model i {margin-left:auto;color:var(--muted);font-style:normal}
+.roster-model[aria-pressed="true"] i {color:var(--accent-strong)}
+.roster-model:disabled {border-color:var(--border)}
+.roster-model:disabled i {visibility:hidden}
 .roster-empty {align-self:center}
 .visually-hidden {position:absolute;clip-path:inset(50%);width:1px;height:1px;overflow:hidden}
 @media(max-width:790px){.starting-grid{grid-template-columns:1fr}.roster-group{grid-template-columns:1fr;gap:0}.group-name{padding:2px 0 6px}}
