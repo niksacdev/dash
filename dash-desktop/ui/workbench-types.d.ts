@@ -68,7 +68,8 @@ interface UiManifest {
   policyHash?:string|null;caseSetHash?:string;caseIds:string[];pack:UiPack|null;candidates:UiModel[];error?:string;
   tokenBudget?:UiTokenCaps;guardrailFailure?:UiGuardrail|null;invocations?:{candidateId:string;adapter:string;template?:string|null}[];
 }
-interface UiRunDetail {manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;text?:string}|null}
+type UiRunProgress = {kind:"unchanged"}|{kind:"refresh"}|{kind:"append";candidateId:string;text:string};
+interface UiRunDetail {liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;text?:string}|null}
 interface UiDiagnostic {status:string;fixture:boolean;candidates:Pick<UiModel,"model"|"id">[];traces:{
   candidateId:string;caseId:string;index:number;telemetry?:UiTelemetry|null;stage:string;note:string;traceId:string;started:string;finished?:string;finishReason?:string|null;adapter?:string|null}[]}
 interface UiPower {at:string;watts:number|null;source:string|null;
@@ -88,6 +89,7 @@ type UiDesignGraderRequest = {promptId:string} | {objective:string;metrics:strin
 interface UiPlanningEvent {mode:UiMode;stage:string;model:string;status:string;attempt:number}
 interface DashBridge {
  list():Promise<UiState>;refresh():Promise<UiServer[]>;dataset(id:string):Promise<UiDatasetDetail>;detail(id:string):Promise<UiRunDetail>;
+ runProgress(id:string,revision:number,offset:number):Promise<UiRunProgress>;
  designPrompt(request:UiDesignInput):Promise<UiDraft>;suggestMetrics(request:UiDesignInput):Promise<UiSuggestion>;
  approvePrompt(request:UiApproval):Promise<UiApproved>;cancelDesign():Promise<void>;onPlanningStage(callback:(event:UiPlanningEvent)=>void):void;
  saveDomainRole(request:{domain:string;role:string;instructions:string;expectedVersion:number}):Promise<UiRole>;

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+exec node --experimental-strip-types "$root/dash-desktop/scripts/review-gate.mts" verify

@@ -84,12 +84,18 @@ async function volume(sources: DeviceSources): Promise<DeviceStats["disk"]> {
 function boundedSource<T>(source: () => Promise<T>, unavailable: T): () => Promise<T> {
   let active: Promise<T> | null = null;
   return () => {
-    active ??= Promise.resolve().then(source).catch(() => unavailable).finally(() => { active = null; });
-    const current = active;
-    return new Promise<T>(resolve => {
+    // Share the timed observation as well as the native work. After timeout it remains
+    // resolved until the source settles, so repeated polls cannot retain more callbacks.
+    active ??= new Promise<T>(resolve => {
       const timer = setTimeout(() => resolve(unavailable), 1500);
-      current.then(value => { clearTimeout(timer); resolve(value); });
+      const finish = (value:T) => {
+        clearTimeout(timer);
+        active = null;
+        resolve(value);
+      };
+      void Promise.resolve().then(source).then(finish, () => finish(unavailable));
     });
+    return active;
   };
 }
 

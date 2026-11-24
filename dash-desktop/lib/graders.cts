@@ -20,10 +20,17 @@ function readJson(value:unknown):unknown {
 }
 const referenceRule=z.object({outputField:z.string().regex(/^[\w.-]+$/),referenceField:z.string().regex(/^[\w.-]+$/)});
 const python=path.resolve(__dirname,"../../.opik-venv/bin/python");
-const pythonSdkEnabled=()=>existsSync(python) && existsSync(path.resolve(__dirname,"../../.opik-venv/lib/python3.12/site-packages/opik"));
+const pythonBridge=path.join(__dirname,"opik_judge.py");
+const legacyEngineUnavailable="This grader revision requires the historical Python Opik G-Eval bridge. Restore its local environment or save a new grader revision to use the installed TypeScript SDK.";
+const pythonSdkEnabled=()=>existsSync(pythonBridge) && existsSync(python) && existsSync(path.resolve(__dirname,"../../.opik-venv/lib/python3.12/site-packages/opik"));
 
 export const opikVersion = "opik-js@" + z.object({version:z.string()}).parse(require("opik/package.json")).version;
 export const sdkEnabled = () => typeof GEval === "function";
+function requirePinnedSdk(engine:string|undefined):void {
+  if (engine===opikVersion) return;
+  const required=engine ? "This grader revision requires "+engine+"." : "This grader revision has no recorded Opik SDK version.";
+  throw Error(required+" DASH has "+opikVersion+". Restore the pinned evaluator or save a new grader revision with the installed SDK.");
+}
 const containsMetric = new Contains("Contains", false, true);
 const exactMetric = new ExactMatch("Exact match", false);
 
@@ -89,16 +96,22 @@ const checks={
   }
 };
 function opikScore(payload:unknown,signal:AbortSignal):Promise<{value:number;reason:string}> {
-  if(!pythonSdkEnabled())throw Error("The local Opik judge environment is unavailable.");
+  if(!pythonSdkEnabled())throw Error(legacyEngineUnavailable);
   return new Promise((resolve,reject)=>{
-    const proc=execFile(python,[path.join(__dirname,"opik_judge.py")],{
+    const proc=execFile(python,[pythonBridge],{
       timeout:180000,maxBuffer:1024*1024,signal,
       env:{PATH:"/usr/bin:/bin",HOME:process.env.HOME,OPIK_TRACK_DISABLE:"true",LITELLM_LOCAL_MODEL_COST_MAP:"True",DO_NOT_TRACK:"1",OTEL_SDK_DISABLED:"true"}
     },(err,stdout)=>{
-      if(err)return reject(Error(signal?.aborted?"Grading canceled":"Opik judge process failed or timed out."));
+      if(err) {
+        if (signal.aborted) return reject(Error("Grading canceled"));
+        return reject(Error(err.code==="ENOENT" || err.code==="EACCES" ? legacyEngineUnavailable : "Historical Opik judge process failed or timed out."));
+      }
       try {
         const result=readJson(stdout.trim().split("\n").at(-1));
-        if(isRecord(result) && typeof result.error==="string")throw Error(result.error);
+        if(isRecord(result) && typeof result.error==="string") {
+          if (/^(ModuleNotFoundError|ImportError):/.test(result.error)) throw Error(legacyEngineUnavailable);
+          throw Error(result.error);
+        }
         resolve(z.object({value:z.number(),reason:z.string()}).parse(result));
       } catch(error){reject(error);}
     });
@@ -339,6 +352,7 @@ export class Graders {
         return {...base,...score,pass:score.value==null ? null : score.value>=g.threshold};
       }
       if (g.type==="opik-metric") {
+        requirePinnedSdk(g.opikEngine);
         const result=await scoreOpikMetric(g.metricKey,disclosedEvidence(e),new DashJudgeModel(g.judge,adapters,signal,true));
         return {...base,...result,pass:result.value==null ? null : result.value>=g.threshold, evaluator:opikVersion+" · "+g.metricKey};
       }
@@ -350,7 +364,7 @@ export class Graders {
           ...(provider === "local" && {protocol:protocol ?? "systemone"}),
           ...(fallbackModel && {fallbackModel}),
         };
-        signal.throwIfAborted();
+        requirePinnedSdk(g.opikEngine);
         if (provider==="openrouter" && allowHostedDecision!==true)
           throw Error("Allow this operation to send grading evidence to OpenRouter first.");
         if (g.requiredEvidence?.includes("reference") && (e.reference==null || (typeof e.reference==="string" && !e.reference.trim())))
@@ -374,10 +388,11 @@ export class Graders {
         reason=({field:passed?"Output field matched the reference.":"Output field differed from the reference or the output was invalid JSON.",
           trajectory:passed?"The required actions occurred in order.":"One or more required actions were missing or out of order."})[g.type];
       } else if(g.type==="opik") {
-        if (!g.opikEngine && pythonSdkEnabled()) {
+        if (g.opikEngine===undefined) {
           ({value,reason}=await opikScore({model:g.judge.model,provider:g.judge.provider,rubric:g.criteria,evidence:disclosedEvidence(e)},signal));
           base.evaluator="opik-python";
         } else {
+          requirePinnedSdk(g.opikEngine);
           const metric=new GEval({name:g.name,trackMetric:false,temperature:0,
             taskIntroduction:"Grade the candidate output against the approved rubric. Use the supplied input and output as evidence. A trajectory field contains observed agent actions when supplied. Do not infer tool use from the answer. Score on the integer scale from 0 to 10. Give 10 for full credit, 5 for half credit, and 0 for no credit. For a binary requirement, give 10 if met or 0 if missed. Convert any rubric-specific scale to this scale. Give a one-sentence reason citing the decisive evidence.",
             evaluationCriteria:g.criteria,model:new DashJudgeModel(g.judge,adapters,signal)});

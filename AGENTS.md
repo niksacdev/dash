@@ -40,6 +40,12 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 - For dependent batches, merge the prerequisite into `main` first. Fetch `origin/main`, confirm the prerequisite is present, then open the next PR against `main` with only its remaining changes. Independent PRs can target `main` in parallel. [Merge policy](docs/adr/0009-main-pr-target.md)
 - Use the [documentation index](docs/START_HERE.md) for the original artifacts and product reviews. Maintain a single source for each dataset fixture and preserve original design/specification files when moving them.
 
+## Independent review before every commit
+
+- Stage the complete change, including documentation. Before committing, request independent Codex reviews of the exact parent commit and staged tree. Apply this to every directory and change type. Run the three reviews in the [pre-commit review guide](docs/guides/precommit-review.md).
+- A reviewer must be independent of the changes they approve. Require separate security/privacy, reliability/resource lifetime, and quality/extensibility verdicts. Give reviewers the immutable Git IDs, the objective and the verification evidence. Ask for concrete findings and file locations. Resolve blocking findings, stage the fixes, and review the new tree.
+- Run the repository checks relevant to the change. Commit through the tracked review hook. In the PR, summarize what each reviewer checked, findings and fixes, tests run, and any limitations. Keep private data and credentials out of reviews.
+
 ## Continuous learning
 
 - Before committing, check the changed behavior against its spec, setup guide, agent instructions and ADRs. Update affected documentation in the same change. If the behavior did not change, record the verification in the PR.

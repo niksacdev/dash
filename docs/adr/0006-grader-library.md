@@ -1,6 +1,6 @@
 # 0006. Pin reusable grader revisions to domain runs
 
-**Status** Proposed
+**Status** Accepted
 
 ## Decision
 

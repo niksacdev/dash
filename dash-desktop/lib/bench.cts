@@ -1,3 +1,4 @@
+import {exportDiagnostics} from "./export-diagnostics.cjs";
 import {DatabaseSync} from "node:sqlite";
 import {randomUUID} from "node:crypto";
 import * as os from "node:os";
@@ -19,8 +20,10 @@ import {assessCase,lengthFailure,reasoningPolicy,autoOutputTarget,GuardrailError
 import {decodeManifest,decodeResult,decodeRunSummary,decodeDatasetSummary} from "./run-decode.cjs";
 import {errorMessage,isCaseRow,jsonText,stringValue,statusValue} from "./run-types.cjs";
 import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
+import {ConfirmedInputMismatch, ProviderRejectedError} from "./runtime-types.cjs";
 import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate} from "./runtime-types.cjs";
-interface Job {id:string;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
+class RunCheckpointError extends Error {}
+interface Job {id:string;mode:StartRun["mode"];revision:number;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
 export const replayCandidate:FixtureCandidate = {
   id: "fixture/replay-v1",
   kind: "fixture",
@@ -56,8 +59,8 @@ export class Bench {
     );
     this.db.exec(`BEGIN IMMEDIATE;
       UPDATE results SET record=json_set(record,'$.dispatchState','interrupted',
-          '$.error','DASH closed after dispatch. The final candidate response is unknown.')
-        WHERE run IN (SELECT id FROM runs WHERE status IN ('running','queued'))
+          '$.error','Dispatch was checkpointed without a final response. The final candidate response is unknown.')
+        WHERE run IN (SELECT id FROM runs WHERE status IN ('running','queued','failed'))
           AND json_extract(record,'$.dispatchState')='pending';
       UPDATE runs SET status='interrupted' WHERE status IN ('running','queued');
       COMMIT;`);
@@ -450,23 +453,35 @@ export class Bench {
     } else {
       insertRun();
     }
-    const job:Job = { id, controller: new AbortController(), partial: null };
+    const job:Job = { id, mode, revision:0, controller: new AbortController(), partial: null };
     this.active = job;
-    job.done = new Promise<void>((resolve) => setImmediate(resolve)).then(() =>
-      this.execute(job, manifest, rows, replay),
-    );
+    job.done = new Promise<void>((resolve) => setImmediate(resolve))
+      .then(() => this.execute(job, manifest, rows, replay))
+      .catch(() => {
+        // Even the terminal database update can fail. Startup reconciles any still-open record.
+        console.error("DASH could not persist the final state or report for run " + id + ".");
+      })
+      .finally(() => { this.active = null; });
     return id;
   }
   async execute(job:Job, m:CurrentManifest, rows:CaseRow[], replay:Record<string,unknown>) {
     const signal = job.controller.signal;
     const status = (value:RunStatus) =>
       this.db.prepare("UPDATE runs SET status=? WHERE id=?").run(value, m.id);
-    const writeResult=this.db.prepare(`INSERT INTO results VALUES(?,?,?,?)
-      ON CONFLICT(run,candidate,case_id) DO UPDATE SET record=excluded.record`);
-    const saveResult=(result:RunResult)=>writeResult.run(m.id,result.candidateId,result.caseId,JSON.stringify(result));
     let errors = 0;
     try {
+      const writeResult=this.db.prepare(`INSERT INTO results VALUES(?,?,?,?)
+        ON CONFLICT(run,candidate,case_id) DO UPDATE SET record=excluded.record`);
+      const saveResult=(result:RunResult)=>{
+        try {
+          writeResult.run(m.id,result.candidateId,result.caseId,JSON.stringify(result));
+          if (result.dispatchState!=="pending") job.revision++;
+        } catch (cause) {
+          throw new RunCheckpointError("Could not persist a case checkpoint. The job stopped.", {cause});
+        }
+      };
       status("running");
+      job.revision++;
       // Complete all lane/case checks before generating the first candidate response.
       const decisions = new Map<string,Map<string,GuardrailDecision>>();
       if (!m.fixture) {
@@ -512,6 +527,7 @@ export class Bench {
           };
           job.partial = { candidateId: c.id, caseId: row.case_id, text: "" };
           let observedOutput = false;
+          if (m.mode==="quick") job.revision++;
           try {
             trace.steps.push({
               at: now(),
@@ -531,17 +547,20 @@ export class Bench {
               rec.guardrail = guardrail;
               trace.steps.unshift({ at: trace.started, action: "Check model capacity", guardrail });
               if (inputBudget) rec.inputBudget = { cap: m.tokenBudget.inputCap, tokens: inputBudget.tokens, source: inputBudget.source };
-              const finishPower = await this.powerSampler();
-              let response;
+              const powerUnavailable=()=>trace.steps.push({ at:now(),action:"Device power measurement unavailable" });
+              const finishPower = await this.powerSampler().catch(() => { powerUnavailable(); return null; });
               let observing=true;
               let lastCheckpoint=-Infinity;
+              // The native SDK catches exceptions from fragment handlers. A request-local
+              // signal retains the first storage error even when the adapter later resolves.
+              const checkpointAbort = new AbortController();
               try {
                 signal.throwIfAborted();
                 rec.dispatchedMessages = messages;
                 rec.dispatchState = "pending";
                 saveResult(rec);
-                response = await this.adapters.invoke(c, messages, {
-                  signal,
+                const response = await this.adapters.invoke(c, messages, {
+                  signal: AbortSignal.any([signal, checkpointAbort.signal]),
                   apiKey: this.endpoints.keys.get(c.id),
                   maxTokens: guardrail.outputReserve,
                   inputBudget,
@@ -553,30 +572,62 @@ export class Bench {
                     // Store the first visible response and at most one update per second.
                     const elapsed=performance.now();
                     if (elapsed-lastCheckpoint>=1000) {
-                      saveResult(rec);
-                      lastCheckpoint=elapsed;
+                      try {
+                        saveResult(rec);
+                        lastCheckpoint=elapsed;
+                      } catch (error) {
+                        observing=false;
+                        checkpointAbort.abort(error);
+                      }
                     }
                   },
+                }).catch((error:unknown) => {
+                  if (!(error instanceof ConfirmedInputMismatch)) throw error;
+                  rec.error=error.message;
+                  return error.response;
                 });
-                trace.finished=now();
-              } finally {
+                checkpointAbort.signal.throwIfAborted();
                 observing=false;
-                rec.telemetry = { ...response?.telemetry, device_power: await finishPower() };
+                trace.finished=now();
+                delete rec.dispatchState;
+                rec.output=response.output;
+                observedOutput=true;
+                rec.finishReason=response.finishReason ?? null;
+                rec.reportedFinishReason=response.reportedFinishReason === undefined ? rec.finishReason : response.reportedFinishReason;
+                rec.telemetry=response.telemetry;
+                if (m.tokenBudget.inputCap != null && (response.telemetry?.input_tokens ?? 0) > m.tokenBudget.inputCap)
+                  rec.error??="The runtime reported input usage above the approved cap.";
+                else if ((response.telemetry?.output_tokens ?? 0) > guardrail.outputReserve)
+                  rec.error??=`The runtime reported ${response.telemetry.output_tokens} output tokens above its ${guardrail.outputReserve}-token allocation.`;
+                else if (rec.finishReason === "length") rec.error??=lengthFailure(guardrail, rec.telemetry);
+                else if (!rec.output.trim()) rec.error??="Provider completed without visible response content.";
+                // A confirmed answer belongs on disk before any sensor read, grader, or report.
+                saveResult(rec);
+                if (rec.error) throw Error(rec.error);
+              } catch (error) {
+                observing=false;
+                checkpointAbort.signal.throwIfAborted();
+                if (error instanceof RunCheckpointError) throw error;
+                if (rec.dispatchState === "pending") {
+                  if (error instanceof ProviderRejectedError && rec.output == null) {
+                    trace.finished=now();
+                    delete rec.dispatchState;
+                    rec.error=error.message;
+                  } else {
+                    rec.dispatchState=signal.aborted ? "canceled" : "interrupted";
+                    rec.error=signal.aborted ? "Observation canceled after dispatch. The final candidate response is unknown." :
+                      "Observation interrupted after dispatch. The final candidate response is unknown.";
+                    trace.steps.push({at:now(),action:"DASH stopped observing this request"});
+                  }
+                  saveResult(rec);
+                }
+                throw error;
+              } finally {
+                if (finishPower) {
+                  try { rec.telemetry={...rec.telemetry,device_power:await finishPower()}; }
+                  catch { powerUnavailable(); }
+                }
               }
-              rec.output = response.output;
-              observedOutput = true;
-              rec.finishReason = response.finishReason ?? null;
-              rec.reportedFinishReason = response.reportedFinishReason === undefined ? rec.finishReason : response.reportedFinishReason;
-              if (m.tokenBudget.inputCap != null && (response.telemetry?.input_tokens ?? 0) > m.tokenBudget.inputCap)
-                throw Error("The runtime reported input usage above the approved cap.");
-              if ((response.telemetry?.output_tokens ?? 0) > guardrail.outputReserve)
-                throw Error(`The runtime reported ${response.telemetry.output_tokens} output tokens above its ${guardrail.outputReserve}-token allocation.`);
-              if (rec.finishReason === "length")
-                throw Error(lengthFailure(guardrail, rec.telemetry));
-              if (!rec.output.trim())
-                throw Error(
-                  "Provider completed without visible response content.",
-                );
             }
             if (!signal.aborted && m.pack && m.datasetScorer !== "selected-graders") {
               if (m.datasetScorer === "exact-reference") rec.score = await exactReference(row,rec.output);
@@ -587,20 +638,12 @@ export class Bench {
               });
             }
           } catch (e) {
-            if (signal.aborted && !trace.finished) {
-              if (rec.dispatchState==="pending") {
-                rec.dispatchState="canceled";
-                rec.error="Observation canceled after dispatch. The final candidate response is unknown.";
-                trace.steps.push({at:now(),action:"DASH stopped observing this request"});
-                saveResult(rec);
-              }
-              break;
-            }
+            if (e instanceof RunCheckpointError) throw e;
+            if (signal.aborted && !rec.dispatchedMessages && !trace.finished) break;
             errors++;
-            rec.error = errorMessage(e);
+            rec.error ??= errorMessage(e);
           }
-          delete rec.dispatchState;
-          trace.finished ??= now();
+          if (!rec.dispatchState) trace.finished ??= now();
           saveResult(rec);
           if (!signal.aborted && observedOutput) {
             for (const scorer of m.graders || []) {
@@ -609,6 +652,7 @@ export class Bench {
               const evidence = graderEvidence(m,row,rec,scorer.type === "catalog");
               await this.graders.record(scorer,evidence,
                 {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
+              job.revision++;
             }
           }
         }
@@ -616,20 +660,30 @@ export class Bench {
         const completed:RunData = { ...this.detail(m.id), status: "completed" };
         await this.reports.finalize(completed, this.adapters, signal, stage => {
           job.partial = { stage, text: "" };
+          job.revision++;
         });
       }
       status(signal.aborted ? "canceled" : errors ? "failed" : "completed");
     } catch (e) {
-      if (signal.aborted) status("canceled");
+      if (signal.aborted && !(e instanceof RunCheckpointError)) status("canceled");
       else {
         m.error = errorMessage(e);
         this.db.prepare("UPDATE runs SET status='failed', manifest=? WHERE id=?").run(JSON.stringify(m), m.id);
       }
-    } finally {
-      this.active = null;
-      // Save the terminal report even if the user never opens the run.
-      this.detail(m.id);
     }
+    // Save the terminal report even if the user never opens the run. If this cache write fails,
+    // the original case evidence and terminal status are durable and detail() can rebuild it.
+    this.detail(m.id);
+  }
+  runProgress(id:string, revision:number, offset:number):UiRunProgress {
+    const job=this.active;
+    if (!job || job.id!==id || job.revision!==revision) return {kind:"refresh"};
+    const part=job.partial;
+    if (job.mode==="quick" && part && "candidateId" in part) {
+      if (offset>part.text.length) return {kind:"refresh"};
+      if (offset<part.text.length) return {kind:"append",candidateId:part.candidateId,text:part.text.slice(offset)};
+    }
+    return {kind:"unchanged"};
   }
   stop(id:string) {
     if (id !== this.active?.id) throw Error("This run is no longer active.");
@@ -640,20 +694,32 @@ export class Bench {
       .prepare("SELECT status,manifest FROM runs WHERE id=?")
       .get(id);
     if (!run) throw Error("Run not found");
+    const status=statusValue(run.status);
+    const terminal=status!=="queued" && status!=="running";
     const detail:RunData = {
-      status: statusValue(run.status),
+      status,
       manifest: decodeManifest(run.manifest),
       results: this.db
-        .prepare("SELECT record FROM results WHERE run=? AND json_extract(record,'$.dispatchState') IS NOT 'pending' ORDER BY rowid")
-        .all(id)
-        .map((r)=>decodeResult(r.record)),
+        .prepare("SELECT record FROM results WHERE run=? AND (? OR json_extract(record,'$.dispatchState') IS NOT 'pending') ORDER BY rowid")
+        .all(id,Number(terminal))
+        .map(r=>{
+          const result=decodeResult(r.record);
+          // A failed final SQLite update can leave only the pre-dispatch checkpoint readable.
+          if (result.dispatchState==="pending") {
+            result.dispatchState="interrupted";
+            result.error="Dispatch was checkpointed without a final response. The final candidate response is unknown.";
+          }
+          return result;
+        }),
       assessments: this.graders.recorded(id),
       partial: this.active?.id === id ? this.active.partial : null,
     };
-    return {...detail,report:this.reports.get(detail)};
+    return {...detail,liveRevision:this.active?.id===id ? this.active.revision : null,report:this.reports.get(detail)};
   }
   exportRun(id:string) {
-    const { status, manifest, results, assessments, report } = this.detail(id);
+    const detail=this.detail(id);
+    const {status,manifest,assessments}=detail;
+    const {results,report}=exportDiagnostics(detail);
     return {
       format: "dash-run/1",
       report,

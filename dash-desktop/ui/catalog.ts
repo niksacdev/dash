@@ -7,7 +7,11 @@ function dsMeta(d: UiDataset): UiDatasetMetadata {
   return d.metadata || {family:d.name,category:"Uncategorized",tags:[],source:d.name,changeNote:"",parentId:null};
 }
 const versionLink = (d: UiDataset) => link(esc(d.version+" · "+d.split), "datasets/"+encodeURIComponent(d.id), "link");
-function sameFamily(d: UiDataset, name: string) { return dsMeta(d).family.toLowerCase() === name.trim().toLowerCase(); }
+function sameFamily(d: UiDataset, name:string, industry:string) {
+  const meta=dsMeta(d);
+  return meta.family.toLowerCase()===name.trim().toLowerCase() &&
+    (meta.industry || "Unclassified").toLowerCase()===industry.trim().toLowerCase();
+}
 function importForm(draft: UiImportDraft) {
   const peers=state.datasets.filter(d=>d.pack===draft.pack);
   const options=(items: string[])=>[...new Set(items)].map(v=>'<option value="'+esc(v)+'"></option>').join("");
@@ -31,8 +35,9 @@ function parentOptions(form: HTMLFormElement) {
   const draft = importDraft;
   if (!(select instanceof HTMLSelectElement) || !draft) return;
   const family = formText(form, "family");
+  const industry = formText(form, "industry");
   const old = select.value;
-  const choices = state.datasets.filter(d => d.pack === draft.pack && sameFamily(d,family));
+  const choices = state.datasets.filter(d => d.pack === draft.pack && sameFamily(d,family,industry));
   select.innerHTML = opt("","Independent snapshot",old)+choices.map(d=>opt(d.id,d.version+" · "+d.split,old)).join("");
   if (note instanceof HTMLInputElement) note.required = !!select.value;
   const latest = choices.at(-1);
@@ -52,7 +57,7 @@ async function catalogPage(id?: string) {
   if(id && state.datasets.some(d=>d.id===id)) {packId=chosen.pack;datasetId=chosen.id;}
   const d=await api.dataset(chosen.id), meta=dsMeta(chosen);
   const peers=state.datasets;
-  const versions=peers.filter(x=>x.pack===chosen.pack && sameFamily(x,meta.family)).reverse();
+  const versions=peers.filter(x=>x.pack===chosen.pack && sameFamily(x,meta.family,meta.industry || "Unclassified")).reverse();
   const parent=state.datasets.find(x=>x.id===meta.parentId);
   const files=peers.slice().reverse().map(x=>{
     const m=dsMeta(x), terms=[m.industry,m.family,m.category,...m.tags,x.version,x.split,m.source].join(" ").toLowerCase();
@@ -75,7 +80,7 @@ async function catalogPage(id?: string) {
 document.addEventListener("input", e => {
   if (!(e.target instanceof HTMLInputElement)) return;
   if (e.target.id === "catalog-search") {catalogSearch=e.target.value;filterCatalog();}
-  if (e.target.name === "family" && e.target.form?.id === "catalog-import") parentOptions(e.target.form);
+  if ((e.target.name === "family" || e.target.name === "industry") && e.target.form?.id === "catalog-import") parentOptions(e.target.form);
 });
 document.addEventListener("change", e => {
   if (!(e.target instanceof HTMLSelectElement)) return;

@@ -1,3 +1,6 @@
+/** An explicit provider rejection with a known outcome. Other dispatch errors may follow an accepted request. */
+export class ProviderRejectedError extends Error {}
+
 export type LocalProvider = "lmstudio" | "ollama";
 export type EndpointSection = "Frontier Labs" | "Fine-tuned" | "Hosted";
 export interface ChatTurn { role: "system" | "user" | "assistant"; content: string }
@@ -98,6 +101,16 @@ export interface InferenceResult {
   finishReason: string | null;
   reportedFinishReason?: string | null;
   telemetry: InferenceTelemetry;
+}
+// Callers that depend on a verified budget reject this result. The case recorder
+// can still retain a confirmed answer. Keep its content out of error serialization.
+export class ConfirmedInputMismatch extends Error {
+  readonly #response: InferenceResult;
+  constructor(response: InferenceResult, expectedTokens: number) {
+    super(`LM Studio reported ${response.telemetry.input_tokens ?? "unknown"} input tokens after verifying ${expectedTokens}. The run cannot be scored. Check the model's runtime and template.`);
+    this.#response = response;
+  }
+  get response(): InferenceResult { return this.#response; }
 }
 export interface RuntimeAdapters {
   discover(): Promise<RuntimeInventory[]>;

@@ -59,7 +59,7 @@ Run history preserves prompt versions, selected models, grader versions and meas
 
 ## Development
 
-From `dash-desktop/`, the compiler checks the renderer, main process, and test suite with strict TypeScript. To build and run all desktop checks:
+DASH pins the TypeScript 7 native compiler as a development dependency. Install optional npm dependencies so npm can select the compiler for your OS and CPU. From `dash-desktop/`, the compiler checks the renderer, main process, and test suite with strict TypeScript. To build and run all desktop checks:
 
 ```sh
 npm run docs:check

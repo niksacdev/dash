@@ -1,5 +1,6 @@
 import { checkInputBudget, invokeBudgeted, invokeJudge, invokePlanner } from "./token-budget.cjs";
-import { isRecord, finite, errorText, isPositiveInteger, type LocalProvider, type LocalCandidate, type RuntimeInstance,
+import { readProviderJson, parseProviderObject } from "./provider-response.cjs";
+import { ProviderRejectedError, isRecord, finite, errorText, isPositiveInteger, type LocalProvider, type LocalCandidate, type RuntimeInstance,
   type RuntimeInventory, type ModelCandidate, type InvokeOptions, type ChatTurn, type InferenceResult, type InferenceTelemetry } from "./runtime-types.cjs";
 export { checkInputBudget };
 
@@ -10,10 +11,6 @@ const servers: Record<LocalProvider,string> = {
 const titles = { ollama: "Ollama", lmstudio: "LM Studio" };
 export const settings = { temperature: 0, maxTokens: 2048 };
 
-function record(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw Error("Provider returned an invalid JSON object.");
-  return value;
-}
 function entries(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value) || !value.every(isRecord)) throw Error("Provider returned an invalid model or response list.");
   return value;
@@ -25,20 +22,13 @@ function modelId(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 300) throw Error("Invalid model ID");
   return value;
 }
-async function readJson(response: Response, limit: number): Promise<Record<string, unknown>> {
-  if (!response.body) throw Error("Provider returned an empty response body.");
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  for await (const chunk of response.body) {
-    bytes += chunk.byteLength;
-    if (bytes > limit) throw Error("Provider response exceeds the permitted size.");
-    chunks.push(chunk);
-  }
-  return record(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+function httpFailure(status:number, message:string):Error {
+  // A timeout or server error does not confirm that generation was rejected.
+  return [400,401,403,404,405,413,415,422,429].includes(status) ? new ProviderRejectedError(message) : Error(message);
 }
 async function providerErrorMessage(response: Response): Promise<string> {
   try {
-    const data = await readJson(response, 16384);
+    const data = await readProviderJson(response, 16384);
     const msg = (isRecord(data.error) ? data.error.message : undefined) ?? data.message ?? data.error;
     return typeof msg === "string" ? msg.replace(/[\u0000-\u001f]+/g, " ").trim().slice(0,800) : "";
   } catch { return ""; }
@@ -47,7 +37,7 @@ async function request(provider: LocalProvider, route: string, options: RequestI
   const response = await fetch(servers[provider] + route, { ...options, redirect:"error" });
   if (!response.ok) {
     const detail = await providerErrorMessage(response);
-    throw Error(titles[provider] + " " + route + " returned HTTP " + response.status + (detail ? " · " + detail : ""));
+    throw httpFailure(response.status, titles[provider] + " " + route + " returned HTTP " + response.status + (detail ? " · " + detail : ""));
   }
   return response;
 }
@@ -72,20 +62,20 @@ async function inventory(provider: LocalProvider): Promise<RuntimeInventory> {
   const status = { provider, title:titles[provider], address:servers[provider] };
   try {
     const r = await request(provider, native ? "/api/tags" : "/v1/models", { signal:AbortSignal.timeout(2500) });
-    const data = await readJson(r, 4_000_000);
+    const data = await readProviderJson(r, 4_000_000);
     const available = entries(native ? data.models : data.data);
     let running: Map<string, number | null> | null = null;
     let nativeModels: NativeModel[] | null = null;
     if (native && available.length) {
       try {
         const active = await request(provider, "/api/ps", { signal:AbortSignal.timeout(2000) });
-        running = new Map(entries((await readJson(active,4_000_000)).models).map(m=>[modelId(m.name || m.model),tokens(m.context_length)]));
+        running = new Map(entries((await readProviderJson(active,4_000_000)).models).map(m=>[modelId(m.name || m.model),tokens(m.context_length)]));
       } catch { /* Older Ollama runtimes may lack active inventory. */ }
     }
     if (!native) {
       try {
         const active = await request(provider, "/api/v1/models", { signal:AbortSignal.timeout(2000) });
-        nativeModels = entries((await readJson(active,4_000_000)).models).map(nativeModel);
+        nativeModels = entries((await readProviderJson(active,4_000_000)).models).map(nativeModel);
       } catch { /* Retain the compatible inventory on older LM Studio versions. */ }
     }
     const models: LocalCandidate[] = [];
@@ -134,7 +124,7 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
     body: JSON.stringify(options),
     signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]),
   });
-  const payload = await readJson(response, 4_000_000);
+  const payload = await readProviderJson(response, 4_000_000);
   const output = entries(payload.output).map(item => item.type === "message" ? string(item.content) ?? "" : "").join("");
   const stats = isRecord(payload.stats) ? payload.stats : {};
   const ttft = finite(stats.time_to_first_token_seconds);
@@ -208,9 +198,11 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
   const r = candidate.provider === "compatible"
     ? await fetch(candidate.endpoint + "/chat/completions", { ...options, redirect: "error" })
     : await request(candidate.provider, native ? "/api/chat" : "/v1/chat/completions", options);
-  if (!r.ok) throw Error("Model endpoint returned HTTP " + r.status);
+  if (!r.ok) {
+    await r.body?.cancel().catch(()=>{});
+    throw httpFailure(r.status,"Model endpoint returned HTTP " + r.status);
+  }
   let output = "",
-    pending = "",
     first: number | null = null,
     ended = false,
     inputTokens: number | null = null,
@@ -229,13 +221,11 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
         return;
       }
     }
-    const d = record(JSON.parse(text));
-    if (d.error)
-      throw Error(
-        typeof d.error === "string"
-          ? d.error
-          : isRecord(d.error) ? string(d.error.message) ?? "Provider error" : "Provider error",
-      );
+    const d = parseProviderObject(text);
+    if (d.error) {
+      // Streaming errors may echo authorization headers, model inputs or provider internals.
+      throw Error("Model provider reported an error during generation.");
+    }
     if (native && d.done === true) {
       ended = true;
       reportedFinishReason = string(d.done_reason) ?? null;
@@ -263,16 +253,27 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
     }
   }
   const decoder = new TextDecoder();
+  const fragments:string[] = [];
   if (!r.body) throw Error("Provider returned an empty streaming response.");
   for await (const chunk of r.body) {
     bytes += chunk.byteLength;
     if (bytes > 4_000_000) throw Error("Provider response exceeds 4 MB");
-    pending += decoder.decode(chunk, { stream: true });
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const item of lines) line(item);
+    const lines = decoder.decode(chunk, {stream:true}).split("\n");
+    const tail = lines.pop() ?? "";
+    for (const item of lines) {
+      fragments.push(item);
+      line(fragments.join(""));
+      fragments.length = 0;
+      if (ended) break;
+    }
+    // Breaking the async iterator cancels its reader, even if the server keeps the socket open.
+    if (ended) break;
+    if (tail) fragments.push(tail);
   }
-  line(pending + decoder.decode());
+  if (!ended) {
+    fragments.push(decoder.decode());
+    line(fragments.join(""));
+  }
   if (!ended)
     throw Error("Provider disconnected before completing the response");
   return {

@@ -590,9 +590,10 @@ function observationLabel(result:UiResult):string|null {
   if (result.dispatchState==="interrupted") return "Observation interrupted";
   return null;
 }
-async function runPage(id:string, record?:string) {
+async function runPage(id:string, record:string|undefined, seq:number) {
   const run = await api.detail(id),
     m = run.manifest;
+  if (seq!==token) return "";
   current = run;
   if (record !== undefined) {
     const r = run.results[Number(record)];
@@ -668,7 +669,7 @@ async function runPage(id:string, record?:string) {
             esc(c.model) +
             "</h3><small>" +
             esc(c.provider) +
-            "</small><pre>" +
+            '</small><pre data-live-candidate="' + esc(c.id) + '">' +
             esc(
               r?.output ||
                 r?.error ||
@@ -783,10 +784,32 @@ async function runPage(id:string, record?:string) {
     "</pre></details>"
   );
 }
+function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.partial?.text?.length ?? 0) {
+  const revision=run.liveRevision;
+  if (revision===null) return;
+  poll=window.setTimeout(async () => {
+    try {
+      const update=await api.runProgress(id,revision,offset);
+      if (seq!==token) return;
+      if (update.kind==="refresh") { await render(); return; }
+      if (update.kind==="append") {
+        const field=document.querySelector<HTMLElement>('[data-live-candidate="'+CSS.escape(update.candidateId)+'"]');
+        if (!field || !run.partial || run.partial.candidateId!==update.candidateId) { await render(); return; }
+        if (offset && field.firstChild instanceof Text) field.firstChild.appendData(update.text);
+        else field.textContent=update.text;
+        offset+=update.text.length;
+      }
+      pollRunProgress(seq,id,run,offset);
+    } catch (e) {
+      if (seq===token) message(errorText(e));
+    }
+  },220);
+}
 async function render() {
   const seq = ++token;
   clearTimeout(poll);
   const [route, id, rec] = trail();
+  if (route!=="run") current=null;
   try {
     const latest = await api.list();
     if (seq !== token) return;
@@ -849,7 +872,7 @@ async function render() {
         html = await historyPage(id);
         break;
       case "run":
-        html = await runPage(id, rec);
+        html = await runPage(id, rec, seq);
         break;
       default:
         html = await home();
@@ -887,9 +910,9 @@ async function render() {
     if (
       route === "run" &&
       rec === undefined &&
-      ["queued", "running"].includes(current?.status ?? "")
+      current && ["queued", "running"].includes(current.status)
     )
-      poll = setTimeout(render, 220);
+      pollRunProgress(seq,id,current);
   } catch (e) {
     if (seq === token) $("#screen").textContent = errorText(e);
   }
@@ -990,7 +1013,8 @@ document.addEventListener("click", async (e) => {
         ...(m.approvedPrompt?.id && {approvedPromptId: m.approvedPrompt.id}),
         candidateIds: [r.candidateId],
         caseId: r.caseId,
-        graderIds: (m.graders || []).map(g=>g.id),
+        // Main restores every immutable grader pin from the saved parent, including defaults.
+        graderIds: [],
         parentId: id,
         animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       });

@@ -28,6 +28,7 @@ const bridge:DashBridge = {
   refresh: () => invoke("refresh"),
   dataset: (id) => invoke("dataset", id),
   detail: (id) => invoke("detail", id),
+  runProgress: (id,revision,offset) => invoke("runProgress",id,revision,offset),
   designPrompt: (request) => invoke("designPrompt", request),
   suggestMetrics: (request) => invoke("suggestMetrics", request),
   approvePrompt: (request) => invoke("approvePrompt", request),

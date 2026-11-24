@@ -8,7 +8,7 @@ import { loadPacks, parseDataset, grade } from "../lib/packs.cjs";
 import { invoke } from "../lib/providers.cjs";
 import { performance as runPerformance } from "../lib/performance.cjs";
 import { objectValue, jsonText, isRecord, type RunResult, type StartRun } from "../lib/run-types.cjs";
-import type { ChatTurn, LocalCandidate } from "../lib/runtime-types.cjs";
+import { ProviderRejectedError, type ChatTurn, type LocalCandidate } from "../lib/runtime-types.cjs";
 import { inventory, reply, withoutPower, present } from "./runtime-fixtures.cjs";
 
 function latch() {
@@ -99,7 +99,7 @@ test("model boundary excludes reference labels and distinguishes runtime failure
       ]);
       assert.ok(isRecord(payload.input));
       assert.equal("gold" in payload.input, false);
-      if (++calls === 2) throw Error("test provider offline");
+      if (++calls === 2) throw new ProviderRejectedError("test provider refused this request");
       assert.ok(options.onText);
       options.onText("invalid");
       return reply("invalid",{latency_ms:7});
@@ -119,7 +119,8 @@ test("model boundary excludes reference labels and distinguishes runtime failure
   assert.equal(run.results.length, 8);
   assert.equal(scoreOf(run.results[0]).review, true);
   assert.equal(run.results[1].score, null);
-  assert.equal(run.results[1].error, "test provider offline");
+  assert.equal(run.results[1].error, "test provider refused this request");
+  assert.equal(run.results[1].dispatchState,undefined);
   b.db.close();
 });
 test("cancellation preserves the run and stops work", async () => {
@@ -305,3 +306,163 @@ test("stopping during the initial sensor read records no candidate dispatch", as
   assert.equal(saved.status,"canceled");
   assert.equal(saved.results.length,0);
 });
+
+test("a final answer survives restart during telemetry and a broken sensor cannot fail or repeat inference", async t=>{
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),"dash-final-checkpoint-"));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const closingSensor=latch(), releaseSensor=latch();
+  let calls=0;
+  const model:LocalCandidate={kind:"model",provider:"ollama",id:"ollama/test",model:"test",loaded:true};
+  const runtime={discover:async()=>[inventory([model])],invoke:async()=>{calls++;return reply("blue",{output_tokens:2},"stop");}};
+  const b=new Bench(":memory:",runtime,async()=>async()=>{
+    closingSensor.signal();
+    await releaseSensor.promise;
+    throw Error("simulated power read failure");
+  });
+  t.after(()=>b.db.close()); await b.refresh();
+  const datasetId=b.import("reference","Color cases",JSON.stringify({case_id:"color",dataset_version:"1",split:"development",prompt:"Name a color.",reference:"blue"}));
+  const id=b.start({mode:"dataset",datasetId,candidateIds:[model.id],datasetScorer:"exact-reference"});
+  const done=completion(b);
+  await closingSensor.promise;
+  const snapshot=path.join(folder,"crash.sqlite");
+  try {
+    b.db.prepare("VACUUM INTO ?").run(snapshot);
+  } finally {
+    releaseSensor.signal();
+    await done;
+  }
+  const reopened=new Bench(snapshot,runtime,withoutPower);
+  try {
+    const saved=reopened.detail(id);
+    assert.equal(saved.status,"interrupted");
+    const result=saved.results[0];
+    assert.equal(result.output,"blue");
+    assert.equal(result.finishReason,"stop");
+    assert.equal(result.telemetry?.output_tokens,2);
+    assert.ok(result.trace.finished);
+    assert.equal(result.dispatchState,undefined);
+    assert.equal(result.score,null,"A later grader never ran in this snapshot");
+  } finally {reopened.db.close();}
+  const final=b.detail(id);
+  assert.equal(final.status,"completed");
+  assert.equal(final.results[0].score?.pass,true);
+  assert.equal(final.results[0].error,null);
+  assert.equal(final.results[0].telemetry?.device_power,undefined);
+  assert.ok(final.results[0].trace.steps.some(s=>s.action==="Device power measurement unavailable"));
+  assert.equal(calls,1);
+});
+
+test("lost transport after dispatch is unconfirmed with or without a streamed fragment", async t=>{
+  const c:LocalCandidate={kind:"model",provider:"ollama",model:"qa",id:"ollama/qa",loaded:true};
+  let calls=0;
+  const b=new Bench(":memory:",{
+    discover:async()=>[inventory([c])],
+    invoke:async(_candidate,_messages,{onText})=>{
+      if(++calls===1) onText?.("partial");
+      throw Error("connection lost");
+    },
+  },withoutPower);
+  t.after(()=>b.db.close());await b.refresh();
+  const rows=["one","two"].map(case_id=>({case_id,dataset_version:"1",split:"development",prompt:"Name a color.",reference:"blue"}));
+  const datasetId=b.import("reference","Transport loss",rows.map(r=>JSON.stringify(r)).join("\n"));
+  const run=await finish(b,{mode:"dataset",datasetId,candidateIds:[c.id],datasetScorer:"exact-reference"});
+  assert.equal(calls,2,"each case dispatches exactly once");
+  assert.equal(run.status,"failed");
+  assert.deepEqual(run.results.map(r=>r.output),["partial",null]);
+  for(const r of run.results) {
+    assert.equal(r.dispatchState,"interrupted");
+    assert.equal(r.trace.finished,undefined);
+    assert.equal(r.score,null);
+    assert.match(present(r.error),/final candidate response is unknown/);
+    assert.ok(r.dispatchedMessages?.length);
+  }
+  assert.equal(run.assessments.length,0);
+});
+
+test("storage errors stop a queued job before inference and terminal report errors release ownership",async t=>{
+  const c:LocalCandidate={kind:"model",provider:"ollama",model:"qa",id:"ollama/qa",loaded:true};
+  let calls=0;
+  const b=new Bench(":memory:",{discover:async()=>[inventory([c])],invoke:async()=>{calls++;return reply("blue");}},withoutPower);
+  t.after(()=>b.db.close());await b.refresh();
+  const row={case_id:"only",dataset_version:"1",split:"development",prompt:"Name a color.",reference:"blue"};
+  const datasetId=b.import("reference","Store test",JSON.stringify(row));
+  const start=()=>b.start({mode:"dataset",datasetId,candidateIds:[c.id],datasetScorer:"exact-reference"});
+  b.db.exec("CREATE TRIGGER deny_result BEFORE INSERT ON results BEGIN SELECT RAISE(FAIL,'storage unavailable'); END");
+  const failed=start();await completion(b);
+  assert.equal(b.active,null);
+  const first=b.detail(failed);
+  assert.equal(first.status,"failed");
+  assert.match(present(first.manifest.error),/persist a case checkpoint/);
+  assert.equal(calls,0);
+  b.db.exec("DROP TRIGGER deny_result");
+  b.db.exec("CREATE TRIGGER deny_final BEFORE UPDATE ON results BEGIN SELECT RAISE(FAIL,'storage unavailable'); END");
+  const unconfirmed=start();await completion(b);
+  assert.equal(b.active,null);
+  const partial=b.detail(unconfirmed);
+  assert.equal(partial.status,"failed");
+  assert.equal(partial.results[0].dispatchState,"interrupted");
+  assert.equal(partial.results[0].trace.finished,undefined);
+  assert.equal(partial.results[0].score,null);
+  assert.equal(calls,1);
+  b.db.exec("DROP TRIGGER deny_final");
+  const logged=t.mock.method(console,"error",()=>{});
+  b.db.exec("CREATE TRIGGER deny_report BEFORE INSERT ON run_reports BEGIN SELECT RAISE(FAIL,'report storage unavailable'); END");
+  const finished=start();await completion(b);
+  assert.equal(b.active,null);
+  assert.equal(logged.mock.callCount(),1);
+  b.db.exec("DROP TRIGGER deny_report");
+  assert.equal(b.exportRun(finished).status,"completed");
+  assert.equal(b.exportRun(finished).results[0].output,"blue");
+  assert.equal(calls,2);
+});
+
+for (const settlement of ["fulfill","reject"] as const) {
+  test(`a swallowed fragment checkpoint error aborts only the request and stops the job when the adapter can ${settlement}`, async t=>{
+    const lanes:LocalCandidate[]=["one","two"].map(model=>({kind:"model",provider:"lmstudio",id:"lmstudio/"+model,model,loaded:true}));
+    let calls=0, failedWrites=0, requestAborted=false;
+    const bench=new Bench(":memory:",{
+      discover:async()=>[inventory(lanes)],
+      invoke:async(_candidate,_messages,{signal,onText})=>{
+        calls++;
+        // Match LM Studio's safeCallCallback. It keeps delivering callbacks
+        // and may settle independently of a callback failure or cancellation.
+        for (const text of ["A","AB","ABC"]) {
+          try { onText?.(text); }
+          catch { /* The SDK logs and swallows application callback errors. */ }
+        }
+        requestAborted=signal.aborted;
+        if (settlement==="reject") throw Error("Adapter canceled");
+        return reply("Full answer",{input_tokens:3,output_tokens:2},"stop");
+      },
+    },withoutPower);
+    t.after(()=>bench.db.close());
+    await bench.refresh();
+    bench.db.function("count_failed_write",()=>++failedWrites);
+    bench.db.exec(`CREATE TRIGGER reject_progress BEFORE UPDATE ON results
+      WHEN json_extract(NEW.record,'$.dispatchState')='pending' BEGIN
+        SELECT count_failed_write();
+        SELECT RAISE(FAIL,'Synthetic disk failure');
+      END`);
+    const rows=["a","b"].map(case_id=>JSON.stringify({
+      case_id,dataset_version:"1",split:"development",prompt:"Name a color.",reference:"blue",
+    }));
+    const datasetId=bench.import("reference","Stream checkpoint",rows.join("\n"));
+    const id=bench.start({mode:"dataset",datasetId,candidateIds:lanes.map(c=>c.id),datasetScorer:"exact-reference"});
+    const job=present(bench.active);
+    await job.done;
+    const run=bench.detail(id);
+    assert.equal(calls,1);
+    assert.equal(failedWrites,1);
+    assert.equal(requestAborted,true);
+    assert.equal(job.controller.signal.aborted,false);
+    assert.equal(bench.active,null);
+    assert.equal(run.status,"failed");
+    assert.match(present(run.manifest.error),/persist a case checkpoint/);
+    assert.equal(run.results.length,1);
+    assert.equal(run.results[0].dispatchState,"interrupted");
+    assert.equal(run.results[0].output,null);
+    assert.equal(run.results[0].trace.finished,undefined);
+    assert.equal(run.results[0].score,null);
+    assert.equal(run.assessments.length,0);
+  });
+}

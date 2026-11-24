@@ -12,13 +12,17 @@ function clean(value:unknown, label:string, limit:number, required = false) {
   return text;
 }
 
+function industryName(value:unknown) {
+  return clean(value || "Unclassified", "an industry", 100, true);
+}
+
 export function metadata(input:unknown):DatasetMetadata {
   if (!isRecord(input)) throw Error("Enter dataset metadata.");
   const tags = input.tags ?? [];
   if (!Array.isArray(tags) || tags.length > 20) throw Error("Choose up to 20 tags.");
   const parentId = clean(input.parentId, "parent snapshot", 200);
   return {
-    industry: clean(input.industry || "Unclassified", "an industry", 100, true),
+    industry: industryName(input.industry),
     family: clean(input.family, "a dataset family", 160, true),
     category: clean(input.category, "a category", 100, true),
     tags: [...new Set(tags.map(t => clean(t, "a tag", 50, true).toLowerCase()))].sort(),
@@ -28,25 +32,46 @@ export function metadata(input:unknown):DatasetMetadata {
   };
 }
 
+function prepareCatalog(db:DatabaseSync) {
+  const columns=db.prepare("PRAGMA table_info(dataset_catalog)").all();
+  if (columns.some(column=>column.name==="industry_key")) return;
+  if (columns.length) db.exec("ALTER TABLE dataset_catalog RENAME TO dataset_catalog_before_industry");
+  db.exec(`CREATE TABLE dataset_catalog (
+    dataset_id TEXT PRIMARY KEY REFERENCES datasets(id), pack TEXT NOT NULL, industry_key TEXT NOT NULL,
+    family_key TEXT NOT NULL, version TEXT NOT NULL, split TEXT NOT NULL,
+    metadata TEXT NOT NULL, origin TEXT NOT NULL, UNIQUE(pack,industry_key,family_key,version,split))`);
+  if (!columns.length) return;
+
+  // Read only catalog records. Case payloads and historical run manifests keep their original IDs and bytes.
+  const copy=db.prepare("INSERT INTO dataset_catalog(dataset_id,pack,industry_key,family_key,version,split,metadata,origin) VALUES(?,?,?,?,?,?,?,?)");
+  const old=db.prepare("SELECT dataset_id,pack,family_key,version,split,metadata,origin FROM dataset_catalog_before_industry ORDER BY rowid");
+  for (const row of old.iterate()) {
+    let saved=stringValue(row.metadata);
+    const original=objectValue(jsonText(saved));
+    if (!Object.hasOwn(original,"industry")) {
+      const industry=row.origin==="bundled" && row.pack==="earnings" ? "Financial Services" :
+        row.origin==="bundled" && row.pack==="support" ? "Cross-industry" : "Unclassified";
+      original.industry=industry;
+      saved=JSON.stringify(original);
+    }
+    const industry=industryName(original.industry).toLowerCase();
+    copy.run(row.dataset_id,row.pack,industry,row.family_key,row.version,row.split,saved,row.origin);
+  }
+  db.exec("DROP TABLE dataset_catalog_before_industry");
+}
+
 export class Catalog {
   constructor(readonly db:DatabaseSync, packs:PackBundle[]) {
-    db.exec(`CREATE TABLE IF NOT EXISTS dataset_catalog (
-      dataset_id TEXT PRIMARY KEY REFERENCES datasets(id), pack TEXT NOT NULL,
-      family_key TEXT NOT NULL, version TEXT NOT NULL, split TEXT NOT NULL,
-      metadata TEXT NOT NULL, origin TEXT NOT NULL,
-      UNIQUE(pack, family_key, version, split))`);
-    db.prepare("UPDATE dataset_catalog SET metadata=json_set(metadata,'$.industry', CASE WHEN origin='bundled' AND pack='earnings' THEN 'Financial Services' WHEN origin='bundled' AND pack='support' THEN 'Cross-industry' ELSE 'Unclassified' END) WHERE json_type(metadata,'$.industry') IS NULL").run();
-    const missing = db.prepare(`SELECT d.* FROM datasets d LEFT JOIN dataset_catalog c
-      ON c.dataset_id=d.id WHERE c.dataset_id IS NULL ORDER BY d.rowid`).all();
     db.exec("BEGIN IMMEDIATE");
     try {
+      prepareCatalog(db);
+      const missing = db.prepare(`SELECT d.id,d.pack,d.name,json_extract(d.rows,'$[0].dataset_version') AS version,
+        json_extract(d.rows,'$[0].split') AS split FROM datasets d LEFT JOIN dataset_catalog c
+        ON c.dataset_id=d.id WHERE c.dataset_id IS NULL ORDER BY d.rowid`).all();
       for (const d of missing) {
-        const rows = jsonText(d.rows);
-        if(!Array.isArray(rows)||!rows.length) throw Error("Invalid saved dataset");
-        const first=objectValue(rows[0]);
         const bundle = packs.find(b => b.pack.id === d.pack);
         const bundled = bundle && bundle.pack.kind !== "reference" && d.id === d.pack + "-" + hash(bundle.rows);
-        this.register(stringValue(d.id), stringValue(d.pack), {dataset_version:stringValue(first.dataset_version),split:stringValue(first.split)}, bundled ? {
+        this.register(stringValue(d.id), stringValue(d.pack), {dataset_version:stringValue(d.version),split:stringValue(d.split)}, bundled ? {
           industry: bundle.pack.industry || (d.pack === "earnings" ? "Financial Services" : "Cross-industry"), family: bundle.pack.kind==="reference" ? bundle.pack.title : bundle.pack.dataset, category: bundle.pack.title, tags: ["synthetic"],
           source: "Bundled with DASH", changeNote: "Initial development cases."
         } : { family: d.name, category: "Uncategorized", source: d.name }, bundled ? "bundled" : "legacy");
@@ -57,15 +82,16 @@ export class Catalog {
   register(id:string, pack:string, first:{dataset_version:string;split:string}, input:unknown, origin:"import"|"legacy"|"bundled") {
     const m = metadata(input);
     const version = first.dataset_version, split = first.split;
+    const industry=m.industry.toLowerCase();
     let key = m.family.toLowerCase();
-    const same = this.db.prepare("SELECT metadata,origin FROM dataset_catalog WHERE dataset_id=?").get(id);
+    const same = this.db.prepare("SELECT metadata,origin,industry_key,family_key FROM dataset_catalog WHERE dataset_id=?").get(id);
     if (same && (origin !== "import" || same.metadata === JSON.stringify(m))) return;
     if (same && same.origin !== "legacy")
       throw Error("These exact cases already have a catalog entry. Open the existing snapshot to see its metadata.");
     if (m.parentId) {
-      const parent = this.db.prepare("SELECT pack,family_key FROM dataset_catalog WHERE dataset_id=?").get(m.parentId);
-      if (m.parentId === id || parent?.pack !== pack || parent.family_key !== key)
-        throw Error("Choose a parent snapshot from the same scenario and family.");
+      const parent = this.db.prepare("SELECT pack,industry_key,family_key FROM dataset_catalog WHERE dataset_id=?").get(m.parentId);
+      if (m.parentId === id || parent?.pack !== pack || parent.industry_key !== industry || parent.family_key !== key)
+        throw Error("Choose a parent snapshot from the same industry, scenario and family.");
     }
     if (same && m.parentId) {
       let ancestor:string|null = m.parentId;
@@ -76,8 +102,8 @@ export class Catalog {
         ancestor = this.get(ancestor)?.parentId ?? null;
       }
     }
-    const slot = this.db.prepare("SELECT dataset_id FROM dataset_catalog WHERE pack=? AND family_key=? AND version=? AND split=?");
-    const existing = slot.get(pack, key, version, split);
+    const slot = this.db.prepare("SELECT dataset_id FROM dataset_catalog WHERE pack=? AND industry_key=? AND family_key=? AND version=? AND split=?");
+    const existing = slot.get(pack,industry,key,version,split);
     if (existing && existing.dataset_id !== id) {
       if (origin !== "legacy")
         throw Error("This family already contains that version and split. Give changed cases a new dataset_version in the JSONL.");
@@ -87,12 +113,12 @@ export class Catalog {
     if (same) {
       // Once a snapshot has descendants their stored family must stay consistent.
       const child = this.db.prepare("SELECT 1 FROM dataset_catalog WHERE json_extract(metadata,'$.parentId')=? LIMIT 1").get(id);
-      if (child && metadata(jsonText(same.metadata)).family.toLowerCase() !== key)
+      if (child && (same.family_key !== key || same.industry_key !== industry))
         throw Error("This snapshot already has child versions in its family.");
     }
-    this.db.prepare(`INSERT INTO dataset_catalog VALUES(?,?,?,?,?,?,?)
-      ON CONFLICT(dataset_id) DO UPDATE SET family_key=excluded.family_key,metadata=excluded.metadata,origin=excluded.origin`)
-      .run(id, pack, key, version, split, JSON.stringify(m), origin);
+    this.db.prepare(`INSERT INTO dataset_catalog(dataset_id,pack,industry_key,family_key,version,split,metadata,origin) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(dataset_id) DO UPDATE SET industry_key=excluded.industry_key,family_key=excluded.family_key,metadata=excluded.metadata,origin=excluded.origin`)
+      .run(id,pack,industry,key,version,split,JSON.stringify(m),origin);
   }
   get(id:string):DatasetMetadata|null {
     const record = this.db.prepare("SELECT metadata FROM dataset_catalog WHERE dataset_id=?").get(id);

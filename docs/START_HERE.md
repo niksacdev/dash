@@ -27,3 +27,5 @@ The [design assets](design/README.md) include screenshots of the running app and
 The [grader library ADR](adr/0006-grader-library.md) and [feature specification](reviews/grader-library.md) explain automatic checks, industry criteria, customer forks and review.
 
 The product reviews cover the [domain workbench](reviews/domain-workbench.md), [outcome-to-run workflow](reviews/outcome-workflow.md), [live agent feasibility](reviews/agent-runs-feasibility.md), and [local decision models for domain grading](reviews/decision-model-graders.md). For implementation changes, follow the [contributor guide](../.github/CONTRIBUTING.md).
+
+For development, follow the [pre-commit review workflow](guides/precommit-review.md) and its [acceptance scenarios](reviews/repository-quality.md).

@@ -1,6 +1,7 @@
 import {posix,win32} from "node:path";
+import {publicProviderError} from "./export-diagnostics.cjs";
 import {createHash,randomUUID} from "node:crypto";
-import {Opik,generateId,z} from "opik";
+import {Opik,generateId,logger,z} from "opik";
 import {localOpikEnvironment} from "./local-opik-config.cjs";
 import {catalogRules} from "./grader-catalog.cjs";
 import {getOpikTemplate} from "./opik-library.cjs";
@@ -65,8 +66,9 @@ function nativeScoreName(metric:Metric, grader:GraderSpec|undefined) {
 const options = { maxRetries: 0, timeoutInSeconds: 35 };
 function address(raw:string) {
   const u = new URL(raw);
-  if (!["http:", "https:"].includes(u.protocol) || u.username || u.password || u.search || u.hash)
-    throw Error("Use an HTTP(S) base URL without credentials, query or fragment.");
+  const loopback=["localhost","127.0.0.1","[::1]"].includes(u.hostname);
+  if ((u.protocol!=="https:" && !(loopback && u.protocol==="http:")) || u.username || u.password || u.search || u.hash)
+    throw Error("Use HTTPS, or HTTP on loopback, without credentials, query or fragment.");
   return u.href.replace(/\/+$/, "");
 }
 export function configuration(env:NodeJS.ProcessEnv):OpikConfiguration {
@@ -80,11 +82,42 @@ export function configuration(env:NodeJS.ProcessEnv):OpikConfiguration {
     const workspace = env.OPIK_WORKSPACE?.trim() || "default", project = env.OPIK_PROJECT_NAME?.trim() || "DASH";
     if (workspace.length > 150 || project.length > 150) throw Error("Opik workspace and project names must be 150 characters or fewer.");
     return { configured: true, apiUrl, dashboard, workspace, project, key: digest([apiUrl,workspace,project]), apiKey: env.OPIK_API_KEY || "" };
-  } catch { return { configured: false, error: "Check the Opik API and dashboard URLs and workspace/project names." }; }
+  } catch { return { configured: false, error: "Use HTTPS for remote Opik URLs or HTTP on loopback. Check the workspace and project names." }; }
 }
 function sdkApi(c:Destination):NativeOpik {
-  return new Opik({ apiUrl:c.apiUrl, apiKey:c.apiKey, workspaceName:c.workspace, projectName:c.project,
-    isAttachmentExtractionActive:false, holdUntilFlush:true }).api;
+  // The wrapper in SDK 2.2.144 exposes its generated client as .api. Only the generated
+  // constructor accepts the SDK's fetch option; it is not a named package export.
+  const previousMask = logger.settings.maskValuesOfKeys;
+  logger.settings.maskValuesOfKeys = [...previousMask, "apiKey"];
+  let template:NativeOpik;
+  try {
+    template = new Opik({apiUrl:c.apiUrl,apiKey:c.apiKey,workspaceName:c.workspace,projectName:c.project,
+      isAttachmentExtractionActive:false,holdUntilFlush:true}).api;
+  } finally {
+    logger.settings.maskValuesOfKeys = previousMask;
+  }
+  // A default fetch cannot send this scheme if a future SDK drops its custom transport.
+  const internalBase = "dash-opik://destination";
+  const scopedFetch:typeof fetch = async (input, init) => {
+    const route = new URL(input instanceof Request ? input.url : input);
+    if (route.protocol!=="dash-opik:" || route.host!=="destination" || route.username || route.password || route.hash)
+      throw Error("Opik requested an unexpected destination.");
+    const endpoint = c.apiUrl + route.pathname + route.search;
+    const response = await fetch(input instanceof Request ? new Request(endpoint,input) : endpoint,{...init,redirect:"manual"});
+    if (response.status>=300 && response.status<400) {
+      await response.body?.cancel().catch(()=>{});
+      // The generated client treats 3xx as success and clears its deadline on a settled fetch.
+      return Response.error();
+    }
+    return response;
+  };
+  function matchesSdkClient(value:unknown):value is NativeOpik {
+    return value instanceof template.constructor && Object.getPrototypeOf(value)===Object.getPrototypeOf(template);
+  }
+  const api:unknown = Reflect.construct(template.constructor,[{environment:internalBase,baseUrl:internalBase,
+    apiKey:c.apiKey,workspaceName:c.workspace,fetch:scopedFetch}]);
+  if (!matchesSdkClient(api)) throw Error("The installed Opik SDK cannot bind the approved destination.");
+  return api;
 }
 async function ensure<T>(get:()=>Promise<T>,create:()=>Promise<unknown>):Promise<T> {
   try { return await get(); } catch (e) { if (statusCode(e) !== 404) throw e; }
@@ -309,7 +342,7 @@ export class OpikExperiments {
             "Reconstructed legacy input; dispatch may have failed" : "Reconstructed from the saved run, case and input optimization";
         }
         const input={messages};
-        const output={response:result.output ?? null,...(unconfirmed && {partial:true}),...(result.error && {error:privacy.label(result.error)})};
+        const output={response:result.output ?? null,...(unconfirmed && {partial:true}),...(result.error && {error:privacy.label(candidate.provider==="compatible" ? publicProviderError(result.error) : result.error)})};
         const caseEvidence=metrics.flatMap(metric=>{
           const grade=metric.caseScores.find(row=>row.caseId===result.caseId)?.values.find(value=>value.candidateId===candidate.id);
           return grade ? [{metric,grade}] : [];
