@@ -1,6 +1,6 @@
 # 0012. Scope local dataset families to a domain and scenario
 
-**Status** Proposed
+**Status** Accepted
 
 This extends [the domain hierarchy](0001-domain-workbench.md) and the [native Opik ownership policy](0008-opik-dataset-identity.md). Financial Services and Manufacturing teams can both call a family “Operator QA”. Their local versions and parent selectors need separate histories.
 
