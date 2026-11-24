@@ -1,14 +1,15 @@
+import {domainStarters} from "./domain-starters.cjs";
 import {declaredOutputKeys,declaredPlannerFields,proposedOutputSchema} from "./quick-declaration.cjs";
 import {decodeQuickOutputSchema, decodeQuickTaskInput, inputsFromTask, reviewProposedFields, plannerFieldNotesSchema, plannerFieldsSchema, plannerInputsSchema, type QuickOutputSchema, type QuickTaskInput} from "./quick-structure.cjs";
 import {randomUUID} from "node:crypto";
 import type {DatabaseSync} from "node:sqlite";
 import {hash} from "./packs.cjs";
 import {RoleStore,transaction,type DomainRole} from "./domain-profiles.cjs";
-import {bundledAgents,agentPin,isRecord,domains,isDomain,type Domain,type AgentRegistry} from "../agents/registry.cjs";
-import {instructionEcho,knownScorer,proposals,pairSelection,metricsAuditSchema,validateMetricAudit,type MetricAudit} from "./metric-audit.cjs";
+import {bundledAgents,agentPin,isRecord,isDomain,type Domain,type AgentRegistry} from "../agents/registry.cjs";
+import {instructionEcho,knownScorer,proposals,pairSelection,revisedDomainSelection,metricsAuditSchema,validateMetricAudit,type MetricAudit} from "./metric-audit.cjs";
 import {candidateGuidance,inspectionCheck} from "./prompt-fidelity.cjs";
 import {PlanningRoute,repetitive,tokens,type PlannerAdapters,type PlannerOptions,type PlannerIdentity,type PlanningAttempt} from "./planner-routing.cjs";
-import {required,optional,lines,cap,decodeRequest,decodeApprovedPrompt,type ApprovedPrompt,type DesignRequest,type DesignContext,type PlanningPurpose,type ScenarioContract,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
+import {required,optional,lines,cap,decodeRequest,decodeApprovedPrompt,type ApprovedPrompt,type DesignRequest,type DesignContext,type PlanningPurpose,type PlanningDomainSource,type ScenarioContract,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
 export {decodeApprovedPrompt} from "./outcome-contracts.cjs";
 export type {ApprovedPrompt,PromptDraft,DesignRequest,DesignContext,PlanningPurpose,MetricSuggestion} from "./outcome-contracts.cjs";
 export type {DomainRole} from "./domain-profiles.cjs";
@@ -17,7 +18,12 @@ const strings = { type: "array", minItems: 1, maxItems: 3, items: { type: "strin
 function objectSchema(properties:Record<string,unknown>) {
   return { type: "object", properties, required: Object.keys(properties), additionalProperties: false };
 }
-const routeSchema = objectSchema({ domain: { type: "string", enum: domains } });
+const routingChecks=new Map<string,Domain>([
+  ["Check financial figures, disclosures, accounting or risk","Financial Services"],
+  ["Check manufacturing processes, parts, lots or quality","Manufacturing"],
+  ["General or unsupported task","General"],
+]);
+const routeSchema=objectSchema({check:{type:"string",enum:[...routingChecks.keys()]}});
 const measureSchema = objectSchema({ requirements: strings, metrics: strings });
 const expertSchema = objectSchema({ title: string, metrics: strings, requirements: strings });
 const implementerSchema = objectSchema({ prompt: { type: "string", maxLength: 900 }, reason:{type:"string",maxLength:180} });
@@ -93,7 +99,7 @@ function evaluationMeasures(result:Record<string,unknown>, objective:string, req
   return { title:titleFor(result?.title, objective), metrics, requirements:criteria, ...(omissions.length && {criteriaReview:{omitted:original.length-(supplementSource ? 0 : criteria.length),reasons:[...new Set(omissions)],supplementSource}}) };
 }
 interface Findings {title:string;metrics:string[];requirements:string[];criteriaReview?:{omitted:number;reasons:string[];supplementSource?:string}}
-interface CachedSuggestion {scope:string;domain:Domain;domainSource:string;expert:DomainRole;designer:PlannerIdentity;findings:Findings;metricAudit:MetricAudit[];auditDesigner:PlannerIdentity;planningAttempts:PlanningAttempt[]}
+interface CachedSuggestion {scope:string;domain:Domain;domainSource:PlanningDomainSource;expert:DomainRole;designer:PlannerIdentity;findings:Findings;metricAudit:MetricAudit[];auditDesigner:PlannerIdentity;planningAttempts:PlanningAttempt[]}
 function decodeSaved(spec:unknown):ApprovedPrompt {
   if (typeof spec!=="string") throw Error("Invalid saved prompt.");
   return decodeApprovedPrompt(JSON.parse(spec));
@@ -131,7 +137,7 @@ export class OutcomeWorkflow {
   async design(input:unknown, context:DesignContext = {}, purpose:PlanningPurpose = "draft"):Promise<PromptDraft|MetricSuggestion> {
     const request=decodeRequest(input);
     const objective = required(request.objective, "Business outcome", 12000);
-    const requestedMetrics = optional(request.metrics, "Business metrics", 2000);
+    let requestedMetrics = optional(request.metrics, "Business metrics", 2000);
     const inputCap = cap(request.inputCap, "Input budget");
     const outputCap = cap(request.outputCap, "Output budget");
     const dataset = datasetContext(request, context);
@@ -140,25 +146,15 @@ export class OutcomeWorkflow {
     if (manual && !isDomain(manual)) throw Error("Choose Financial Services, Manufacturing or General.");
     const pinned = isDomain(dataset?.industry) ? dataset.industry : null;
     if (pinned && manual && manual !== pinned) throw Error("Use the domain assigned to this dataset snapshot.");
+    const starter=request.mode==="quick" ? domainStarters.find(s=>s.quickObjective===objective) : undefined;
     const parent = request.parentId ? this.get(request.parentId) : null;
     if (parent && (parent.mode !== request.mode || parent.datasetId !== (dataset?.datasetId ?? null)))
       throw Error("Revise this prompt with its original run type and dataset snapshot.");
     const structuredOutput = request.structuredOutput ?? !!parent?.outputSchema;
-    const scope = hash([request.mode, objective, requestedMetrics, manual, dataset?.datasetId, dataset?.contractHash, dataset?.scorer, context.coverage, parent?.id, context.priorRun?.id]);
+    const scope = hash([request.mode, objective, requestedMetrics, manual, starter?.packId, dataset?.datasetId, dataset?.industry, dataset?.contractHash, dataset?.scorer, context.coverage, parent?.id, context.priorRun?.id]);
     const prior = request.suggestionId ? this.suggestions.get(request.suggestionId) : undefined;
     if (request.suggestionId && prior?.scope !== scope)
       throw Error("The objective or scenario changed, or the suggestions expired. Choose Suggest Metrics again.");
-    const choices = request.measures == null ? null : {
-      metrics: lines(request.measures.metrics, "Selected metrics", 2000, 0),
-      criteria: lines(request.measures.criteria, "Success criteria", 2000, 0),
-    };
-    const previousRows=prior?.metricAudit.filter(row=>row.status!=="external");
-    const previous=previousRows ? {metrics:previousRows.map(r=>r.metric),criteria:previousRows.map(r=>r.criterion),pairs:previousRows} :
-      parent ? {metrics:parent.metrics,criteria:parent.requirements,
-        pairs:parent.metricCriteria ?? parent.metricAudit?.filter(r=>r.status!=="external") ??
-          (parent.metrics.length===parent.requirements.length ? proposals(parent.metrics,parent.requirements) : undefined)} : null;
-    const selected=choices ? pairSelection(choices.metrics,choices.criteria,previous) : null;
-    const explicitlyEmpty=purpose==="draft" && selected?.length===0;
     // Snapshot IDs, versions and splits describe the catalogue. They are never case evidence.
     const publicTask:(Pick<ScenarioContract,'title'|'description'|'system'|'outputSchema'|'metrics'> & {scoringDefinitions?:Record<string,string>})|null = dataset && {
       title:dataset.title, description:dataset.description, system:dataset.system,
@@ -173,13 +169,6 @@ export class OutcomeWorkflow {
       };
     }
     const brief:{mode:DesignRequest['mode'];objective:string;requestedMetrics:string;inputCap:number|null;outputCap:number|null;dataset:typeof publicTask;successCriteria?:string[];previousApproved?:{prompt:string;metrics:string[]};priorRun?:DesignContext['priorRun']} = { mode:request.mode, objective, requestedMetrics, inputCap, outputCap, dataset:publicTask };
-    if (choices) {
-      brief.requestedMetrics = choices.metrics.join("\n");
-      brief.successCriteria = selected?.map(item=>item.criterion).filter(Boolean) ?? [];
-    }
-    if (parent && !explicitlyEmpty) brief.previousApproved = { prompt:parent.prompt, metrics:parent.metrics };
-    if (parent && context.priorRun) brief.priorRun = context.priorRun;
-
     // Snapshot each role before starting asynchronous inference. An admin edit takes effect on the next draft.
     const configs = this.roles();
     const controller = new AbortController();
@@ -191,16 +180,42 @@ export class OutcomeWorkflow {
       const ask = route.ask.bind(route);
       const promptAsset=(id:string)=>this.registry.get(id);
 
-      let domain:Domain|null=prior?.domain || pinned || (isDomain(manual)?manual:null);
-      const domainSource = prior?.domainSource || (pinned ? "dataset" : manual ? "user" : "inferred");
+      let domain:Domain|null=prior?.domain || pinned || (isDomain(manual)?manual:null) || starter?.domain || null;
+      const domainSource:PlanningDomainSource = prior?.domainSource || (pinned ? "dataset" : manual ? "user" : starter ? "starter" : "inferred");
       if (!domain) {
         domain = await ask("Domain routing",
           promptAsset("workflow-router").instructions,
-          { objective, requestedMetrics, scenario:dataset?.title ?? null, datasetIndustry:dataset?.industry ?? null }, routeSchema, 48, result => {
-            if (!isDomain(result.domain)) throw Error("the router returned an unknown domain");
-            return result.domain;
+          {objective,...(dataset && {scenario:dataset.title})},routeSchema,48,result=>{
+            const chosen=typeof result.check==="string" ? routingChecks.get(result.check) : undefined;
+            if (!chosen) throw Error("the router returned an unknown verification task");
+            return chosen;
           });
       }
+      const submitted = request.measures == null ? null : {
+        metrics: lines(request.measures.metrics, "Selected metrics", 2000, 0),
+        criteria: lines(request.measures.criteria, "Success criteria", 2000, 0),
+      };
+      const sameDomainParent=parent?.domain===domain ? parent : null;
+      if (parent && !sameDomainParent && requestedMetrics===parent.requestedMetrics) {
+        requestedMetrics="";brief.requestedMetrics="";
+      }
+      const previousRows=prior?.metricAudit.filter(row=>row.status!=="external");
+      const previous=previousRows ? {metrics:previousRows.map(r=>r.metric),criteria:previousRows.map(r=>r.criterion),pairs:previousRows} :
+        parent ? {metrics:parent.metrics,criteria:parent.requirements,
+          pairs:parent.metricCriteria ?? parent.metricAudit?.filter(r=>r.status!=="external") ??
+            (parent.metrics.length===parent.requirements.length ? proposals(parent.metrics,parent.requirements) : undefined)} : null;
+      const selected=!submitted ? null : parent && !sameDomainParent && !prior && previous
+        ? revisedDomainSelection(submitted.metrics,submitted.criteria,previous)
+        : pairSelection(submitted.metrics,submitted.criteria,previous);
+      const choices=selected ? {metrics:selected.map(row=>row.metric),criteria:selected.map(row=>row.criterion)} : null;
+      const explicitlyEmpty=purpose==="draft" && selected?.length===0;
+      if (choices) {
+        brief.requestedMetrics = choices.metrics.join("\n");
+        brief.successCriteria = selected?.map(item=>item.criterion).filter(Boolean) ?? [];
+      }
+      if (sameDomainParent && !explicitlyEmpty) brief.previousApproved = {prompt:sameDomainParent.prompt,metrics:sameDomainParent.metrics};
+      if (sameDomainParent && context.priorRun) brief.priorRun = context.priorRun;
+
       const agents = configs.filter(c => c.domain === domain);
       const expert = prior?.expert ?? agents.find(c => c.role === "expert");
       const implementer = agents.find(c => c.role === "implementer");
@@ -236,7 +251,7 @@ export class OutcomeWorkflow {
         const id = randomUUID();
         this.suggestions.set(id, { scope, domain, domainSource, expert, designer:expertDesigner, findings, metricAudit, auditDesigner, planningAttempts:route.attempts });
         if (this.suggestions.size > 64) this.suggestions.delete(this.suggestions.keys().next().value ?? '');
-        return structuredClone({ id, domain, expertVersion:expert.version, model:expertDesigner.model, designer:expertDesigner, planningAttempts:route.attempts,
+        return structuredClone({ id, domain, domainSource, expertVersion:expert.version, model:expertDesigner.model, designer:expertDesigner, planningAttempts:route.attempts,
           metrics, criteria:requirements, metricAudit, ...(context.coverage && {auditCoverage:{...context.coverage}}), auditDesigner, auditAgent:agentPin(auditor), criteriaReview:findings.criteriaReview });
       }
       // Audit targets can be numbers, dates, category names or arbitrary expected text.
@@ -253,7 +268,7 @@ export class OutcomeWorkflow {
         assignment:promptAsset("workflow-implementer-assignment").instructions,
         ...(declaredKeys && {requestedOutputKeys:declaredKeys,fieldFormat:"Return fields as an object keyed by these exact requested names. Each value supplies type and nullable. Use source labels only in inputs."}),
         ...(structuredOutput && {formatInstructions:promptAsset("workflow-structured-output").instructions,
-          ...(parent?.outputSchema && {previousOutputSchema:parent.outputSchema})}),
+          ...(sameDomainParent?.outputSchema && {previousOutputSchema:sameDomainParent.outputSchema})}),
       };
       const guidance = await ask(domain + " implementer", grounding(implementer) +
         "\n" + promptAsset("workflow-implementer").instructions,
@@ -305,7 +320,7 @@ export class OutcomeWorkflow {
         domain, domainSource, title:findings.title, requirements,
         prompt, criteriaReview:findings.criteriaReview ?? null, guidanceReview:{omitted:guidance.omitted,reasons:guidance.reasons,...(guidance.supplementSource && {supplementSource:guidance.supplementSource})}, parentId:parent?.id ?? null,
         datasetId:dataset?.datasetId ?? null, packId:dataset?.packId ?? null, contractHash:dataset?.contractHash ?? null, dataset,
-        sourceRunId:brief.priorRun?.id ?? null, priorRun:brief.priorRun ?? null,
+        sourceRunId:context.priorRun?.id ?? null, priorRun:brief.priorRun ?? null,
         suggestions:prior ? { domain, expertVersion:expert.version, designer:prior.designer, metrics:findings.metrics, criteria:findings.requirements } : null,
         agents:[expert, implementer].map(({domain,role,version,hash,sources,origin,bundle}) => ({domain,role,version,hash,sources,origin,bundle})),
         workflowAgents:[...(domainSource==="inferred"?["workflow-router"]:[]),"workflow-expert","workflow-expert-assignment",...(auditDesigner?["workflow-metric-auditor"]:[]),"workflow-implementer","workflow-implementer-assignment",...(structuredOutput?["workflow-structured-output"]:[])].map(id=>agentPin(promptAsset(id))),

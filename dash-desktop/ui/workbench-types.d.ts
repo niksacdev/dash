@@ -12,7 +12,7 @@ interface UiServer { provider:string; online:boolean; checkedAt:string; address:
 interface UiDataset { id:string; name:string; pack:string; metadata:UiDatasetMetadata; version:string; split:string; origin:string; count:number; casesWithoutReference:number;casesWithRubric:number }
 interface UiCase { case_id:string; messages?:unknown[]; prompt?:string; reference?:unknown; gold?:unknown; input?:unknown; rubric?:unknown; sme_rationale?:string; source_locator?:unknown }
 interface UiDatasetDetail { id:string; name:string; pack:string; metadata:UiDatasetMetadata; rows: UiCase[] }
-interface UiPack { id:string; title:string; system:string; outputSchema:unknown; scorer?:string; description:string; metrics:string[]; kind?:string; version?:string }
+interface UiPack { starter?:{title:string;task:string;quickObjective:string}; id:string; title:string; system:string; outputSchema:unknown; scorer?:string; description:string; metrics:string[]; kind?:string; version?:string }
 interface UiRole { domain:string; role:string; version:number; instructions:string; sources?:{title:string;url:string}[] }
 interface UiTokenCaps { inputCap?:number|null; outputCap?:number|null }
 interface UiMetricAudit {
@@ -32,12 +32,12 @@ interface UiPrompt extends UiTokenCaps, UiReviewEvidence {
   promptRationale?:{original:string;addition:string;reason:string};
   mode:UiMode; objective:string; domain:string; requestedMetrics?:string; title:string; prompt:string; metrics:string[]; requirements:string[];
   datasetId?:string|null; dataset?:UiPack|null; domainSource?:string; agents?:Pick<UiRole,"domain"|"role"|"version"|"sources">[]; designer?:UiModelIdentity|null;
-  priorRun?:UiPriorRun|null; guidanceReview?:UiPlanningReview; criteriaReview?:UiPlanningReview;
+  sourceRunId?:string|null;priorRun?:UiPriorRun|null; guidanceReview?:UiPlanningReview; criteriaReview?:UiPlanningReview;
   planningAttempts?:UiPlanningAttempt[];
 }
 interface UiDraft extends UiPrompt {draftId:string}
 interface UiApproved extends UiPrompt {id:string; version:number; familyId:string;metricCriteria?:{metric:string;criterion:string}[]}
-interface UiSuggestion extends UiReviewEvidence {id:string; planningAttempts?:UiPlanningAttempt[]; domain:string; metrics:string[]; criteria:string[]; criteriaReview?:UiPlanningReview}
+interface UiSuggestion extends UiReviewEvidence {id:string;domainSource?:string; planningAttempts?:UiPlanningAttempt[]; domain:string; metrics:string[]; criteria:string[]; criteriaReview?:UiPlanningReview}
 interface UiWorkflow {
   mode:UiMode; objective:string; metrics:string; domain:string; inputCap:string; outputCap:string;
   datasetId:string; parentId:string|null; sourceRunId:string|null; draft:UiDraft|null; approved:UiApproved|null;

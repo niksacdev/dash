@@ -33,15 +33,17 @@ function workflowPage(mode:UiMode) {
     (mode === "dataset" && !w.parentId && !w.busy ? '<button class="quiet" type="button" id="dataset-native">← Use dataset instructions</button>' : '') +
     (w.approved ? workflowReady(w) : w.draft ? workflowReview(w) : workflowCompose(w)) + '</section>';
 }
-const exampleOutcomes:Record<string,{title:string;sample:string;text:string}> = {
-  earnings: {title:"Review earnings disclosures", sample:"Synthetic release excerpt: For the quarter ended June 30, diluted GAAP EPS was $0.74. Adjusted diluted EPS was $0.85. The release provides no reconciliation.", text:"Identify earnings figures that need analyst review. Cite the reported period and basis for each figure and flag missing evidence."},
-  manufacturing: {title:"Inspect a supplier lot", sample:"Synthetic inspection record: Lot K7, shaft diameter. Active drawing B specifies 10.00 ± 0.03 mm. Reading: 10.04 mm. The receiving rule accepts only readings within the stated limits.", text:"Help receiving inspection decide which supplier lots need review using the measurement, tolerance and drawing revision in each record."},
-};
 function outcomeExamples(w:UiWorkflow) {
   if (w.parentId) return "";
-  const keys=w.mode==="quick"?Object.keys(exampleOutcomes):Object.keys(exampleOutcomes).filter(k=>k===packId);
-  if (!keys.length) return "";
-  return '<div class="wf-examples"><small>Try an outcome</small>' + keys.map(key => '<button type="button" data-wf-example="'+key+'">'+esc(exampleOutcomes[key].title)+'</button>').join("")+'</div>';
+  const available=state.packs.filter(p=>w.mode==="quick" || p.id===packId);
+  const examples=available.flatMap(p=>p.starter ? [{id:p.id,title:p.starter.title}] : []);
+  if (!examples.length) return w.mode==="quick" && available.some(p=>p.id==="earnings" || p.id==="manufacturing")
+    ? '<p class="wf-hint">Quit and reopen DASH to load the bundled industry examples.</p>' : "";
+  return '<div class="wf-examples"><small>Try an outcome</small>'+examples.map(p=>'<button type="button" data-wf-example="'+esc(p.id)+'">'+esc(p.title)+'</button>').join("")+'</div>';
+}
+function planningDomainLabel(domain:string,source?:string) {
+  const labels:Record<string,string>={dataset:"Dataset domain",user:"Selected domain",starter:"Example domain",inferred:"Inferred domain"};
+  return (source && Object.hasOwn(labels,source) ? labels[source] : "Domain")+" · "+domain;
 }
 function domainControl(w:UiWorkflow) {
   const snapshot=state.datasets.find(d=>d.id===w.datasetId);
@@ -51,8 +53,10 @@ function domainControl(w:UiWorkflow) {
     [["","Infer from the task"],...planningDomains.map(d => [d,d])].map(([value,label]) =>
       '<label><input type="radio" name="wf-domain" value="' + esc(value) + '" ' + (w.domain===value?'checked':'') + '><span>' + esc(label) + '</span></label>').join("") + '</div></fieldset>';
 }
-function refinementSummary(run?:UiPriorRun|null) {
-  if (!run?.id) return "";
+function refinementSummary(run?:UiPriorRun|null,sourceRunId?:string|null) {
+  if (!run?.id) return typeof sourceRunId==="string" && sourceRunId
+    ? '<h3>Source run</h3>'+link('Open source run '+esc(sourceRunId.slice(0,8))+' →','run/'+encodeURIComponent(sourceRunId),'link')
+    : "";
   const rows=run.candidates || [], custom=run.graders || [];
   const measured=rows.map(r => '<li>'+esc(r.candidate)+' · '+esc(r.responses)+' results · '+esc(r.errors)+' errors'+
     (r.scored?' · '+esc(r.passed || 0)+' of '+esc(r.scored)+' passed the scenario grader':'')+'</li>').join("");
@@ -94,11 +98,9 @@ function suggestionEdited(w:UiWorkflow) {
 }
 function planningDetails(p:UiPrompt, promptEdited=false, metricsEdited=false) {
   if (!p.agents?.length) return "";
-  const domainSources:Record<string,string>={dataset:"Dataset domain",user:"Selected domain",inferred:"Inferred domain"};
-  const source=domainSources[p.domainSource || ""] || "Domain";
-  return metricExplanation(p,metricsEdited) + promptExplanation(p,promptEdited) + '<details class="wf-options"><summary>How the agents prepared this prompt</summary><div class="wf-options-body"><p>' + esc(source+" · "+p.domain) + '</p>' +
+  return metricExplanation(p,metricsEdited) + promptExplanation(p,promptEdited) + '<details class="wf-options"><summary>How the agents prepared this prompt</summary><div class="wf-options-body"><p>' + esc(planningDomainLabel(p.domain,p.domainSource)) + '</p>' +
     '<p>'+esc(p.agents.map(a=>(a.role==="expert"?"Industry expert":"Industry implementer")+" v"+a.version).join(" → "))+
-    (p.designer?.model?' · '+esc(p.designer.model):'')+'</p><h3>Success criteria</h3>'+metricList(p.requirements)+plannerAttempts(p)+refinementSummary(p.priorRun)+'</div></details>';
+    (p.designer?.model?' · '+esc(p.designer.model):'')+'</p><h3>Success criteria</h3>'+metricList(p.requirements)+plannerAttempts(p)+refinementSummary(p.priorRun,p.sourceRunId)+'</div></details>';
 }
 function measuresSection(w:UiWorkflow) {
   const suggesting = w.busy === "suggest";
@@ -113,7 +115,8 @@ function measuresSection(w:UiWorkflow) {
     esc(w.chosenMetrics) + '</textarea></label><label class="field"><span>Pass conditions · what counts as success for one answer</span><textarea id="wf-criteria" rows="3">' +
     esc(w.criteria) + '</textarea></label></div>' : manual;
   const supplement = w.suggestion?.criteriaReview?.supplementSource;
-  const attribution = w.suggestion ? '<strong>AI expert</strong> · AI suggestions can be wrong. Review and edit them before drafting.' +
+  const attribution = w.suggestion ? '<strong>AI expert · '+esc(planningDomainLabel(w.suggestion.domain,w.suggestion.domainSource))+'</strong> · AI suggestions can be wrong. Review and edit them before drafting.' +
+    (w.mode==="quick" ? ' <button type="button" class="quiet" data-open-planning-domain>Change planning domain</button>' : '') +
     (supplement ? ' Supplementary criteria from '+esc(supplement)+'.' : '') : 'Edit or remove any line before drafting.';
   return head + '<div id="wf-measure-fields">' + fields +
     (selected ? '<p class="wf-hint">Pair each metric with its pass condition on the same line in the next field. The grader checks the answer against that condition.</p><small class="wf-hint">' + attribution + '</small>' : '') + (w.suggestion ? metricExplanation(w.suggestion,suggestionEdited(w)) : '') + '</div>';
@@ -147,7 +150,7 @@ function workflowCompose(w:UiWorkflow, grader=false) {
     '<details class="wf-options"><summary>Domain and token budgets</summary><div class="wf-options-body">' + domainControl(w) + '<div class="cols"><label class="field"><span>Input token limit</span><input type="number" min="1" max="1000000" step="1" id="wf-input-cap" value="' +
     esc(w.inputCap) + '" placeholder="Runtime default"></label><label class="field"><span>Output token limit</span><input type="number" min="1" max="1000000" step="1" id="wf-output-cap" value="' +
     esc(w.outputCap) + '" placeholder="Runtime default"></label></div><p class="muted">A hard input limit requires exact token counting for the selected runtime. DASH stops before inference if it cannot verify every case against the limit.</p></div></details>' +
-    '<div class="wf-actions"><span class="wf-hint">' + (w.sourceRunId?'The agents will use measured results from run '+esc(w.sourceRunId.slice(0,8))+' to revise the prompt.':w.parentId?'Revising a saved prompt version.':'The domain agents draft a prompt for your review.') +
+    '<div class="wf-actions"><span class="wf-hint">' + (w.sourceRunId?'Revising from run '+esc(w.sourceRunId.slice(0,8))+'. Changing domain starts fresh preparation.':w.parentId?'Revising a saved prompt version.':'The domain agents draft a prompt for your review.') +
     '</span><button class="yellow" id="wf-design" type="submit">' + (w.busy === 'design' ? 'Drafting prompt…' : 'Draft evaluation prompt →') + '</button></div></fieldset></form>' +
     planningActivity(w) +
     (!grader && w.mode === "dataset" ? fixtureControl(w) : '');
@@ -284,7 +287,7 @@ function workflowReview(w:UiWorkflow, grader=false) {
   const d = w.draft;
   if (!d) return "";
   return planningActivity(w) + '<form id="wf-approval-form" class="wf-panel"><fieldset class="wf-fields"' + (w.busy ? ' disabled' : '') +
-    '><div class="wf-section-head"><h2>Review the evaluation prompt</h2>' + tag(d.domain) + '</div>' +
+    '><div class="wf-section-head"><h2>Review the evaluation prompt</h2>' + tag(planningDomainLabel(d.domain,d.domainSource)) + '</div>' +
     (d.outputSchema && d.input ? structuredReview(w) : '<label class="field"><span>Task prompt sent to each candidate</span><textarea id="wf-prompt" required maxlength="24000" rows="10">' +
     esc(w.reviewPrompt) + '</textarea></label>') +
     '<label class="field"><span>Success metrics</span><textarea id="wf-review-metrics" rows="3">' +
@@ -353,7 +356,7 @@ function workflowRecord(id:string) {
 }
 function useWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null) {
   const w = plannerState(p.mode);
-  Object.assign(w, {structuredOutput:!!p.outputSchema,objective:p.objective,metrics:p.requestedMetrics || "",domain:p.domain,inputCap:p.inputCap?.toString()??"",outputCap:p.outputCap?.toString()??"",datasetId:p.datasetId||"",parentId:p.id,sourceRunId});
+  Object.assign(w, {structuredOutput:!!p.outputSchema,objective:p.objective,metrics:p.requestedMetrics || "",domain:p.domainSource==="user" ? p.domain : "",inputCap:p.inputCap?.toString()??"",outputCap:p.outputCap?.toString()??"",datasetId:p.datasetId||"",parentId:p.id,sourceRunId});
   if (p.mode === "dataset") {
     const d = state.datasets.find(d=>d.id===p.datasetId);
     if (!d) { message("The dataset snapshot for this version is unavailable."); return; }
@@ -581,9 +584,15 @@ document.addEventListener("submit", async e=>{
       const task=workflowDesignInput(w);
       delete task.suggestionId;
       const result = await api.suggestMetrics(task);
+      const parent=w.parentId ? workflowRecord(w.parentId) : null;
       if (w.activity && result.planningAttempts) w.activity.calls=result.planningAttempts.filter(a=>a.requestId===w.activity?.requestId);
-      w.chosenMetrics = mergeSuggestions(w.chosenMetrics ?? w.metrics, w.suggestion?.metrics, result.metrics);
-      w.criteria = mergeSuggestions(w.criteria, w.suggestion?.criteria, result.criteria);
+      if(parent && !w.suggestion && parent.domain!==result.domain) {
+        // The service already reconciled the submitted pairs with their original domain.
+        w.chosenMetrics=result.metrics.join("\n");w.criteria=result.criteria.join("\n");
+      } else {
+        w.chosenMetrics = mergeSuggestions(w.chosenMetrics ?? w.metrics, w.suggestion?.metrics, result.metrics);
+        w.criteria = mergeSuggestions(w.criteria, w.suggestion?.criteria, result.criteria);
+      }
       w.suggestion = result;
     } else if (design) {
       if (!api.designPrompt) throw Error("The planning service is unavailable in this session. Reopen DASH to load the domain agents.");
@@ -627,12 +636,19 @@ document.addEventListener("click", async e=>{
     catch (error) { if(cancel.isConnected)inlineError(cancel.closest("form") || $("#screen"),error);cancel.disabled = false; }
     return;
   }
+  const changeDomain=e.target.closest<HTMLButtonElement>("[data-open-planning-domain]");
+  if(changeDomain){
+    const form=changeDomain.closest("form"),radio=form?.querySelector<HTMLInputElement>('[name="wf-domain"]:checked');
+    const panel=radio?.closest("details");
+    if(panel && radio){panel.open=true;radio.focus();}
+    return;
+  }
   const example=e.target.closest<HTMLButtonElement>("[data-wf-example]");
   if (example) {
     const field=dashElement("#wf-objective",HTMLTextAreaElement);
-    const sample=exampleOutcomes[example.dataset.wfExample ?? ""];
+    const sample=state.packs.find(pack=>pack.id===example.dataset.wfExample)?.starter;
     if (!field || !sample) return;
-    const exampleText = workflowMode() === "quick" ? sample.text + "\n\n" + sample.sample : sample.text;
+    const exampleText = workflowMode() === "quick" ? sample.quickObjective : sample.task;
     field.value=field.value.trim()?field.value.trimEnd()+"\n"+exampleText:exampleText;
     field.dispatchEvent(new Event("input",{bubbles:true})); field.focus();
     return;

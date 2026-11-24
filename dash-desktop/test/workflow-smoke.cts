@@ -83,7 +83,7 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
       threshold:i ? .8 : .9,reason:"A local judge can evaluate the supplied answer."}]));
   }
   if(stage==="native-relevance")return {answer_relevance_score:.9,reason:"The synthetic response addresses the supplied task."};
-  if (stage === "route") return { domain: "Manufacturing" };
+  if (stage === "route") return { check:"Check manufacturing processes, parts, lots or quality" };
   if (stage === "expert") return {
     title: "Triage incoming parts",
     metrics: ["Share of cases with cited evidence",...(z.object({objective:z.string()}).parse(raw).objective===quickGoal?[markerMetric]:[])],
@@ -173,7 +173,7 @@ globalThis.fetch = async (url, options = {}) => {
   const props = schema?.properties ?? {};
   const evaluation = opikJudgeRequest(body.messages);
   const stage = evaluation?.stage ?? (props.M1 ? "grader-plan" : props.answer_relevance_score ? "native-relevance" : props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
-    props.audit ? "audit" : props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
+    props.audit ? "audit" : props.check ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
   const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" || stage === "native-relevance" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
   calls.push({ stage, body, brief });
   if (stage==="route" && holdRouting) await holdRouting();
@@ -524,6 +524,7 @@ async function smoke() {
   await wait(() => exists("#wf-design"), "Phone-width composer");
   assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "The outcome form should fit a phone viewport");
   assert.ok(await js("document.querySelector('#wf-design').getBoundingClientRect().height >= 44"), "Touch-size draft button");
+  assert.match(await text("(()=>{const packs=state.packs;try{state.packs=packs.map(({starter,...old})=>old);return outcomeExamples(workflows.quick);}finally{state.packs=packs;}})()"),/Quit and reopen DASH/);
   await click('[data-wf-example="manufacturing"]');
   assert.match(await text("document.querySelector('#wf-objective').value"), /Synthetic inspection record/);
   await fill("#wf-objective", quickGoal);
@@ -558,6 +559,9 @@ async function smoke() {
   assert.equal(await js("document.querySelector('#wf-measures .wf-explanation').open"),false);
   await click("#wf-measures .wf-explanation summary");
   assert.match(await text("document.querySelector('#wf-measures .wf-explanation').innerText"),/Evidence needed/);
+  assert.match(await text("document.querySelector('#wf-measure-fields').innerText"),/Inferred domain · Manufacturing/);
+  await click("[data-open-planning-domain]");
+  assert.equal(await js("document.activeElement.name"),"wf-domain");
   assert.equal(records().length, 0);
   const criterion = "Cite the inspection record supporting the disposition.";
   const markerGrader=z.string().parse(await js("window.dash.saveGrader("+q({
@@ -839,6 +843,8 @@ async function smoke() {
   assert.equal(calls.filter(c => c.stage === "expert").length, 1, "Reuse must preserve the approved prompt");
   await route("prompts");
   await click('[data-wf-revise="' + first.id + '"]');
+  await wait(()=>exists('[name="wf-domain"]:checked'),"Revision domain source");
+  assert.equal(await js("document.querySelector('[name=wf-domain]:checked').value"),"","An inferred label stays automatic while revising.");
   await click("#wf-design");
   await click("#wf-approve");
   await wait(() => records().length === 2, "Saved revision");

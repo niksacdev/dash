@@ -98,8 +98,8 @@
     },
     {
       "id": "workflow-router",
-      "version": 1,
-      "path": "prompts/workflow-router.md"
+      "version": 2,
+      "path": "prompts/workflow-router-v2.md"
     },
     {
       "id": "workflow-expert",

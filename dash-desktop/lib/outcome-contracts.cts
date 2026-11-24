@@ -4,6 +4,8 @@ import {isRecord,isDomain,decodeAgentPin,type AgentPin,type Domain} from "../age
 import {decodeRoleSnapshot,type RoleSnapshot} from "./domain-profiles.cjs";
 import type {PlanningAttempt,PlannerIdentity} from "./planner-routing.cjs";
 import {persistedAudit,rationaleSchema,type MetricAudit,type PromptRationale} from "./metric-audit.cjs";
+const planningDomainSource=z.enum(["dataset","user","starter","inferred"]);
+export type PlanningDomainSource = z.infer<typeof planningDomainSource>;
 export type PlanningPurpose = "draft" | "suggest";
 export type RunMode = "quick"|"dataset";
 export interface DesignRequest {
@@ -57,6 +59,7 @@ interface PromptCore {
   outputSchema?:QuickOutputSchema;
   input?:QuickTaskInput;
   metricCriteria?:{metric:string;criterion:string}[];
+  domainSource?:PlanningDomainSource;
   mode:RunMode; prompt:string; objective:string; title:string; domain:Domain; metrics:string[]; requirements:string[];
   datasetId:string|null; packId:string|null; contractHash:string|null; inputCap:number|null; outputCap:number|null;
   designer:PlannerIdentity|null;
@@ -69,7 +72,7 @@ export interface PromptDraft extends PromptCore {draftId:string;parentId:string|
 export interface ApprovedPrompt extends PromptCore {id:string;familyId:string;version:number;[key:string]:unknown}
 export interface MetricSuggestion {
   auditCoverage?:EvidenceCoverage; metricAudit?:MetricAudit[]; auditAgent?:AgentPin; auditDesigner?:PlannerIdentity;
-  id:string; domain:Domain;expertVersion:number;model:string;designer:PlannerIdentity;planningAttempts:PlanningAttempt[];metrics:string[];criteria:string[];criteriaReview?:{omitted:number;reasons:string[];supplementSource?:string};
+  id:string; domain:Domain;domainSource?:PlanningDomainSource;expertVersion:number;model:string;designer:PlannerIdentity;planningAttempts:PlanningAttempt[];metrics:string[];criteria:string[];criteriaReview?:{omitted:number;reasons:string[];supplementSource?:string};
 }
 const savedPlanningCall = z.object({
   stage:z.string(), model:z.string(), status:z.enum(["succeeded","failed","canceled"]),
@@ -102,12 +105,13 @@ export function decodeApprovedPrompt(raw:unknown):ApprovedPrompt {
   const agents=raw.agents, workflowAgents=raw.workflowAgents;
   if (agents!=null && !Array.isArray(agents)) throw Error("Invalid saved domain agent revisions.");
   if (workflowAgents!=null && !Array.isArray(workflowAgents)) throw Error("Invalid saved workflow agent revisions.");
-  const {metricAudit,promptRationale,auditAgent,auditDesigner,auditCoverage,metricCriteria,outputSchema,input,schemaReview,...record}=raw;
+  const {domainSource,metricAudit,promptRationale,auditAgent,auditDesigner,auditCoverage,metricCriteria,outputSchema,input,schemaReview,...record}=raw;
   if ((outputSchema===undefined)!==(input===undefined)) throw Error("The saved structured prompt is missing its JSON input or output schema.");
   if (outputSchema!==undefined && raw.mode!=="quick") throw Error("A dataset prompt cannot override its scenario output contract.");
   const coverage=z.object({cases:z.int().nonnegative(),referenceCases:z.int().nonnegative(),rubricCases:z.int().nonnegative()}).refine(c=>c.referenceCases<=c.cases && c.rubricCases<=c.cases);
   const identity=z.object({provider:z.string(),model:z.string(),revision:z.string().nullable()});
-  return {...record,...(schemaReview!==undefined && {schemaReview:schemaReviewRecord.parse(schemaReview)}),...(outputSchema!==undefined && {outputSchema:decodeQuickOutputSchema(outputSchema),input:decodeQuickTaskInput(input,raw.prompt)}),...(metricCriteria!==undefined && {metricCriteria:z.array(z.object({metric:z.string().max(2000),criterion:z.string().max(2000)})).max(8).parse(metricCriteria)}),...(auditCoverage!==undefined && {auditCoverage:coverage.parse(auditCoverage)}),...(metricAudit!==undefined && {metricAudit:persistedAudit.parse(metricAudit)}),
+  const attribution=planningDomainSource.safeParse(domainSource);
+  return {...record,...(attribution.success && {domainSource:attribution.data}),...(schemaReview!==undefined && {schemaReview:schemaReviewRecord.parse(schemaReview)}),...(outputSchema!==undefined && {outputSchema:decodeQuickOutputSchema(outputSchema),input:decodeQuickTaskInput(input,raw.prompt)}),...(metricCriteria!==undefined && {metricCriteria:z.array(z.object({metric:z.string().max(2000),criterion:z.string().max(2000)})).max(8).parse(metricCriteria)}),...(auditCoverage!==undefined && {auditCoverage:coverage.parse(auditCoverage)}),...(metricAudit!==undefined && {metricAudit:persistedAudit.parse(metricAudit)}),
     ...(promptRationale!==undefined && {promptRationale:rationaleSchema.parse(promptRationale)}),
     ...(auditAgent!==undefined && {auditAgent:decodeAgentPin(auditAgent)}),...(auditDesigner!==undefined && {auditDesigner:identity.parse(auditDesigner)}),planningAttempts:savedPlanningCalls(raw.planningAttempts),...(Array.isArray(agents) && {agents:agents.map(decodeRoleSnapshot)}),
     ...(Array.isArray(workflowAgents) && {workflowAgents:workflowAgents.map(decodeAgentPin)}),id:raw.id,familyId:raw.familyId,version:raw.version,mode:raw.mode,domain:raw.domain,prompt:raw.prompt,objective:raw.objective,

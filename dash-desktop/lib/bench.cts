@@ -1,3 +1,4 @@
+import {domainStarters} from "./domain-starters.cjs";
 import {exportDiagnostics,publicProviderError} from "./export-diagnostics.cjs";
 import {DatabaseSync} from "node:sqlite";
 import {z} from "zod";
@@ -320,7 +321,7 @@ export class Bench {
       )
       .all();
     return {
-      packs: this.packs.map((p) => p.pack),
+      packs: this.packs.map(({pack})=>({...pack,starter:domainStarters.find(s=>s.packId===pack.id)})),
       datasets: datasets.map(decodeDatasetSummary),
       runs:runs.map(row=>{
         const summary=decodeRunSummary(row);

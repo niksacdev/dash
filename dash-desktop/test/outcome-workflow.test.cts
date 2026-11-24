@@ -1,9 +1,10 @@
+import {domainStarters} from "../lib/domain-starters.cjs";
 import {isExternalOutcomeMetric} from "../lib/metric-audit.cjs";
 import {auditReply} from "./audit-fixture.cjs";
 import {test,type TestContext} from "node:test";
 import assert = require("node:assert/strict");
 import { DatabaseSync } from "node:sqlite";
-import {OutcomeWorkflow,contractHash,type DesignContext} from "../lib/outcome-workflow.cjs";
+import {OutcomeWorkflow,contractHash,decodeApprovedPrompt,type DesignContext} from "../lib/outcome-workflow.cjs";
 import {hostedPlanningUsage} from "../lib/planning-usage.cjs";
 import {PlanningRoute,type PlannerAdapters,type PlanningAttempt} from "../lib/planner-routing.cjs";
 import type {LocalCandidate,ModelCandidate,ChatTurn} from "../lib/runtime-types.cjs";
@@ -14,7 +15,7 @@ const candidateTask=z.object({objective:z.string(),inputCap:z.number().nullable(
 const review=z.object({omitted:z.number(),supplementSource:z.string().optional()});
 const attempts=z.array(z.object({status:z.string(),provider:z.string(),revision:z.string().nullable().optional(),reason:z.string().optional(),fallbackReason:z.string().optional()}));
 interface PlannerCall {candidate:ModelCandidate; messages:ChatTurn[]; structured:z.infer<typeof planSchema>; signal:AbortSignal}
-interface ReplyFields {title?:string;domain?:string;metrics?:string[];requirements?:string[];prompt?:string}
+interface ReplyFields {check?:string;title?:string;domain?:string;metrics?:string[];requirements?:string[];prompt?:string}
 interface FixtureOptions {
   audit?:(messages:ChatTurn[])=>unknown;
   inventory?:(Omit<LocalCandidate,"provider"> & {provider:string;endpoint?:string})[];
@@ -42,7 +43,7 @@ function fixture(t:TestContext, options:FixtureOptions = {}) {
       calls.push({candidate,messages,structured:decoded,signal});
       const schema=decoded.properties;
       if(schema.audit) return inferenceReply(JSON.stringify(options.audit?.(messages) ?? auditReply(messages)),{input_tokens:19,output_tokens:7});
-      const result = schema.domain ? { domain:"Manufacturing" } :
+      const result = schema.check ? { check:"Check manufacturing processes, parts, lots or quality" } :
         schema.requirements ? expert : { prompt:"Check the source drawing, record units, and explain any inspection referral." };
       return inferenceReply(options.reply?.(result) ?? JSON.stringify(result),{input_tokens:19,output_tokens:7});
     },
@@ -60,7 +61,7 @@ test("the router selects the domain and the two local domain roles prepare a reu
   const draft = await work.design(request);
   assert.equal(calls.length, 4);
   assert.ok(calls.every(c => c.candidate === model));
-  assert.deepEqual(calls.map(c => Object.keys(c.structured.properties)), [["domain"], ["title","metrics","requirements"], ["audit"], ["prompt","reason"]]);
+  assert.deepEqual(calls.map(c => Object.keys(c.structured.properties)), [["check"], ["title","metrics","requirements"], ["audit"], ["prompt","reason"]]);
   const expertMessage = calls[1].messages[0].content;
   assert.match(expertMessage, /[Mm]anufacturing/);
   assert.match(expertMessage, /nist\.gov/);
@@ -85,6 +86,76 @@ test("the router selects the domain and the two local domain roles prepare a reu
   assert.equal(saved.familyId, saved.id);
   assert.equal(saved.designer?.model, "lfm3-planner");
   assert.deepEqual(work.get(saved.id), saved);
+});
+
+test("exact Quick starters select the pack expert and implementer, independently of an adversarial router",async t=>{
+  const {work,calls}=fixture(t,{reply:r=>r.check ? JSON.stringify({check:"Check financial figures, disclosures, accounting or risk"}) : null});
+  for (const starter of domainStarters) {
+    const start=calls.length, request={mode:"quick",objective:starter.quickObjective};
+    const suggestion=await work.design(request,{},"suggest");
+    assert.equal(suggestion.domain,starter.domain);
+    assert.equal(suggestion.domainSource,"starter");
+    const draft=await work.design({...request,suggestionId:suggestion.id});
+    assert.deepEqual(draft.agents?.map(a=>[a.role,a.domain]),[["expert",starter.domain],["implementer",starter.domain]]);
+    const approval=work.approve({draftId:draft.draftId,prompt:draft.prompt});
+    assert.equal(work.get(approval.id).domainSource,"starter");
+    assert.ok(!draft.workflowAgents?.some(a=>a.id==="workflow-router"));
+    assert.ok(!calls.slice(start).some(c=>c.structured.properties.check));
+    await assert.rejects(work.design({...request,domain:"General",suggestionId:suggestion.id}),/Suggest Metrics again/);
+  }
+  const inspection=domainStarters.find(s=>s.domain==="Manufacturing");assert.ok(inspection);
+  const changed=await work.design({mode:"quick",objective:"Review the manufacturer's financial disclosures. "+inspection.quickObjective});
+  assert.equal(changed.domain,"Financial Services");assert.equal(changed.domainSource,"inferred");
+  assert.ok(changed.workflowAgents?.some(a=>a.id==="workflow-router" && a.version===2));
+  const manual=await work.design({mode:"quick",objective:inspection.quickObjective,domain:"General"});
+  assert.equal(manual.domainSource,"user");assert.equal(manual.domain,"General");
+});
+
+test("correcting a domain starts a fresh expert brief without rewriting the original approval",async t=>{
+  const {work,calls}=fixture(t,{reply:r=>r.prompt ? JSON.stringify({...r,fields:[{name:"inspection",type:"string",nullable:false}],inputs:[],fieldNotes:[]}) : null});
+  const parentDraft=await work.design({...quick,domain:"Financial Services",structuredOutput:true});
+  const parent=work.approve({draftId:parentDraft.draftId,prompt:"An earlier finance instruction",outputSchema:{type:"object",properties:{oldDisclosureGrade:{type:"integer"}},required:["oldDisclosureGrade"],additionalProperties:false},metrics:["Previously approved finance measure"]});
+  const starter=domainStarters.find(row=>row.domain==="Manufacturing");assert.ok(starter);
+  const saved=work.get(parent.id);
+  for(const unsupported of [undefined,"constructor",{domain:"user"}]) {
+    assert.equal(decodeApprovedPrompt({...saved,domainSource:unsupported}).domainSource,undefined);
+  }
+  const priorRun={id:"prior-synthetic-run",graders:[{grader:"Old disclosure reconciliation grader"}]};
+  const start=calls.length;
+  const corrected=await work.design({mode:"quick",objective:starter.quickObjective,parentId:parent.id,
+    measures:{metrics:parent.metrics,criteria:parent.requirements}},{priorRun});
+  assert.equal(corrected.domain,"Manufacturing");assert.equal(corrected.domainSource,"starter");
+  const expertCall=calls.slice(start).find(c=>c.structured.properties.requirements);assert.ok(expertCall);
+  assert.doesNotMatch(expertCall.messages[1].content,/Previously approved finance measure|earlier finance instruction/);
+  assert.equal(corrected.sourceRunId,priorRun.id);assert.equal(corrected.priorRun,null);
+  assert.ok(calls.slice(start).every(c=>!/Old disclosure reconciliation grader|oldDisclosureGrade|previousOutputSchema/.test(JSON.stringify(c.messages))));
+  assert.ok(!corrected.metrics.includes("Previously approved finance measure"));
+  const next=work.approve({draftId:corrected.draftId,prompt:corrected.prompt});
+  assert.equal(next.familyId,parent.familyId);assert.equal(next.version,parent.version+1);
+  assert.equal(work.get(parent.id).domain,"Financial Services");
+  assert.equal(work.get(parent.id).prompt,"An earlier finance instruction");
+});
+test("domain correction keeps an edited inspection pair and excludes untouched earnings pairs from every planner call",async t=>{
+  const {work,calls}=fixture(t);
+  const old={metrics:["Reported earnings basis","Adjusted earnings period"],criteria:["Cite the disclosure basis.","Cite the reporting quarter."]};
+  const added={metric:"Inspection disposition",criterion:"Compare the measured diameter with the drawing tolerance."};
+  const initialNote="Unchanged disclosure reconciliation note";
+  const earlier=await work.design({...quick,domain:"Financial Services",metrics:initialNote,measures:old});
+  const parent=work.approve({draftId:earlier.draftId,prompt:earlier.prompt});
+  assert.deepEqual(parent.metrics,old.metrics);
+  const start=calls.length;
+  const changed={...quick,parentId:parent.id,domain:"Manufacturing",metrics:initialNote,measures:{metrics:[added.metric,old.metrics[0]],criteria:[added.criterion,old.criteria[0]]}};
+  const direct=await work.design(changed);
+  const suggested=await work.design(changed,{},"suggest");
+  const approvedMeasures={metrics:suggested.metrics,criteria:suggested.criteria};
+  const reused=await work.design({...changed,suggestionId:suggested.id,measures:approvedMeasures});
+  for(const result of [direct,suggested,reused]) assert.deepEqual(result.metrics,[added.metric]);
+  assert.deepEqual(suggested.criteria,[added.criterion]);
+  const payloads=JSON.stringify(calls.slice(start).map(call=>call.messages[1].content));
+  for (const original of [...old.metrics,...old.criteria,initialNote]) assert.ok(!payloads.includes(original));
+  assert.equal(direct.requestedMetrics,"");
+  assert.ok(payloads.includes(added.metric));
+  assert.deepEqual(work.get(parent.id).metrics,old.metrics);
 });
 
 test("edited measures are audited and saved independently of candidate preparation", async t => {
@@ -136,6 +207,16 @@ test("dataset drafting uses three real stages and only the public task contract"
   assert.notEqual(contractHash({...pack, system:"Changed."}), draft.contractHash);
   await assert.rejects(work.design({...dataset, domain:"Financial Services"}, context), /domain assigned/);
   await assert.rejects(work.design({...dataset, datasetId:"other"}, context), /snapshot/);
+});
+
+test("reclassifying a legacy snapshot expires suggestions made with its previous industry",async t=>{
+  const {work}=fixture(t,{reply:r=>r.check ? JSON.stringify({check:"Check financial figures, disclosures, accounting or risk"}) : null});
+  const previous=await work.design(dataset,{...context,industry:"Unspecified"},"suggest");
+  assert.equal(previous.domain,"Financial Services");
+  await assert.rejects(work.design({...dataset,suggestionId:previous.id},context),/Suggest Metrics again/);
+  const current=await work.design(dataset,context,"suggest");
+  assert.equal(current.domain,"Manufacturing");
+  assert.equal((await work.design({...dataset,suggestionId:current.id},context)).domainSource,"dataset");
 });
 
 test("approvals are idempotent across restarts and revisions retain immutable lineages", async t => {
