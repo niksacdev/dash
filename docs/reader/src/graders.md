@@ -1,6 +1,6 @@
 # Choose a grader for a run
 
-Choose a grader by asking what evidence would convince a domain expert that the answer was correct.
+The **AI Industry Graders** step in the Overview uses versions from **Workspace → Graders**. Choose an existing industry check or review a proposal from the grader designer. Start with the evidence a domain expert needs to decide whether the answer is correct.
 
 | Success criterion | Grader to use |
 | --- | --- |

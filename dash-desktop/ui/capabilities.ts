@@ -12,18 +12,18 @@ type CapabilityVisual = "objective" | "race" | "industries" | "grading" | "repor
 interface CapabilityScene { context: string; title: string; detail: string; visual: CapabilityVisual }
 
 const scenes: readonly CapabilityScene[] = [
-  { visual: "objective", context: "Business outcome", title: "Start with the decision",
-    detail: "Describe the job. Your domain expert suggests checks you can edit before a run." },
-  { visual: "race", context: "Quick compare", title: "Compare and benchmark multiple models",
-    detail: "Choose two models per run. Compare their answers to the same prompt against one rubric." },
   { visual: "industries", context: "Domain scenarios", title: industryTitle,
     detail: "Check whether earnings per share are reported or adjusted. Flag parts that fall outside the drawing’s tolerances." },
-  { visual: "grading", context: "Dataset grading", title: "Score a whole set of cases",
-    detail: "Apply a rubric to each answer in a dataset version. Compare the results in Opik when synced." },
-  { visual: "report", context: "Run report · Example", title: "See what supports the verdict",
-    detail: "Trace a case score to its grader’s reason. Review latency, tokens and available power readings alongside it." },
-  { visual: "hardware", context: "Planned · Hardware in the loop", title: "Test on connected hardware",
-    detail: "Replay a sensor reading through an agent and record its response for evaluation." },
+  { visual: "objective", context: "Manufacturing", title: "Task Objective, Success Metrics (AI Optimized)",
+    detail: "Set a task like flagging bearings outside tolerance. Your AI domain expert suggests success metrics you can edit." },
+  { visual: "race", context: "Quick compare", title: "Compare and benchmark multiple models",
+    detail: "Test local models hosted on-premises or closed models through their APIs. Compare two at a time using the same prompt and rubric." },
+  { visual: "grading", context: "Dataset grading", title: "Grade each answer against your rubric",
+    detail: "Choose an industry grader or review one drafted by AI. Use it to score each model or agent answer." },
+  { visual: "report", context: "Traceability and Observability", title: "See why an answer passed or failed",
+    detail: "Built on Opik OSS, DASH includes per-case tracing out of the box. Sync a run to review latency, available token counts and grader scores." },
+  { visual: "hardware", context: "FUTURES", title: "Hardware in the Loop",
+    detail: "In this planned test, a real controller drives a simulated motor and uses its speed feedback to adjust the next command." },
 ];
 const reducedBannerMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let currentScene = 0;

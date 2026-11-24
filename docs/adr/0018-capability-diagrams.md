@@ -16,3 +16,5 @@ A presenter showing DASH had the same racing illustration for setting an objecti
 Reusing the circuit for every slide obscured the difference between scoring a dataset and explaining a result. Four inline vector diagrams load offline and scale with the carousel. Only the current illustration is inserted into the active panel. Circuit imagery and animated car lanes belong to the model benchmark. A short accent travels along a connection while playback is enabled. The diagram labels and relationships remain legible when paused or when the operator requests reduced motion.
 
 Exercise all six slides through automatic and manual navigation in Electron. Check the exact benchmark title, exclusive use of the race artwork, accessible diagram descriptions, stable banner height and phone-width labels. [Renderer and slide order](../../dash-desktop/ui/capabilities.ts) · [Design guide](../design/README.md)
+
+[0019](0019-domain-first-overview.md) updates the opening sequence, task examples and hardware flow.

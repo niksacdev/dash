@@ -210,16 +210,30 @@ async function smoke() {
   const isPlaying = () => js("document.querySelector('.capability-reel').dataset.playing === 'true'");
   const bannerHeight = await js("document.querySelector('.hero').offsetHeight");
   assert.equal(await scene(), "0");
+  assert.equal(await caption(), "Run domain-specific use cases");
+  assert.equal(await js("document.querySelector('.capability-context').textContent"), "Domain scenarios");
+  assert.deepEqual(await js("Array.from(document.querySelectorAll('.industry-examples strong'), e => e.textContent)"),
+    ["Financial Services", "Manufacturing", "Automotive"]);
+  assert.match(await text("document.querySelector('.industry-examples figure:last-child small').textContent"), /Planned/);
+  assert.ok(await js(`Promise.all(Array.from(document.querySelectorAll('.industry-examples img'), async img => {
+    await img.decode();
+    return img.currentSrc.startsWith('file:') && img.naturalWidth > 0 && img.checkVisibility({visibilityProperty:true});
+  })).then(values => values.length === 3 && values.every(Boolean))`));
+  assert.equal(await exists(".banner-track"), false);
+  assert.equal(await js("document.querySelector('.hero').offsetHeight"), bannerHeight);
   await click(previous);
   assert.equal(await scene(), String(slideCount - 1));
-  assert.match(await caption(), /connected hardware/);
+  assert.equal(await caption(), "Hardware in the Loop");
+  assert.equal(await js("document.querySelector('.capability-context').textContent"), "FUTURES");
+  assert.deepEqual(await js("Array.from(document.querySelectorAll('.flow-diagram text'), t => t.textContent)"),
+    ["PHYSICAL", "Controller", "SIMULATED", "Motor", "Drive command", "Speed feedback"]);
   assert.equal(await isPlaying(), false);
   await click(next);
   assert.equal(await scene(), "0");
   await click(playback);
   assert.equal(await isPlaying(), true);
   await js("document.querySelector('.capability-frame').getAnimations()[0].updatePlaybackRate(20)");
-  for (const index of ["1", "2", "3", "4", "5", "0", "1"])
+  for (const index of ["1", "2", "3", "4", "5", "0", "1", "2"])
     await wait(async () => await scene() === index, "Automatic slide " + index);
   await click(playback);
   assert.equal(await isPlaying(), false);
@@ -232,27 +246,20 @@ async function smoke() {
     const image = new Image(); image.src = source; await image.decode();
     return image.naturalWidth > 0;
   })()`));
-  await click(next);
-  assert.equal(await caption(), "Run domain-specific use cases");
-  assert.equal(await js("document.querySelector('.capability-context').textContent"), "Domain scenarios");
-  assert.deepEqual(await js("Array.from(document.querySelectorAll('.industry-examples strong'), e => e.textContent)"),
-    ["Financial Services", "Manufacturing", "Automotive"]);
-  assert.match(await text("document.querySelector('.industry-examples figure:last-child small').textContent"), /Planned/);
-  assert.ok(await js(`Promise.all(Array.from(document.querySelectorAll('.industry-examples img'), async img => {
-    await img.decode();
-    return img.currentSrc.startsWith('file:') && img.naturalWidth > 0 && img.checkVisibility({visibilityProperty:true});
-  })).then(values => values.length === 3 && values.every(Boolean))`));
-  assert.equal(await exists(".banner-track"), false);
-  assert.equal(await js("document.querySelector('.hero').offsetHeight"), bannerHeight);
   await js("document.querySelector('[data-carousel=next]').focus()");
   wc.sendInputEvent({type:"keyDown", keyCode:"Right"});
   wc.sendInputEvent({type:"keyUp", keyCode:"Right"});
   await wait(async () => await scene() === "3", "Keyboard next slide");
-  assert.equal(await caption(), "Score a whole set of cases");
+  assert.equal(await caption(), "Grade each answer against your rubric");
+  assert.ok(await js("Array.from(document.querySelectorAll('.flow-diagram text'), t => t.textContent).includes('AI Industry Graders')"));
   assert.equal(await js("document.querySelector('.hero').offsetHeight"), bannerHeight);
   await motion("reduce");
   await wait(() => js("!document.querySelector('.capability-reel').getAnimations({subtree:true}).length"), "Static reduced-motion carousel");
-  await click(previous);
+  await click(next);
+  assert.equal(await caption(), "See why an answer passed or failed");
+  assert.equal(await js("document.querySelector('.capability-context').textContent"), "Traceability and Observability");
+  await click(next);
+  await click(next);
   assert.equal(await caption(), "Run domain-specific use cases");
   win.setMinimumSize(320,480);
   win.setContentSize(390,720);
@@ -267,11 +274,16 @@ async function smoke() {
       await js("document.querySelector('#appearance input[value=" + theme + "]').closest('label').click()");
       assert.ok(await js("Array.from(document.querySelectorAll('.industry-examples figcaption')).every(c => c.checkVisibility({visibilityProperty:true}) && c.scrollWidth <= c.clientWidth + 1)"));
       // Start and end on the approved industry slide. Inspect the actual visible art at each step.
-      for (const visual of ["industries", "grading", "report", "hardware", "objective", "race"]) {
+      for (const visual of ["industries", "objective", "race", "grading", "report", "hardware"]) {
         assert.equal(await js("document.querySelector('.capability-reel').dataset.visual"), visual);
         assert.equal(await js("document.querySelectorAll('.banner-car').length"), visual === "race" ? 3 : 0);
         const background = await text("getComputedStyle(document.querySelector('.capability-reel'), '::before').backgroundImage");
         assert.equal(background.includes("scarlet-circuit.jpg"), visual === "race");
+        if (visual === "objective") {
+          assert.equal(await caption(), "Task Objective, Success Metrics (AI Optimized)");
+          assert.deepEqual(await js("Array.from(document.querySelectorAll('.flow-diagram .diagram-value'), t => t.textContent)"),
+            ["Flag out-of-spec", "bearings", "Defects caught (%)", "Good parts flagged (%)"]);
+        }
         const diagram = visual !== "race" && visual !== "industries";
         assert.equal(await exists(".capability-illustration .flow-diagram[role=img][aria-label]"), diagram);
         assert.equal(await js("document.querySelector('.hero').offsetHeight"), height);

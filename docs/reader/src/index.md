@@ -4,7 +4,14 @@
 
 DASH helps you test whether a model makes the right business decision. A Financial Services team can check whether an earnings extractor reports GAAP EPS. A Manufacturing team can check whether an inspector releases a part against the correct drawing revision.
 
-On **Overview**, choose **Light** or **Dark** in the header. Use the arrows in the banner to move through the slides at your own pace. **Compare and benchmark multiple models** introduces the two-model Quick compare. The other diagrams show how an objective becomes suggested checks, how a rubric scores an answer, how to read a case verdict, and how the planned hardware loop would work. **Run domain-specific use cases** shows the three industry examples together. The earnings review and part inspection have runnable scenarios. The Automotive proving-ground example is planned.
+Use the banner arrows on **Overview** to walk through the six slides in order.
+
+1. **Run domain-specific use cases** opens the tour. Financial Services and Manufacturing have runnable scenarios. Automotive is planned.
+2. **Task Objective, Success Metrics (AI Optimized)** uses a Manufacturing example. The goal is to flag bearings outside tolerance. The AI suggests measuring the share of defective parts caught and the share of good parts incorrectly flagged. You can edit both metrics.
+3. **Compare and benchmark multiple models** shows how to compare two local on-premises or closed API models using the same prompt and rubric.
+4. **Grade each answer against your rubric** shows an answer passing through **AI Industry Graders** to produce a case score. Choose an industry grader or review criteria drafted by AI.
+5. **Traceability and Observability** shows why a GAAP earnings check failed when the model returned adjusted EPS. DASH uses Opik OSS for per-case tracing. [Sync a run](opik.md) to inspect its traces, latency, available token counts and grader scores.
+6. **Hardware in the Loop**, labeled **FUTURES**, illustrates a planned test. A real controller sends commands to a simulated motor, which returns speed feedback for the next control step.
 
 **New to DASH?** [Start with a recorded earnings case](first-run.md). See why a recorded answer fails the scenario grader before choosing a live model.
 

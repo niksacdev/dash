@@ -102,8 +102,8 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     assert.equal(await js("Promise.all(Array.from(document.querySelectorAll('.dash-emblem, .brand img'), img => img.decode())).then(() => document.querySelectorAll('.dash-emblem, .brand img').length)"), 2);
 
 
-    assert.equal(await js("document.querySelector('.capability-reel').dataset.visual"), "objective");
-    assert.ok(await js("document.querySelector('.flow-diagram').getAttribute('aria-label').includes('GAAP')"));
+    assert.equal(await js("document.querySelector('.capability-reel').dataset.visual"), "industries");
+    assert.equal(await js("document.querySelector('.industry-view h2').textContent"), "Run domain-specific use cases");
     await send("Emulation.setEmulatedMedia", {features:[{name:"prefers-reduced-motion",value:"reduce"}]});
     await checkControlColors();
     await screenshot("overview-light.png");

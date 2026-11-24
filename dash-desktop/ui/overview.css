@@ -208,12 +208,11 @@ body:has(.overview) .desk > header .button {
 .flow-diagram .diagram-value { font: 600 14px/1 "Helvetica Neue", Arial, sans-serif; fill: var(--track-paper); }
 .flow-diagram .diagram-key { font: 600 10px/1 var(--mono); letter-spacing: .06em; fill: #dcccd0; }
 .diagram-paper { fill: #26242e; stroke: #c0a9b2; stroke-width: 1.2; stroke-linejoin: round; }
-.diagram-rule, .diagram-wire, .diagram-alert, .diagram-return, .diagram-sweep {
+.diagram-rule, .diagram-wire, .diagram-alert, .diagram-sweep {
   fill: none; stroke-linejoin: round; stroke-linecap: round;
 }
 .diagram-rule { stroke: #d8c9d1; stroke-width: 1.3; }
-.diagram-wire, .diagram-return { stroke: #a3bbc3; stroke-width: 1.25; }
-.diagram-return { stroke-dasharray: 3 4; }
+.diagram-wire { stroke: #a3bbc3; stroke-width: 1.25; }
 .diagram-port { fill: #b2d8dd; }
 .diagram-alert { stroke: #ffaea5; stroke-width: 1.6; }
 .diagram-sweep { stroke: #dcf6f7; stroke-width: 2; stroke-dasharray: 12 112; opacity: 0; }

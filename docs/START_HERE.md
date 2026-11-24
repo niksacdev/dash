@@ -1,6 +1,6 @@
 # DASH documentation
 
-For installation and a first evaluation, open the [DASH Operator Guide](https://niksacdev.github.io/dash/). Its [Markdown chapters](reader/src/SUMMARY.md) are also available here. The [workbench guide](guides/workbench.md) covers model selection, grader approval, dataset imports, case reruns, and device measurements.
+For installation and a first evaluation, open the [DASH Operator Guide](https://niksacdev.github.io/dash/). The [capabilities overview](../README.md#capabilities) follows the six presentation slides and identifies the planned hardware loop. The guide’s [Markdown chapters](reader/src/SUMMARY.md) are also available here. The [workbench guide](guides/workbench.md) covers model selection, grader approval, dataset imports, case reruns, and device measurements.
 
 The [runtime agent guide](guides/agents.md) explains how to edit, version and ship agent instructions. The [TypeScript architecture decision](adr/0003-typescript-runtime.md) records the UI, runner and Opik boundaries.
 
