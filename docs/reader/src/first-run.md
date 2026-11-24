@@ -17,7 +17,7 @@ The initial install needs an internet connection. DASH has been exercised on App
 
 ### Open DASH from Finder on macOS
 
-After `npm ci`, double-click **Open DASH.command** in `dash-desktop/`. It builds the workbench and opens a local **DASH.app** launcher. To build without opening a window, run `npm run package:mac`. The launcher is in the repository’s `dist/macos/` directory. Keep the checkout and its dependencies on this Mac. Rebuild the launcher if you move the checkout or update DASH.
+After `npm ci`, double-click **Open DASH.command** in `dash-desktop/`. It builds the workbench, installs the matching Electron executable from cache or download, and opens a local **DASH.app** launcher. Allow an internet connection on first launch if the runtime is uncached. To build without opening a window, run `npm run package:mac`. The launcher is in the repository’s `dist/macos/` directory. Keep the checkout and its dependencies on this Mac. Rebuild the launcher if you move the checkout or update DASH.
 
 Finder shows the red D launcher. The running workbench uses the same Dock mark, the title **DASH — Domain Assessment & Scoring Harness**, and the tagline in **About DASH**. The launcher starts the installed Electron development runtime, which macOS may identify as Electron in system tools. Both launch methods use the existing DASH profile.
 
