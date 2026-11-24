@@ -4,7 +4,7 @@
 
 DASH helps you test whether a model makes the right business decision. A Financial Services team can check whether an earnings extractor reports GAAP EPS. A Manufacturing team can check whether an inspector releases a part against the correct drawing revision.
 
-On **Overview**, use the carousel arrows to reach **Run domain-specific use cases**. The earnings review and part inspection have runnable scenarios. The Automotive proving-ground example is planned.
+On **Overview**, choose **Light** or **Dark** in the header. Use the arrows in the banner to move through the slides at your own pace. **Run domain-specific use cases** shows the three industry examples together. The earnings review and part inspection have runnable scenarios. The Automotive proving-ground example is planned.
 
 **New to DASH?** [Start with a recorded earnings case](first-run.md). See why a recorded answer fails the scenario grader before choosing a live model.
 

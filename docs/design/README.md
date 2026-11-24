@@ -8,7 +8,7 @@ ImageGen received the following prompt.
 
 The [DASH mark](../../dash-desktop/ui/assets/dash-mark.svg) is shared by the sidebar and Overview. The Dock uses its [1024 px PNG](../../dash-desktop/ui/assets/dash-icon.png). To regenerate that raster on macOS, run `sips -s format png dash-desktop/ui/assets/dash-mark.svg --out dash-desktop/ui/assets/dash-icon.png` from the repository root. The Mac bundle builds its icon set from the PNG.
 
-Use warm racing yellow (`#ffcf00`) with charcoal lettering (`#252116`) for buttons in both themes. Selected controls have an inset stroke, and disabled buttons use a muted sand fill.
+Use racing yellow (`#ffcf00`) with charcoal lettering for workflow actions such as **New run**. Light/Dark uses a bordered selection on the shell surface. The carousel groups its ivory arrows, slide count and playback control on graphite. Both controls have a separate keyboard focus indicator. Style the device power readout with its neighboring telemetry values.
 
 The [light](overview-light.png) and [dark](overview-dark.png) screenshots show the desktop workbench using an isolated test profile.
 
@@ -18,7 +18,7 @@ The [original prototype](DASH_Design_Prototype.html), [approved preview](DASH_De
 
 ## Industry photographs
 
-Slide 3 pairs each domain with its own locally bundled editorial photograph. The images were generated using OpenAI ImageGen and exported as JPEGs for offline use. The captions identify the shipped examples and the Automotive roadmap. See the [desktop view](industry-overview.png) and [phone-width view](industry-overview-mobile.png) captured from Electron.
+Slide 3 pairs each domain with its own locally bundled editorial photograph. The images were generated using OpenAI ImageGen and exported as JPEGs for offline use. The circuit and industry slides share a graphite-to-garnet ground. Feather the photographs at their edges and keep their centers clear. Captions sit below the photographs and identify the shipped examples and the Automotive roadmap. See the [desktop view](industry-overview.png) and [phone-width view](industry-overview-mobile.png) captured from Electron.
 
 - [Financial Services](../../dash-desktop/ui/assets/industry-financial.jpg) — Photorealistic editorial photograph for a DASH Financial Services banner, landscape 4:3. A close overhead view of a quarterly earnings release on ivory paper with paired columns of small printed financial figures, a small understated blue bar chart and a fingertip tracing one reported figure with a graphite pencil. A second sheet of financial statements beneath it on a navy desk. Strong natural window light, understated midnight blue and cream with a small muted crimson accent. Form a simple unmistakable focal point near the center for a small card. Real paper texture, clean precise editorial photography. No digital UI, overlaid titles, logos, car imagery or watermark.
 - [Manufacturing](../../dash-desktop/ui/assets/industry-manufacturing.jpg) — Photorealistic editorial photograph for a DASH Manufacturing banner, landscape 4:3. In a modern inspection lab, extreme close-up of a precision outside micrometer measuring the outer diameter of a silver machined bearing, discreet blue engineering drawing underneath on a dark slate inspection bench. A gloved technician's fingers hold the micrometer. Clear central silhouette of the bearing and measuring tool at small size. Directional cool daylight, brushed steel, restrained teal accent, tactile real detail. No overlaid titles, logos, car imagery or watermark.

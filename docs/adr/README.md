@@ -29,6 +29,8 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0015 · Industry carousel](0015-industry-carousel.md) | Accepted | Nik confirmed industry-specific images with a vehicle for Automotive. Show the planned status beside its image. | [Issue #11](https://github.com/niksacdev/dash/issues/11) |
 | 2026-11-24 | [0016 · macOS identity](0016-macos-app-identity.md) | Proposed | Extend 0003 with a local Finder launcher and the shared DASH mark. | [Mac packaging script](../../dash-desktop/scripts/package-mac.mts) |
 | 2026-11-24 | [0016 · macOS identity](0016-macos-app-identity.md) | Accepted | Nik requested the DASH name, logo and tagline on macOS. Preserve the local profile across launch methods. | [Mac operator guide](../reader/src/first-run.md) |
+| 2026-11-24 | [0017 · Overview controls and photography](0017-overview-controls-and-photography.md) | Proposed | Extend 0007 and 0015 to give presentation controls a neutral treatment and retain a common banner palette. | [Design guide](../design/README.md) |
+| 2026-11-24 | [0017 · Overview controls and photography](0017-overview-controls-and-photography.md) | Accepted | Nik requested the Light/Dark and slide controls lose their yellow fill and the photography blend into a consistent background. | [Design decision](0017-overview-controls-and-photography.md) |
 
 ## Maintaining the history
 
