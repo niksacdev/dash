@@ -7,7 +7,7 @@ import {DatabaseSync} from "node:sqlite";
 import {mock} from "node:test";
 import {createServer} from "node:http";
 import {once} from "node:events";
-import {app,dialog} from "electron";
+import {app,dialog,ipcMain} from "electron";
 import {z} from "zod";
 import {opikJudgeRequest} from "./opik-judge-fixture.cjs";
 import {decodeApprovedPrompt} from "../lib/outcome-contracts.cjs";
@@ -17,6 +17,14 @@ import {Bench} from "../lib/bench.cjs";
 
 const profile = mkdtempSync(path.join(os.tmpdir(), "dash-workflow-smoke-"));
 app.setPath("userData", profile);
+let pausedSave:{channel:string;gate:Promise<void>;received:number}|null=null;
+const register=ipcMain.handle.bind(ipcMain);
+mock.method(ipcMain,"handle",(channel:string,handler:Parameters<typeof ipcMain.handle>[1])=>{
+  register(channel,async(event,...args)=>{
+    if (pausedSave?.channel===channel) {pausedSave.received++;await pausedSave.gate;}
+    return handler(event,...args);
+  });
+});
 app.dock?.hide();
 app.on("browser-window-created", (_event, window) => {
   // This isolated test should never take focus from the user's DASH window.
@@ -37,6 +45,7 @@ const request = z.looseObject({
 type Stage = "grader-plan" | "audit" | "native-relevance" | "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
 let inlineDesignerFixture=false;
 let graderDesignGate:Promise<void>|undefined;
+let holdDiscovery:(()=>Promise<void>)|undefined;
 let holdRouting: (()=>Promise<void>) | undefined;
 interface TransportCall {stage:Stage; body:z.infer<typeof request>; brief:unknown}
 const calls:TransportCall[] = [];
@@ -143,6 +152,7 @@ globalThis.fetch = async (url, options = {}) => {
   }
   assert.equal(target.hostname, "127.0.0.1");
   if (target.port === "11434" && ["/api/tags", "/api/ps"].includes(target.pathname)) {
+    if(holdDiscovery)await holdDiscovery();
     return Response.json({ models: [
       { name: models.ollama, digest: "qa-7b-v1", context_length: 4096, details: { parameter_size: "7B" } },
       { name: "qa-short-context", digest: "qa-short-v1", context_length: 128, details: { parameter_size: "1B" } },
@@ -244,6 +254,27 @@ async function smoke() {
     await wait(()=>exists(panel+".gd-proposals"),"Grader design completed");
     await click(panel+"[data-gd-action=discard]");
     await wait(()=>js("!document.querySelector("+launch+").disabled"),"Launch available after grader design");
+  }
+  async function verifyWriteLock(form:string,channel:string,submit:string,decision?:"stay"|"leave") {
+    let release=()=>{};
+    const gate=new Promise<void>(resolve=>{release=resolve;});
+    const paused={channel:"dash:"+channel,gate,received:0};pausedSave=paused;
+    try {
+      await click(submit);
+      await wait(()=>paused.received===1,"Save reached "+channel);
+      assert.equal(await js("document.querySelector("+q(form)+").matches('[aria-busy=true]') && [...document.querySelector("+q(form)+").querySelectorAll('input,textarea,select,button')].every(el=>el.matches(':disabled'))"),true);
+      await js("document.querySelector("+q(form)+").requestSubmit();true");
+      assert.equal(paused.received,1,"The same form cannot submit twice while its write is pending");
+      if(decision){
+        await click('#work a[href="#home"]');
+        await wait(()=>exists("dialog[open]"),"An open editor requires a navigation decision");
+        release();
+        await wait(()=>exists(form+"[data-nav-saved]"),"The first save completed before the navigation decision");
+        await js("document.querySelector("+q(form)+").requestSubmit();window.dash.list().then(()=>true)");
+        assert.equal(paused.received,1,"A durably saved form is consumed even while awaiting Stay or Leave");
+        await click('dialog[open] button[value="'+decision+'"]');
+      }
+    }finally{pausedSave=null;release();}
   }
   async function checkRosterColors() {
     const original = await text("document.documentElement.dataset.appearance");
@@ -680,6 +711,8 @@ async function smoke() {
   await wait(()=>exists('nav[aria-label="Quick comparison setup"]'),"Quick return breadcrumb");
   assert.equal(await text("location.hash"),scopedLibrary);
   assert.equal(await text("document.querySelector('.qc-chooser h1').textContent"),"Graders for this comparison");
+  assert.equal(await text("document.querySelector('.qc-return a').textContent"),"← Back to evaluation setup");
+  assert.ok(await js("document.querySelector('.qc-return a').getBoundingClientRect().height>=44"));
   assert.ok(await js("document.querySelector('[data-quick-eligible] [data-quick-extra]')?.checkVisibility()"));
   assert.equal(await exists("#grader-authoring"),false,"A Quick detour starts at the compatible versions");
   const reloaded=once(win.webContents,"did-finish-load");
@@ -693,8 +726,14 @@ async function smoke() {
   await wait(()=>exists(attach+"[data-quick-assignment]"),"Choose measure or additional grader");
   await click(attach+"[data-quick-cancel]");
   assert.equal(await js("document.querySelector("+q(attach+".gc-target")+").hidden"),true);
-  await click('nav[aria-label="Quick comparison setup"] a');
-  await wait(()=>exists(controls(rowA,"threshold")),"Return without changing the Quick draft");
+  await click(attach+"[data-quick-attach]");
+  await fill(attach+"[data-quick-assignment]","1");
+  const back='.qc-return a',stay='dialog[open] button[value=stay]',leave='dialog[open] button[value=leave]';
+  await click(back);await click(stay);
+  assert.equal(await text("document.activeElement.value"),"1");
+  assert.equal(await text("location.hash"),scopedLibrary);
+  await click(back);await click(leave);
+  await wait(()=>exists(controls(rowA,"threshold")),"Return after discarding only the pending assignment");
   assert.equal(await text("document.querySelector("+q(controls(rowB,"choice"))+").value"),"skip");
   assert.deepEqual(await js("Array.from(document.querySelectorAll('#quick-models [data-remove]'),e=>e.dataset.remove)"),
     ["lmstudio/"+models.lmstudio,"ollama/"+models.ollama]);
@@ -1021,6 +1060,9 @@ async function smoke() {
       await wait(()=>exists(snapshot+' option[value="'+snapshotId+'"]'),"Compatible case-test snapshot");
       await fill(snapshot,snapshotId);
       await wait(()=>exists(cases+' option[value="'+example.pass+'"]'),"Available domain cases");
+      await fill(answer,"Unsaved industry-specific answer");
+      await click('#work a[href="#home"]');await click(stay);
+      assert.equal(await text("document.activeElement.value"),"Unsaved industry-specific answer");
       const replay=z.record(z.string(),z.unknown()).parse(JSON.parse(readFileSync(path.join(__dirname,"../packs",example.pack,"replay.json"),"utf8")));
       for(const [caseId,expected] of [[example.pass,1],[example.fail,0]] as const){
         await fill(cases,caseId);
@@ -1136,12 +1178,26 @@ async function smoke() {
     // The earlier synthetic workflow may still have an open prompt variant.
     await js("window.confirm=message=>message.startsWith('Switch the dataset setup to ');true");
     await click("#grader-receipt [data-grade-run]");
+    await wait(()=>js("!!document.querySelector('dialog[open], #ds')"),"Review the setup being replaced");
+    if(await exists(leave))await click(leave);
     await wait(()=>js("document.querySelector('#ds')?.value==="+q(snapshot.slice(8))),"Use source dataset without a second selection");
     assert.ok(await js("document.querySelector('[name=custom-grader][value="+q(savedId)+"]')?.checked"));
     await click('[name=custom-grader][value="'+savedId+'"]');
     await route("graders");await click("#grader-authoring>summary");
     await click('#grader-authoring [name="grader-authoring-mode"][value="manual"]');
     assert.equal(await js("document.querySelector('#grade-create').checkVisibility()"),true);
+    const manualName="#grade-create [name=name]";
+    const callsBeforeBack=calls.length;
+    await fill(manualName,"Private unsaved grader");
+    await click('#work a[href="#home"]');await click(stay);
+    assert.equal(await text("document.activeElement.value"),"Private unsaved grader");
+    await js("history.back()");await click(stay);
+    await wait(()=>js("location.hash==='#graders' && document.activeElement?.value==='Private unsaved grader'"),"Stay retains the field across Back");
+    await js("history.back()");await click(leave);
+    await wait(()=>exists("#dataset-run-form"),"Back discards once and restores the previous destination");
+    await js("history.forward()");await wait(()=>exists(manualName),"Forward returns to the grader catalogue");
+    assert.equal(await text("document.querySelector("+q(manualName)+").value"),"");
+    assert.equal(calls.length,callsBeforeBack,"Navigation cannot dispatch a candidate, grade or planning request");
     await fill("#grade-type","decision");
     await click("[data-decision-starter=earnings]");
     assert.equal(await text("document.querySelector('#grade-create [name=industry]').value"),"Financial Services");
@@ -1208,7 +1264,11 @@ async function smoke() {
       try{
         await provideSample(localId,"Recover this after navigation.","Current drawing calls for a hold.");
         await wait(()=>localQuestions.length===attempts+1,"Judge received the second sample");
-        await route("datasets");await wait(()=>exists("#catalog-search"),"Leave before sample persistence fails");
+        await route("datasets");
+        await wait(()=>exists(leave),"Navigation identifies the independent manual grader edits");
+        const warning=await text("document.querySelector('#nav-dialog-description').textContent");
+        assert.match(warning,/manual grader edits/);assert.doesNotMatch(warning,/test input/);
+        await click(leave);await wait(()=>exists("#catalog-search"),"Leave before sample persistence fails");
       }finally{releaseSample();sampleGate=undefined;}
       await wait(()=>js("pendingSample===null"),"Failure settles while another page is open");
       assert.equal(await js("location.hash"),"#datasets");
@@ -1315,9 +1375,16 @@ async function smoke() {
     await wait(()=>js("document.querySelector('#grade-create [name=criteria]').readOnly"),"Deterministic catalog criterion pinned");
     const alias="QA lot tag", loadVersion=(name:string,version:number)=>db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.name')=? AND version=?").get(name,version)?.id;
     await fill("#grade-create [name=name]",alias);
-    await click("#grade-create button.yellow");
+    await reveal("#grade-sample [name=output]");
+    await fill("#grade-sample [name=output]","Unsaved answer alongside this grader.");
+    await verifyWriteLock("#grade-create","saveGrader","#grade-create button.yellow","stay");
     await wait(()=>loadVersion(alias,1),"Independent customer fork");
     const v1=z.string().parse(loadVersion(alias,1));
+    assert.equal(Number(db.prepare("SELECT count(*) n FROM graders WHERE json_extract(spec, '$.name')=?").get(alias)?.n),1);
+    await wait(()=>exists('#grader-receipt [data-use-version="'+v1+'"]'),"Saved grader receipt visible with an independent dirty sample");
+    assert.equal(await text("document.querySelector('#grade-sample [name=output]').value"),"Unsaved answer alongside this grader.");
+    assert.notEqual(await text("document.querySelector('#grade-create [name=name]').value"),alias);
+    await fill("#grade-sample [name=output]","");
     assert.notEqual(v1,original);
     await click('[data-revise="'+v1+'"]');
     await wait(()=>js("document.querySelector('#grade-create [name=name]').value==="+q(alias)),"Customer version editor");
@@ -1430,7 +1497,8 @@ async function smoke() {
     await wait(()=>js("document.querySelector("+q('[data-grade-version="'+v1+'"] [data-grade-uses]')+").innerText.includes('No saved runs')"),"No uses attributed to predecessor");
 
     const importFile=path.join(profile,"catalog-inputs.jsonl");
-    const pickFile=mock.method(dialog,"showOpenDialog",async()=>({canceled:false,filePaths:[importFile]}));
+    let pickCancelled=false,pickCount=0;
+    const pickFile=mock.method(dialog,"showOpenDialog",async()=>{pickCount++;return {canceled:pickCancelled,filePaths:pickCancelled?[]:[importFile]};});
     const onlyInput={case_id:"catalog-input",dataset_version:"1",split:"development",prompt:"What is the next action for synthetic lot B?"};
     async function referenceSnapshot(name:string,rows:readonly object[]){
       writeFileSync(importFile,rows.map(row=>JSON.stringify(row)).join("\n")+"\n");
@@ -1439,12 +1507,42 @@ async function smoke() {
     }
     let inputOnly:string, mixed:string;
     try{
+      await route("datasets");await fill("#catalog-pack","reference");
+      const chooseFile='[data-act=import]',importForm="#catalog-import",family=importForm+" [name=family]";
+      writeFileSync(importFile,JSON.stringify({...onlyInput,case_id:"row-a"})+"\n");
+      await click(chooseFile);await fill(family,"File A family");
+      const tokenA=await text("document.querySelector('#catalog-import').dataset.importToken");
+      await click(chooseFile);await click(stay);
+      assert.equal(pickCount,1,"Staying does not open a second picker");
+      pickCancelled=true;await click(chooseFile);await click(leave);
+      await wait(()=>pickCount===2,"A native file picker was cancelled");await wait(()=>js("!importPicking"),"Cancelled file selection settled");
+      assert.equal(await text("document.querySelector("+q(family)+").value"),"File A family");
+      assert.equal(await text("document.querySelector('#catalog-import').dataset.importToken"),tokenA);
+      pickCancelled=false;writeFileSync(importFile,JSON.stringify({...onlyInput,case_id:"row-b"})+"\n");
+      await click(chooseFile);await click(leave);
+      await wait(()=>js("document.querySelector('#catalog-import').dataset.importToken!=="+q(tokenA)),"File B replaces A");
+      assert.equal(await text("document.querySelector("+q(family)+").value"),"");
+      await fill(family,"Synthetic B family");await fill(importForm+" [name=industry]","Manufacturing");await fill(importForm+" [name=category]","Navigation QA");
+      const tokenB=await text("document.querySelector('#catalog-import').dataset.importToken");
+      await js("document.querySelector('#catalog-import').dataset.importToken="+q(tokenA));
+      await click(importForm+" [type=submit]");await wait(()=>exists(importForm+" [data-action-error]"),"Stale form token cannot import a replacement file");
+      await js("document.querySelector('#catalog-import').dataset.importToken="+q(tokenB));
+      await click(importForm+" [type=submit]");await wait(()=>js("location.hash.startsWith('#datasets/') && !document.querySelector('#catalog-import')"),"File B saved");
+      const savedImport=await js("window.dash.dataset(location.hash.split('/')[1]).then(d=>({family:d.metadata.family,cases:d.rows.map(row=>row.case_id)}))");
+      assert.deepEqual(savedImport,{family:"Synthetic B family",cases:["row-b"]});
+
       inputOnly=await referenceSnapshot("Input-only catalog QA",[onlyInput]);
       mixed=await referenceSnapshot("Mixed rubric QA",[onlyInput,{...onlyInput,case_id:"catalog-rubric",rubric:"Credit a response that cites the lot identifier."}]);
     }finally{pickFile.mock.restore();}
     await route("new");await fill("#pack","reference");await fill("#ds",inputOnly);
     await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('without a reference')"),"Structural checks alone cannot grade an input-only case");
     assert.equal(await js("document.querySelector('#dataset-run-form .go-button').disabled"),true);
+    const endpointModel="#endpoint-form [name=model]";
+    await reveal(endpointModel);await fill(endpointModel,"Other endpoint draft");
+    await fill("#ds",mixed);
+    await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('rubric-aware')"),"Changing the dataset refreshes its rubric requirements alongside the endpoint draft");
+    assert.equal(await text("document.querySelector("+q(endpointModel)+").value"),"Other endpoint draft");
+    await fill(endpointModel,"");await fill("#ds",inputOnly);
     await route("graders");
     const referenceOnly='[data-grade-version="'+localId+'"] [data-use-version]';
     await reveal(referenceOnly+" [data-grade-test]");await click(referenceOnly+" [data-grade-test]");
@@ -1544,6 +1642,47 @@ async function smoke() {
     server.closeAllConnections();server.close();
   }
   await verifyStructuredQuick();
+  // Ordinary navigation retains an unapproved objective. Explicitly loading another replaces it.
+  await route("compare");await wait(()=>js("!!document.querySelector('[data-wf-reset],#wf-objective')"),"Quick objective available");
+  if(await exists("[data-wf-reset]"))await click("[data-wf-reset]");
+  await fill("#wf-objective","Check tolerance against the active drawing.");
+  const beforePromptSwitch=calls.length;
+  await route("prompts");await click('[data-wf-use="'+first.id+'"]');
+  await wait(()=>exists(stay),"Replacing an unapproved objective requires a decision");
+  await js("document.querySelector('dialog[open]').requestClose()");
+  await wait(()=>js("!document.querySelector('dialog[open]')"),"Escape dismisses without opening the target");
+  await click('#work a[href="#compare"]');
+  await wait(()=>js("document.querySelector('#wf-objective')?.value==='Check tolerance against the active drawing.'"),"Safe route return retains the objective");
+  await route("prompts");await click('[data-wf-use="'+first.id+'"]');await click(leave);
+  await wait(()=>exists("#quick-models"),"Accepted replacement opens the selected approved evaluation");
+  assert.equal(calls.length,beforePromptSwitch,"Browsing and replacing drafts never requests inference");
+  // An in-flight inventory refresh cannot repaint an unsaved password during or after Stay.
+  let startedDiscovery=false,releaseDiscovery=()=>{};
+  const pendingDiscovery=new Promise<void>(resolve=>{releaseDiscovery=resolve;});
+  holdDiscovery=async()=>{startedDiscovery=true;await pendingDiscovery;};
+  const privateField="#endpoint-form [name=key]";
+  try{
+    await click('#quick-models [data-act=refresh]');await wait(()=>startedDiscovery,"Hold runtime discovery");
+    await reveal(privateField);await fill(privateField,"synthetic-session-only");
+    await click('#work a[href="#home"]');await wait(()=>exists(stay),"Confirm leaving a volatile connection edit");
+    releaseDiscovery();await wait(()=>js("!budgetPreviews.refreshing"),"Inventory response received during decision");
+    assert.equal(await js("document.querySelector("+q(privateField)+").value==='synthetic-session-only'"),true);
+    assert.equal(await js("!!JSON.stringify(history.state)?.includes('synthetic-session-only')"),false);
+    await click(leave);
+    await wait(()=>exists(".overview"),"Discard opens the requested destination");
+  }finally{holdDiscovery=undefined;releaseDiscovery();}
+  await route("new");await reveal(privateField);
+  await fill("#endpoint-form [name=model]","private-nav-test");
+  await fill("#endpoint-form [name=baseUrl]","http://127.0.0.1:7813/v1");
+  await fill(privateField,"synthetic-only-endpoint");
+  await verifyWriteLock("#endpoint-form","saveEndpoint","#endpoint-form button");
+  await wait(()=>js("document.querySelector('#endpoint-form [name=model]')?.value===''"),"Endpoint form resets after exactly one save");
+  await route("roles");await reveal("#planner-fallback [name=model]");
+  await fill("#planner-fallback [name=model]","test-fallback-only");await fill("#planner-fallback [name=key]","synthetic-only-fallback");
+  await verifyWriteLock("#planner-fallback","savePlannerFallback","#planner-fallback button","leave");
+  await wait(()=>exists(".overview"),"Leave after saving opens the originally chosen destination");
+  await route("roles");await wait(()=>js("document.querySelector('#planner-fallback [name=model]')?.value==='test-fallback-only'"),"The saved fallback is durable after Leave");
+  await wait(()=>js("document.querySelector('#planner-fallback [name=key]')?.value==='' && !document.querySelector('#planner-fallback button').disabled"),"Fallback settings saved without retaining the secret in the form");
   db.close();
 }
 

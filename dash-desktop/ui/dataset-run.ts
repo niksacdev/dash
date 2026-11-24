@@ -105,7 +105,11 @@ document.addEventListener("click",async e=>{
   if (!(e.target instanceof Element)) return;
 
   if (e.target.closest("#wf-variant")) { workflows.dataset.variant=true; workflows.dataset.error=""; await render(); }
-  if (e.target.closest("#dataset-native")) { workflows.dataset=plannerState("dataset"); await render(); }
+  if (e.target.closest("#dataset-native")) {
+    const w=workflows.dataset,stillHere=currentVisit();
+    if(!await allowPageReplacement("Discard and use dataset instructions",unapprovedWorkflowLoss(w)) || !stillHere() || workflows.dataset!==w)return;
+    workflows.dataset=plannerState("dataset");await render(true);
+  }
 });
 document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
@@ -127,14 +131,16 @@ document.addEventListener("submit",async e=>{
   if (!["planner-fallback","dataset-run-form"].includes(f.id)) return;
   e.preventDefault();
   const btn=dashElement("button[type=submit]",HTMLButtonElement,f) || f.querySelector("button");
-  if (!btn || btn.disabled || (f.id==="dataset-run-form" && !canStartDataset())) return;
+  if (!btn || btn.disabled || f.hasAttribute("data-nav-saved") || (f.id==="dataset-run-form" && !canStartDataset())) return;
   const stillHere=currentVisit(), workflow=workflows.dataset;
   btn.disabled=true;
   f.querySelector(":scope > [data-action-error]")?.remove();
   try {
     if (f.id==="planner-fallback") {
-      await api.savePlannerFallback({model:formText(f,"model"),key:formText(f,"key"),enabled:requireElement("[name=enabled]",HTMLInputElement,f).checked});
-      if(stillHere()){await render();message("Planner preferences saved.");} return;
+      const values={model:formText(f,"model"),key:formText(f,"key"),enabled:requireElement("[name=enabled]",HTMLInputElement,f).checked};
+      const unlock=lockNavigationWrite(f);
+      try{await api.savePlannerFallback(values);}finally{unlock();}
+      consumeSavedForm(f);if(stillHere()){await render();message("Planner preferences saved.");} return;
     }
     const d=dataset();
     workflow.busy="start";
@@ -157,6 +163,6 @@ document.addEventListener("submit",async e=>{
     else inlineError(f,err);
   } finally {
     if (f.id==="dataset-run-form") workflow.busy="";
-    btn.disabled=false;
+    btn.disabled=f.hasAttribute("data-nav-saved");
   }
 });

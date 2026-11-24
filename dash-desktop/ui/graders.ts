@@ -299,13 +299,13 @@ async function openGraderRun(g:UiGrader,d:UiDataset,isCurrent:()=>boolean) {
   const scope=keepVariant && w.approved?"prompt:"+w.approved.id:"dataset:"+d.id;
   const chosen=datasetGradeSelection(scope);
   if(!chosen.has(g.id) && chosen.size>=8)throw Error("This setup already has eight graders. Remove one in Dataset run and try again.");
-  if(!keepVariant && (w.draft || w.approved || w.variant || w.parentId || w.objective.trim()) &&
-    !window.confirm("Switch the dataset setup to "+snapshotLabel(d)+"? This will replace the open prompt setup."))return;
+  const previous=!keepVariant && (w.draft || w.approved || w.variant || w.parentId || w.objective.trim())?"the current dataset run setup":"";
+  if(!await allowPageReplacement("Continue to dataset run",previous) || !isCurrent())return;
   if (!keepVariant && (w.variant || w.draft || w.approved || w.parentId || w.objective.trim()))workflows.dataset=plannerState("dataset");
   workflows.dataset.datasetId=d.id;workflows.dataset.error="";packId=d.pack;datasetId=d.id;
   chosen.add(g.id);writeGraderAttachment(scope,chosen);
   if(d.pack==="reference")datasetScorerChoices.set(d.id,"selected-graders");
-  location.hash="new";
+  navigateAfterDecision("new");
 }
 async function chooseGraderAction(button:HTMLButtonElement,host:HTMLElement,g:UiGrader) {
   const request=++graderActionSequence;
@@ -660,9 +660,10 @@ document.addEventListener("click",async e=>{
   }
   const template=e.target.closest<HTMLButtonElement>("[data-grade-template]");
   if(template){
+    if(!await allowPageReplacement("Discard and open template") || !template.isConnected)return;
     showGraderAuthoring=true;graderDraft=null;graderEditIntent="create";
     graderTemplate=state.opikLibraryTemplates.find(t=>t.key===template.dataset.gradeTemplate) || null;
-    await render();dashElement("#grade-create input",HTMLInputElement)?.focus();return;
+    await render(true);dashElement("#grade-create input",HTMLInputElement)?.focus();return;
   }
   const history=e.target.closest<HTMLButtonElement>("[data-grade-history]");
   if(history?.dataset.gradeHistory){
@@ -680,12 +681,12 @@ document.addEventListener("click",async e=>{
     return;
   }
   const edit=e.target.closest<HTMLButtonElement>("[data-revise],[data-customize],[data-new-grader]");
-  if(!edit)return;
+  if(!edit || !await allowPageReplacement("Discard grader edits") || !edit.isConnected)return;
   graderTemplate=null;
   showGraderAuthoring=true;
   graderDraft=state.graders.find(g=>g.id===(edit.dataset.revise || edit.dataset.customize)) || null;
   graderEditIntent=edit.dataset.revise?"revise":edit.dataset.customize?"derive":"create";
-  void render().then(()=>{if(graderDraft)dashElement("#grade-create input",HTMLInputElement)?.focus();});
+  void render(true).then(()=>{if(graderDraft)dashElement("#grade-create input",HTMLInputElement)?.focus();});
 });
 document.addEventListener("toggle",e=>{
   const details=e.target;
@@ -710,6 +711,7 @@ async function scoreSample(form:HTMLFormElement) {
     pendingSample=draft;updateSampleLock();
     const result=await api.assess({grader:draft.grader,...consent,evidence:{input:draft.input,output:draft.output,reference,
       ...(Array.isArray(trajectory) && {trajectory})}});
+    forgetNavigationEdits(form);
     if(trail()[0]!=="graders")return;
     const scores=await refreshSampleHistory();
     if(scores && sameVisit()){
@@ -731,7 +733,7 @@ document.addEventListener("submit",async e=>{
   if(!["grade-case","grade-create"].includes(e.target.id))return;
   e.preventDefault();const f=e.target,b=requireElement("button:not([type=button])",HTMLButtonElement,f);
   const field=(name:string)=>formText(f,name),stillHere=currentVisit();
-  if(b.disabled)return;
+  if(b.disabled || f.hasAttribute("data-nav-saved"))return;
   f.querySelector(":scope > [data-action-error]")?.remove();
   b.disabled=true;
   const title=b.textContent;
@@ -759,11 +761,14 @@ document.addEventListener("submit",async e=>{
         const checked=new FormData(f).getAll("decision-evidence");
         definition.requiredEvidence=(["reference","trajectory"] as const).filter(key=>checked.includes(key));
       }
-      const savedId=await api.saveGrader(graderEditIntent==="create" || !graderDraft ? {...definition,intent:"create"} :
-        {...definition,intent:graderEditIntent,sourceGraderId:graderDraft.id});
+      const payload:UiGraderSave=graderEditIntent==="create" || !graderDraft ? {...definition,intent:"create"} :
+        {...definition,intent:graderEditIntent,sourceGraderId:graderDraft.id};
+      const unlock=lockNavigationWrite(f);
+      let savedId:string;
+      try{savedId=await api.saveGrader(payload);}finally{unlock();}
       if(!stillHere() || !f.isConnected)return;
       graderEditIntent="create";graderTemplate=null;
-      graderDraft=null; recordWorkspaceSave([{id:savedId,label:definition.name}]);
+      consumeSavedForm(f);graderDraft=null; recordWorkspaceSave([{id:savedId,label:definition.name}]);
     }
     else {
       b.textContent="Grading…";
@@ -779,5 +784,5 @@ document.addEventListener("submit",async e=>{
     await render();
     if(!stillHere())return;
     if(f.id==="grade-create")document.getElementById("grader-receipt")?.focus();
-  }catch(error){inlineError(f,error);}finally{b.disabled=false;b.textContent=title;}
+  }catch(error){inlineError(f,error);}finally{b.disabled=f.hasAttribute("data-nav-saved");b.textContent=title;}
 });

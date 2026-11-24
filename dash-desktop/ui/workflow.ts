@@ -369,9 +369,12 @@ function useWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null
   else {resetModelSelection(p.mode);if(p.mode==="quick")leaveQuickSetup();}
   return true;
 }
-function openWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null = null) {
+async function openWorkflowPrompt(p:UiApproved, revise:boolean, sourceRunId:string|null = null) {
+  const prior=workflows[p.mode],stillHere=currentVisit();
+  if(prior.busy){message("Wait for the current evaluation setup operation to finish.");return;}
+  if(!await allowPageReplacement("Discard and open prompt",unapprovedWorkflowLoss(prior)) || !stillHere() || prior!==workflows[p.mode])return;
   if (!useWorkflowPrompt(p,revise,sourceRunId)) return;
-  if (trail()[0] === modeRoute(p.mode)) render(); else location.hash=modeRoute(p.mode);
+  if (trail()[0] === modeRoute(p.mode)) render(true); else navigateAfterDecision(modeRoute(p.mode));
 }
 function workflowRunSummary(m:UiManifest, status:string) {
   const p=m.approvedPrompt;
@@ -639,7 +642,7 @@ document.addEventListener("click", async e=>{
   const id=button.dataset.wfUse || button.dataset.wfRevise;
   if (id) {
     const p=workflowRecord(id);
-    if (p) openWorkflowPrompt(p, !!button.dataset.wfRevise, button.dataset.sourceRun || null);
+    if (p) await openWorkflowPrompt(p, !!button.dataset.wfRevise, button.dataset.sourceRun || null);
     else message("This saved prompt could not be loaded.");
     return;
   }
@@ -655,9 +658,14 @@ document.addEventListener("click", async e=>{
     finally { button.disabled=false; }
     return;
   }
+  const editedReview=button.hasAttribute("data-wf-edit") && w.draft && (w.reviewPrompt!==w.draft.prompt ||
+    w.reviewMetrics!==w.draft.metrics.join("\n") || (w.draft.outputSchema && w.reviewSchema!==JSON.stringify(w.draft.outputSchema,null,2)) ||
+    (w.draft.input && w.reviewInput!==JSON.stringify(w.draft.input,null,2)));
+  if (!await allowPageReplacement("Discard and continue",editedReview?"unsaved changes to the reviewed prompt":
+    button.hasAttribute("data-wf-reset")?unapprovedWorkflowLoss(w):"") || !button.isConnected)return;
   if (button.hasAttribute("data-wf-reset") && workflows[mode]===w) {workflows[mode]=plannerState(mode);if (mode==="quick")leaveQuickSetup();}
   else if (button.hasAttribute("data-wf-edit")) {w.draft=null;w.error="";}
   if(activeGraderPlanning()?.planner===w)repaintGradeDesigner(workspaceGradeScope,true);
-  else await render();
+  else await render(true);
   dashElement("#wf-objective",HTMLTextAreaElement)?.focus();
 });

@@ -76,3 +76,12 @@
 .er-measure-comparison td p {margin:4px 0;font-size:13px}
 .er-measure-comparison .er-answer pre {max-height:12rem;max-width:34ch;white-space:pre-wrap;overflow:auto}
 .er-measure-comparison .er-evidence .tablewrap {max-width:min(56ch,70vw)}
+
+.qc-return {display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+.qc-return .button {min-height:44px}
+.qc-return h2,.qc-return p {margin:0 0 .25rem}
+.navigation-decision {max-width:min(30rem,calc(100vw - 2rem));border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--ink);padding:1.4rem}
+.navigation-decision::backdrop {background:rgb(12 18 28 / 55%)}
+.navigation-decision h2 {margin-top:0}
+.navigation-decision form>div {display:flex;gap:.6rem;flex-wrap:wrap}
+.navigation-decision button[value=leave] {color:var(--ink);background:var(--surface-soft);border-color:var(--control-border)}
