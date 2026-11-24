@@ -16,7 +16,7 @@ import { diagnostics } from "./lib/diagnostics.cjs";
 import { performance } from "./lib/performance.cjs";
 import { createDeviceSampler } from "./lib/device-stats.cjs";
 import { readPower } from "./lib/power.cjs";
-import type { DatasetCase, StartRun } from "./lib/run-types.cjs";
+import { isRecord, type DatasetCase, type StartRun } from "./lib/run-types.cjs";
 import { listLocalDecisionModels } from "./lib/decision-model.cjs";
 import type { GraderEvidence } from "./lib/grader-types.cjs";
 
@@ -108,6 +108,7 @@ function initialize():void {
   bind("previewQuickBudget",(value,candidates)=>bench.previewQuickBudget(identifier(value),z.array(modelId).max(2).parse(candidates)));
   bind("graderSamples",()=>bench.graders.recent());
   bind("assess",async value=>{
+    if(isRecord(value) && "datasetId" in value)return bench.testGraderOnDatasetCase(value);
     const saved=caseAssessment.safeParse(value);
     let evidence:GraderEvidence, graderId:string;
     let allowHostedDecision = false;

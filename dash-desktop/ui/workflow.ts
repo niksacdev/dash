@@ -9,7 +9,7 @@ const plannerState = (mode:UiMode):UiWorkflow => ({
   reviewMetrics: "", suggestion: null, chosenMetrics: null, criteria: "", busy: "", error: ""
 });
 const workflows = { quick: plannerState("quick"), dataset: plannerState("dataset") };
-function activeWorkflow() { const mode=workflowMode();return mode ? workflows[mode] : null; }
+function activeWorkflow() { const mode=workflowMode();return mode ? workflows[mode] : activeGraderPlanning()?.planner ?? null; }
 const workflowMode = () => trail()[0] === "compare" ? "quick" : trail()[0] === "new" ? "dataset" : null;
 const metricLines = (text:string) => text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 const metricList = (items?:string[]) => '<ul class="wf-metric-list">' + (items || []).map(m => '<li>' + esc(m) + '</li>').join("") + '</ul>';
@@ -134,14 +134,14 @@ function invalidateSuggestions(w:UiWorkflow) {
   const section = document.getElementById("wf-measures");
   if (section) section.innerHTML = measuresSection(w);
 }
-function workflowCompose(w:UiWorkflow) {
+function workflowCompose(w:UiWorkflow, grader=false) {
   const busy = !!w.busy;
   const objectiveHint = w.mode === "dataset" ? "What decision should these cases help you make?" : "What should a successful response help you do?";
   return '<form id="wf-design-form" class="wf-panel"><fieldset class="wf-fields"' + (busy ? ' disabled' : '') + '>' +
     '<h2>Define the business outcome</h2>' +
-    (w.mode === "dataset" ? (w.parentId ? scenarioContract({...w,mode:"dataset"}) : pickers()) : '') +
+    (!grader && w.mode === "dataset" ? (w.parentId ? scenarioContract({...w,mode:"dataset"}) : pickers()) : '') +
     '<label class="field wf-primary"><span>Task objective</span><textarea id="wf-objective" required maxlength="12000" placeholder="' +
-    objectiveHint + '">' + esc(w.objective) + '</textarea></label>' + outcomeExamples(w) +
+    objectiveHint + '">' + esc(w.objective) + '</textarea></label>' + (grader?'':outcomeExamples(w)) +
     '<section class="wf-measures" id="wf-measures" aria-label="Success measures">' + measuresSection(w) + '</section>' +
     '<details class="wf-options"><summary>Domain and token budgets</summary><div class="wf-options-body">' + domainControl(w) + '<div class="cols"><label class="field"><span>Input token limit</span><input type="number" min="1" max="1000000" step="1" id="wf-input-cap" value="' +
     esc(w.inputCap) + '" placeholder="Runtime default"></label><label class="field"><span>Output token limit</span><input type="number" min="1" max="1000000" step="1" id="wf-output-cap" value="' +
@@ -149,7 +149,7 @@ function workflowCompose(w:UiWorkflow) {
     '<div class="wf-actions"><span class="wf-hint">' + (w.sourceRunId?'The agents will use measured results from run '+esc(w.sourceRunId.slice(0,8))+' to revise the prompt.':w.parentId?'Revising a saved prompt version.':'The domain agents draft a prompt for your review.') +
     '</span><button class="yellow" id="wf-design" type="submit">' + (w.busy === 'design' ? 'Drafting prompt…' : 'Draft evaluation prompt →') + '</button></div></fieldset></form>' +
     planningActivity(w) +
-    (w.mode === "dataset" ? fixtureControl(w) : '');
+    (!grader && w.mode === "dataset" ? fixtureControl(w) : '');
 }
 function fixtureControl(w:UiWorkflow) {
   const d = state.datasets.find(d=>d.id===w.datasetId);
@@ -166,7 +166,7 @@ function scenarioContract(p:{mode:UiMode;datasetId?:string|null;dataset?:UiPack|
     '</p><h3>Required output schema</h3><pre>' + pretty(s.outputSchema) + '</pre><small>Snapshot ' + esc((d?.name || s.title) + " · " + (s.version || d?.version || "")) +
     ' · Grader ' + esc(s.scorer || state.packs.find(pack => pack.id===d?.pack)?.scorer || "scenario grader") + '</small></div></details>';
 }
-function workflowReview(w:UiWorkflow) {
+function workflowReview(w:UiWorkflow, grader=false) {
   const d = w.draft;
   if (!d) return "";
   return planningActivity(w) + '<form id="wf-approval-form" class="wf-panel"><fieldset class="wf-fields"' + (w.busy ? ' disabled' : '') +
@@ -177,7 +177,7 @@ function workflowReview(w:UiWorkflow) {
     esc(w.reviewMetrics) + '</textarea></label><p class="wf-hint">One metric per line. The graders selected for the run determine which checks are scored.</p>' +
     planningDetails(d,w.reviewPrompt.trim()!==d.prompt,!sameMeasureText(w.reviewMetrics,d.metrics)) + scenarioContract({...d,mode:w.mode,datasetId:w.datasetId}) +
     '<div class="wf-actions"><button type="button" data-wf-edit>Edit outcome or domain</button><button class="yellow" type="submit" id="wf-approve">' +
-    (w.busy ? 'Saving version…' : 'Approve &amp; choose models →') + '</button></div></fieldset></form>';
+    (w.busy ? 'Saving version…' : grader?'Approve prompt &amp; propose graders':'Approve &amp; choose models →') + '</button></div></fieldset></form>';
 }
 function promptActions(p:UiApproved, {use=false,runId=null,reviseLabel="Revise"}:{use?:boolean;runId?:string|null;reviseLabel?:string} = {}) {
   const head=(state.prompts || []).reduce((latest,v)=>v.familyId===p.familyId && v.version>latest.version ? v : latest,p);
@@ -279,11 +279,13 @@ function workflowDesignInput(w:UiWorkflow) {
   };
 }
 function showCurrentWorkflow(w:UiWorkflow) {
-  return workflows[w.mode]===w && trail()[0]===modeRoute(w.mode);
+  return activeWorkflow()===w;
 }
+const planningRequests=new Map<string,UiWorkflow>();
 window.dash?.onPlanningStage?.(event => {
-  const w = workflows[event.mode];
-  const activity = w.activity;
+  const w=planningRequests.get(event.requestId);
+  if(!w)return;
+  const activity=w.activity;
   if (!activity || activity.requestId !== event.requestId || (w.busy !== "design" && w.busy !== "suggest")) return;
   const index = activity.calls.findIndex(call => call.queryId === event.queryId);
   if (index < 0) activity.calls.push(event);
@@ -315,6 +317,11 @@ document.addEventListener("input", e => {
   if (w && key && !w.busy) {
     const changed = w[key] !== e.target.value;
     w[key] = e.target.value;
+    const owner=activeGraderPlanning();
+    if(changed && owner?.planner===w){
+      if(key==="objective")owner.objectiveEdited=true;
+      if(key==="metrics")owner.metricsEdited=true;
+    }
     if (changed && (key === "chosenMetrics" || key === "criteria" || key === "reviewMetrics")) {
       const note=document.querySelector<HTMLElement>("[data-metric-edit-note]");
       if (note) note.hidden=key==="reviewMetrics" && w.draft ? sameMeasureText(w.reviewMetrics,w.draft.metrics) : !suggestionEdited(w);
@@ -375,10 +382,18 @@ document.addEventListener("submit", async e=>{
   if (!design && !w.reviewPrompt.trim()) {$("#wf-prompt",form).focus();return;}
   const suggest = design && (e.submitter instanceof HTMLButtonElement && e.submitter.value) === "suggest";
   w.error="";
-  if (design) w.activity={requestId:crypto.randomUUID(),calls:[]};
+  const grader=activeGraderPlanning();
+  if (design) {
+    w.activity={requestId:crypto.randomUUID(),calls:[]};
+    planningRequests.set(w.activity.requestId,w);
+  }
   w.busy=suggest ? "suggest" : design ? "design" : "approve";
   requireElement("fieldset",HTMLFieldSetElement,form).disabled=true;
-  void render().then(() => {
+  const refreshPreparation=async()=>{
+    if(grader)repaintGradeDesigner(workspaceGradeScope,true);
+    else await render();
+  };
+  void refreshPreparation().then(() => {
     if (design && showCurrentWorkflow(w) && (w.busy === "suggest" || w.busy === "design"))
       document.getElementById("wf-activity")?.scrollIntoView({block:"nearest"});
   });
@@ -400,16 +415,20 @@ document.addEventListener("submit", async e=>{
     } else {
       if (!w.draft) throw Error("No draft is available to approve.");
       w.approved=await api.approvePrompt({draftId:w.draft.draftId,prompt:w.reviewPrompt.trim(),metrics:metricLines(w.reviewMetrics)});
-      if (workflows[w.mode]===w) {
+      if(grader){
+        if(!state.prompts.some(p=>p.id===w.approved?.id))state.prompts=[w.approved,...state.prompts];
+        await proposeReviewedGraders(grader);
+      } else if (workflows[w.mode]===w) {
         resetModelSelection(w.mode);
       }
     }
   } catch(error) {w.error=errorText(error);}
   finally {
+    if(w.activity)planningRequests.delete(w.activity.requestId);
     w.busy="";
     if (showCurrentWorkflow(w)) {
-      await render();
-      (w.error ? document.querySelector('[role="alert"]') : document.querySelector(suggest?"#wf-measures":w.approved?"#setup":"#wf-prompt"))?.scrollIntoView({block:"nearest"});
+      await refreshPreparation();
+      (w.error ? document.querySelector('[role="alert"]') : document.querySelector(suggest?"#wf-measures":w.approved?(grader?"[data-gd-scope] .gd-proposals":"#setup"):"#wf-prompt"))?.scrollIntoView({block:"nearest"});
     }
   }
 });
@@ -446,10 +465,9 @@ document.addEventListener("click", async e=>{
     else message("This saved prompt could not be loaded.");
     return;
   }
-  const mode=workflowMode();
-  if (!mode) return;
-  const w=workflows[mode];
+  const w=activeWorkflow();
   if (!w || w.busy) return;
+  const mode=w.mode;
   if (button.id==="wf-fixture") {
     const stillHere=currentVisit();button.disabled=true;
     try {
@@ -459,8 +477,9 @@ document.addEventListener("click", async e=>{
     finally { button.disabled=false; }
     return;
   }
-  if (button.hasAttribute("data-wf-reset")) workflows[mode]=plannerState(mode);
+  if (button.hasAttribute("data-wf-reset") && workflows[mode]===w) workflows[mode]=plannerState(mode);
   else if (button.hasAttribute("data-wf-edit")) {w.draft=null;w.error="";}
-  await render();
+  if(activeGraderPlanning()?.planner===w)repaintGradeDesigner(workspaceGradeScope,true);
+  else await render();
   dashElement("#wf-objective",HTMLTextAreaElement)?.focus();
 });

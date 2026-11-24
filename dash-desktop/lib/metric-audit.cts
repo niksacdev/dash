@@ -69,7 +69,7 @@ export function pairSelection(metrics:string[],criteria:string[],prior:PriorMeas
   return result;
 }
 function anchors(text:string) {
-  const stop=new Set("about across against among answer assess available based business case cases check compare dataset correct correctly each evaluate evidence expected from goal input labeled match measure measures metric model objective output performance provide proposed rate records reference reported required response source supplied task that the their this under using value with".split(" "));
+  const stop=new Set("about across against along among and any are but for has have how include into its more must out should than then there those was were whether which will would without you your answer assess available based business case cases check compare dataset correct correctly each evaluate evidence expected from goal input labeled match measure measures metric model objective output performance provide proposed rate records reference reported required response source supplied task that the their this under using value with".split(" "));
   return new Set(words(text).split(" ").filter(w=>w.length>2 && !stop.has(w)).map(w=>w.replace(/(?:ing|ed|s)$/,"")));
 }
 function external(text:string):MetricAudit {
@@ -93,7 +93,11 @@ export function validateMetricAudit(result:Record<string,unknown>, objective:str
     return [row.metric,row.criterion,row.evidence,row.method,row.reason].every(text=>quantities(text).every(value=>allowed.has(value)));
   });
   if (!supported.length && !selected?.length) throw Error("the metric auditor introduced an unsupported number or year; refer to the supplied reporting period and source value without inventing a date, figure or threshold");
-  const rows=supported.map(row=>{
+  const grounding=anchors([objective,requested,pack?.system,...(pack?.metrics ?? []),instructions[0]].filter(Boolean).join(" "));
+  const grounded=supported.filter(row=>selected || [...anchors(row.metric+" "+row.criterion)].some(term=>grounding.has(term)));
+  // Shared terms can remove an off-topic row from a mixed proposal. A fully paraphrased
+  // proposal may use domain synonyms, so vocabulary overlap alone cannot reject them all.
+  const rows=(grounded.length?grounded:supported).map(row=>{
     if (instructionEcho(row.criterion,instructions) || /\[\s*(?:for|when|example)\b/i.test(row.criterion) || words(row.criterion).split(" ").every(term=>genericTerms.has(term)))
       throw Error("replace generic or copied instructions with a check of a specific candidate answer against a source");
     if (isExternalOutcomeMetric(row.metric) || isExternalOutcomeMetric(row.criterion) || row.status==="external") return {...row,status:"external" as const};

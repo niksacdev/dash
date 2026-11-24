@@ -44,6 +44,10 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0023 · Workflow failures](0023-workflow-failures.md) | Accepted | The reviewed recovery behavior and preservation of confirmed results landed on main. | [PR #27](https://github.com/niksacdev/dash/pull/27) |
 | 2026-11-24 | [0024 · Use a saved grader](0024-use-a-saved-grader.md) | Proposed | Extend 0006 and 0022 with direct setup for a saved version and explicit evaluation start. | [Grader guide](../reader/src/graders.md) |
 | 2026-11-24 | [0024 · Use a saved grader](0024-use-a-saved-grader.md) | Accepted | Nik requested a direct handoff from grader creation to evaluating model answers with the saved version. | [Workflow and acceptance scenarios](../reviews/grader-library.md) |
+| 2026-11-24 | [0025 · Industry grader catalogue](0025-industry-grader-catalogue.md) | Proposed | Organize shipped graders by industry and test one answer against a compatible case. | [Acceptance scenarios](../reviews/grader-library.md) |
+| 2026-11-24 | [0025 · Industry grader catalogue](0025-industry-grader-catalogue.md) | Accepted | Nik requested industry icons, descriptions and details, direct version, test and run actions, and a separate personal collection. | [Operator guide](../reader/src/graders.md) |
+| 2026-11-24 | [0026 · Reuse grader planning](0026-reuse-grader-planning.md) | Proposed | Reuse the reviewed objective, metric and prompt workflow when authoring a grader. | [Workflow](../reviews/grader-library.md) |
+| 2026-11-24 | [0026 · Reuse grader planning](0026-reuse-grader-planning.md) | Accepted | Nik requested the same optimization and success-metric logic, an inspectable rubric and a separate explanation of grading decisions. | [Operator guide](../reader/src/graders.md) |
 
 ## Maintaining the history
 

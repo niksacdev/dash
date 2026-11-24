@@ -5,6 +5,7 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 ## Architecture
 
 - Author application code in TypeScript. Use the existing Electron desktop shell, Node APIs and the official Opik TypeScript SDK. Compile application sources for distribution. Keep generated JavaScript out of version control.
+- Before adding a workflow to a new screen, trace the existing operator path through its UI, typed service operation, review and persistence. Reuse those components and contracts. Extract the shared behavior when needed, and test both entry points. Document any domain requirement that justifies a different path.
 - Keep rendering and interaction in the renderer. Use the sandboxed preload to expose a narrow, typed IPC interface. The main process validates IPC requests, owns secrets and filesystem access, and coordinates the runner. The runner and domain scoring code must be exercisable without an Electron window.
 - Use Opik's maintained primitives for datasets and their versions, prompt versions, experiments, traces, feedback and supported metrics. Check the installed SDK types and documentation before building a new integration. Keep any DASH-specific grading logic tied to a concrete domain requirement.
 - Keep inference local to the selected runtime or connected endpoint. Record provider, model or agent revision, actual dispatched input, grader versions, model output, and available measurements. Use the measured evidence when comparing runs. A missing score or sensor reading stays missing.

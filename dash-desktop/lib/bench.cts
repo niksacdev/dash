@@ -1,5 +1,6 @@
 import {exportDiagnostics,publicProviderError} from "./export-diagnostics.cjs";
 import {DatabaseSync} from "node:sqlite";
+import {z} from "zod";
 import {randomUUID} from "node:crypto";
 import * as os from "node:os";
 import {loadPacks,parseDataset,grade,hash} from "./packs.cjs";
@@ -23,6 +24,10 @@ import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartia
 import {ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, ProviderRejectedError} from "./runtime-types.cjs";
 import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate,ModelLoadReceipt} from "./runtime-types.cjs";
 import {AssessmentStorageError} from "./grading-errors.cjs";
+const datasetCaseTest = z.strictObject({
+  grader:z.string().min(1).max(200),datasetId:z.string().min(1).max(200),
+  caseId:z.string().min(1).max(200),output:z.string().min(1).max(100000),
+});
 class RunCheckpointError extends Error {}
 interface Job {id:string;mode:StartRun["mode"];revision:number;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
 export const replayCandidate:FixtureCandidate = {
@@ -211,6 +216,23 @@ export class Bench {
       if (this.graders.appliesToDataset(grader,stringValue(row.industry),stringValue(row.pack))) ids.push(stringValue(row.dataset_id));
     }
     return ids;
+  }
+  async testGraderOnDatasetCase(raw:unknown) {
+    const request=datasetCaseTest.safeParse(raw);
+    if(!request.success)throw Error("Choose a saved grader, dataset and case and provide an answer of 1 to 100,000 characters.");
+    const {grader:graderId,datasetId,caseId,output}=request.data;
+    const grader=this.graders.get(graderId);
+    if(grader.type!=="catalog" || !grader.library?.scenario)throw Error("Choose an industry catalog grader to test against a labeled case.");
+    const dataset=this.dataset(datasetId);
+    const pack=this.pack(dataset.pack).pack;
+    if(pack.kind==="reference" || !this.graders.appliesToDataset(grader,dataset.metadata.industry,pack.id))
+      throw Error("This grader needs a dataset from its own industry and scenario.");
+    const row=dataset.rows.find(candidate=>candidate.case_id===caseId);
+    if(!row)throw Error("Choose a case from the selected dataset snapshot.");
+    const datasetCase={datasetId,datasetName:dataset.name,datasetVersion:row.dataset_version,
+      caseId,scenarioId:pack.id,scenarioVersion:pack.version,contractHash:contractHash(pack)};
+    return this.graders.record(grader,{input:row.input,reference:row.gold,output,caseContext:{pack,row}},
+      {caseId,datasetCase},this.adapters,AbortSignal.timeout(190000));
   }
   datasetGraderOptions(datasetId:string) {
     const dataset = this.dataset(datasetId);

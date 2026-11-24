@@ -12,7 +12,7 @@ import {hasEvidence,opikLibraryTemplates,opikMetricKey,scoreOpikMetric} from "./
 import { hash } from "./packs.cjs";
 import {AssessmentStorageError,GradingIssue} from "./grading-errors.cjs";
 import { ProviderFailure,isRecord,type LocalCandidate,type ModelCandidate,type RuntimeAdapters,type ChatTurn } from "./runtime-types.cjs";
-import {type GraderProducer,rubricEvidenceView,requiredEvidence,decisionSettings,graderType,savedGrader,storedAssessment,type GraderLibrary,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
+import {type DatasetCaseSource,type GraderProducer,rubricEvidenceView,requiredEvidence,decisionSettings,graderType,savedGrader,storedAssessment,type GraderLibrary,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
 import type {ApprovedPrompt} from "./outcome-workflow.cjs";
 export type {GraderSpec,GraderEvidence,GraderAssessment,RecordedAssessment,GraderDefinition} from "./grader-types.cjs";
 export const decodeGraderSpec = (value:unknown):GraderSpec => savedGrader.parse(value);
@@ -463,9 +463,11 @@ export class Graders {
         ...(err instanceof DecisionDispatchError && {decisionAttempt:err.attempt})};
     }
   }
-  async record(g:GraderSpec,e:GraderEvidence,where:{run?:string;candidate?:string;caseId?:string},adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false){
+  async record(g:GraderSpec,e:GraderEvidence,where:{run?:string;candidate?:string;caseId?:string;datasetCase?:DatasetCaseSource},adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false){
     const verdict=await this.assess(g,e,adapters,signal,allowHostedDecision), id=randomUUID(),created=new Date().toISOString();
-    const item={...verdict,id,created,...(where.run?{}:{evidence:disclosedEvidence(e)})};
+    // A catalog test can recover its source labels from the saved snapshot.
+    const sample=where.datasetCase ? {datasetCase:where.datasetCase,evidence:{output:e.output}} : {evidence:disclosedEvidence(e)};
+    const item={...verdict,id,created,...(where.run?{}:sample)};
     try {
       this.db.prepare("INSERT INTO assessments VALUES(?,?,?,?,?,?)").run(id,where.run||null,where.candidate||null,where.caseId||null,created,JSON.stringify(item));
     } catch (error) {throw new AssessmentStorageError(error);}

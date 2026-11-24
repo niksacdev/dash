@@ -20,6 +20,12 @@ A team evaluating an earnings extractor or an inspection reviewer needs to see w
 
 A first-time operator can open **Create a grader**, request a proposal, edit it and save. The receipt identifies each version, offers a one-output test where applicable and opens the regular Dataset run form for eligible graders. Choosing a snapshot preserves the exact grader version, even after a successor is published. Saving and setting up the run each require a separate operator action from starting inference.
 
+## Browse by industry
+
+From Workspace → Graders, an inspector can find Manufacturing by its name and icon, scan short descriptions, and inspect the criterion and pass threshold with a pointer, keyboard or touch. Each shipped revision has three direct actions. Create Version saves a workspace-owned copy after review. Test scores a pasted response against a case from a compatible snapshot. Use in Run pins the revision to ordinary dataset setup and waits for GO. My Graders holds operator-created versions. General retains standard checks and Opik templates. Create a grader is the first workspace action.
+
+Verify the earnings and inspection packs, the absence of compatible snapshots, older revisions and saved customer copies. The catalogue shows only industries represented by shipped graders. Browsing and choosing a case should issue no inference call.
+
 ## Review findings
 
 The product and technical reviewers found that keyword overlap could attach a literal grader to an unrelated Quick task and that lowercased display names coupled unrelated grader histories. Require an explicit business selection, stable family identity and an exact saved revision. Score structural checks as diagnostics and preserve domain-specific failures in the comparison. Inspect both working paths and missing-evidence cases with synthetic data. Use the actual SDK behind scoring and verify the Electron review, version and reuse flow.

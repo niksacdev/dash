@@ -36,7 +36,7 @@ On macOS, double-click `Open DASH.command` after installing dependencies to buil
 
 ### Design graders and inspect scores
 
-Open **Workspace → Graders → Create a grader**, or design graders from a run setup. Enter the objective and any measures you already have. The designer can propose defaults or identify an existing grader to reuse. Review the rubric, evidence, threshold and judge, then save the checks you want. Saving from the workspace makes a version available in the library. Confirming from a run also selects that version for the run.
+Open **Workspace → Graders → Create a grader**, or design graders from a run setup. Use **Suggest Metrics** and review the optimized evaluation prompt, or select an approved prompt. The designer proposes an observable rubric or an existing grader to reuse. The industry catalogue also lets you test a saved grader on a labeled Financial Services or Manufacturing case. Review the rubric, evidence, threshold and judge, then save the checks you want. Saving from the workspace makes a version available in the library. Confirming from a run also selects that version for the run.
 
 The Electron renderer, preload and evaluation runner are written in TypeScript. DASH uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
 

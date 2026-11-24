@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Bench } from "../lib/bench.cjs";
+import { withoutPower } from "./runtime-fixtures.cjs";
 import { catalogRules, isInformationalRule, scoreCatalogRule } from "../lib/grader-catalog.cjs";
 import { loadPacks, packField } from "../lib/packs.cjs";
 import { isRecord } from "../lib/run-types.cjs";
@@ -114,4 +116,51 @@ test("mismatched scenario, missing labels or changed scoring contract leave indi
   assert.equal((await scoreCatalogRule("earnings-amount",{...earnings.evidence,caseContext:{pack,row:earnings.row}})).value,null);
   const incomplete={...earnings.pack,checks:earnings.pack.checks.filter(c=>c.key!=="value")};
   assert.equal((await scoreCatalogRule("earnings-amount",{...earnings.evidence,caseContext:{pack:incomplete,row:earnings.row}})).value,null);
+});
+
+test("a pasted industry answer scores the exact grader and case and keeps its source in local output tests",async t=>{
+  let calls=0;
+  const bench=new Bench(":memory:",{discover:async()=>{calls++;return [];},invoke:async()=>{calls++;throw Error("Unexpected inference");}},withoutPower);
+  t.after(()=>bench.db.close());
+  const snapshots=bench.list().datasets;
+  const finance=snapshots.find(d=>d.pack==="earnings"),factory=snapshots.find(d=>d.pack==="manufacturing");
+  assert.ok(finance && factory);
+  const financeRule="dash/earnings-fact/v1",factoryRule="dash/inspection-drawing/v1";
+  for(const [snapshot,caseId,rule] of [[finance,"eps-gaap",financeRule],[factory,"shaft-superseded-revision",factoryRule]] as const){
+    const {answer,pack}=fixture(snapshot.pack,caseId);
+    const request={grader:rule,datasetId:snapshot.id,caseId,output:JSON.stringify(answer)};
+    const good=await bench.testGraderOnDatasetCase(request);
+    assert.equal(good.value,1);assert.equal(good.pass,true);assert.equal(good.graderId,rule);
+    const [recent]=bench.graders.recent();
+    assert.equal(recent.id,good.id);
+    assert.equal(recent.datasetCase?.datasetId,snapshot.id);
+    assert.equal(recent.datasetCase?.datasetName,snapshot.name);
+    assert.equal(recent.datasetCase?.datasetVersion,snapshot.version);
+    assert.equal(recent.datasetCase?.scenarioId,pack.id);
+    assert.equal(recent.datasetCase?.scenarioVersion,pack.version);
+    assert.equal(recent.datasetCase?.caseId,caseId);
+    assert.ok(recent.datasetCase?.contractHash);
+    assert.deepEqual(recent.evidence,{output:request.output});
+    const replay=await bench.testGraderOnDatasetCase({...request,output:JSON.stringify(bench.pack(snapshot.pack).replay[caseId])});
+    assert.equal(replay.value,0);assert.equal(replay.pass,false);
+    const n=bench.graders.recent().length;
+    const other=rule===financeRule?factory:finance;
+    await assert.rejects(bench.testGraderOnDatasetCase({...request,datasetId:other.id}),/own industry and scenario/);
+    await assert.rejects(bench.testGraderOnDatasetCase({...request,caseId:"missing-case"}),/selected dataset snapshot/);
+    await assert.rejects(bench.testGraderOnDatasetCase({...request,caseContext:{pack:{},row:{gold:answer}}}),/provide an answer/);
+    await assert.rejects(bench.testGraderOnDatasetCase({...request,grader:"dash/completion/v1"}),/industry catalog/);
+    assert.equal(bench.graders.recent().length,n);
+  }
+  const parent=bench.graders.save({intent:"derive",sourceGraderId:financeRule,name:"My financial fact check"},[]);
+  const successor=bench.graders.save({intent:"revise",sourceGraderId:parent,type:"exact",criteria:"Release"},[]);
+  const request={grader:parent,datasetId:finance.id,caseId:"eps-gaap",output:fixture("earnings","eps-gaap").evidence.output};
+  const previous=await bench.testGraderOnDatasetCase(request);
+  assert.equal(previous.version,1);assert.equal(previous.graderId,parent);assert.equal(previous.pass,true);
+  await assert.rejects(bench.testGraderOnDatasetCase({...request,grader:successor}),/industry catalog/);
+  // An existing snapshot with a missing reference can never establish a score.
+  const rows=bench.dataset(finance.id).rows.map(r=>r.case_id===request.caseId?{...r,gold:undefined}:r);
+  bench.db.prepare("UPDATE datasets SET rows=? WHERE id=?").run(JSON.stringify(rows),finance.id);
+  const missing=await bench.testGraderOnDatasetCase(request);
+  assert.equal(missing.value,null);assert.equal(missing.pass,null);assert.match(missing.reason,/missing its reference labels/);
+  assert.equal(bench.list().runs.length,0);assert.equal(calls,0);
 });

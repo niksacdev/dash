@@ -18,68 +18,117 @@ function gradeDesignerDraft(scope:string,workspace=false) {
     industry:(record && "domain" in record ? record.domain : "") || (record && "metadata" in record ? record.metadata.industry : "") || "Cross-industry", target:"response",
     editableMethods:[],objectiveEdited:false,metricsEdited:false,draftId:"",automatic:[],checks:[], summary:"", designer:null, error:"", saved:[], busy:"", hasPlan:false,
   };
+  if(workspace && !scope.startsWith("prompt:")){
+    draft.planner=plannerState(record && "pack" in record ? "dataset":"quick");
+    draft.planner.objective=draft.objective;
+    draft.planner.metrics=draft.metrics;
+    if(record && "pack" in record)draft.planner.datasetId=record.id;
+  }
   graderDesignDrafts.set(key,draft);
   return draft;
+}
+function activeGraderPlanning():UiGraderDraft|undefined {
+  if(trail()[0]!=="graders" || graderAuthoringMode!=="agent" || graderDraft || graderTemplate)return;
+  const draft=gradeDesignerDraft(workspaceGradeScope,true);
+  return draft.planner ? draft : undefined;
+}
+function graderTarget(d:UiGraderDraft) {
+  return formField("Evaluation target",'<select data-gd-brief="target" '+(d.planner?.busy?'disabled':'')+'>'+opt("response","Model response",d.target)+opt("agent","Agent trajectory and output",d.target)+'</select>');
+}
+function approvedGradeBrief(p:UiApproved) {
+  return '<div class="gd-brief"><strong>'+esc(p.title || p.objective)+' · v'+esc(p.version)+'</strong>'+
+    '<details class="wf-options"><summary>Approved prompt and success metrics</summary><pre>'+esc(p.prompt)+'</pre>'+metricList(p.metrics)+'</details></div>';
 }
 function gradeDesignerLocalJudges() {
   return state.servers.filter(s=>s.online).flatMap(s=>s.models).filter(m=>["lmstudio","ollama"].includes(m.provider));
 }
-function gradeDesignerScopeSelector() {
-  return formField("Design for",'<select data-gd-source>'+opt("custom","Describe an evaluation",workspaceGradeScope)+
+function gradeDesignerScopeSelector(busy:boolean) {
+  return formField("Design for",'<select data-gd-source '+(busy?'disabled':'')+'>'+opt("custom","Describe an evaluation",workspaceGradeScope)+
     (state.prompts?.length?'<optgroup label="Approved prompt versions">'+state.prompts.map(p=>opt("prompt:"+p.id,
       (p.title || p.objective)+" · v"+p.version+" · "+p.domain,workspaceGradeScope)).join("")+'</optgroup>':'')+
     (state.datasets.length?'<optgroup label="Dataset snapshots">'+state.datasets.map(d=>opt("dataset:"+d.id,
       (d.metadata?.family || d.name)+" · "+d.version+" · "+(d.metadata?.industry || d.pack),workspaceGradeScope)).join("")+'</optgroup>':'')+'</select>');
 }
-function graderDesignInputs(scope:string,draft:UiGraderDraft,record:ReturnType<typeof gradeScopeRecord>) {
-  if (scope.startsWith("prompt:")) return '<p class="gd-brief"><strong>'+esc((record && "objective" in record ? record.objective : ""))+'</strong><small>'+
-    esc([(record && "domain" in record ? record.domain : ""),...((record && "metrics" in record ? record.metrics : undefined) || [])].join(" · "))+'</small></p>';
-  return formField("Task objective",'<textarea data-gd-brief="objective" maxlength="12000">'+esc(draft.objective)+'</textarea>')+
-    formField("Success measures (optional, one per line)",'<textarea data-gd-brief="metrics" maxlength="3000">'+esc(draft.metrics)+'</textarea>')+
-    (scope==="custom"?'<div class="cols">'+formField("Domain",'<select data-gd-brief="industry">'+["Cross-industry","Financial Services","Manufacturing","General"].map(v=>opt(v,v,draft.industry)).join("")+'</select>')+
-      formField("Evaluation target",'<select data-gd-brief="target">'+opt("response","Model response",draft.target)+opt("agent","Agent trajectory and output",draft.target)+'</select>')+'</div>':
-      '<small>'+esc((record && "metadata" in record ? record.metadata.industry : ""))+' · '+esc((record && "metadata" in record ? record.metadata.family || record.name : ""))+' · '+esc(record?.version)+'</small>');
-}
 function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],scope:string) {
   const source=g.source, reuse=g.action==="reuse", judge=g.action==="derive" || ["opik","judge"].includes(g.type);
-  const editableIndustry=!g.source && scope==="custom";
+  const editableIndustry=!g.source && scope==="custom" && !gradeDesignerDraft(scope,true).planner?.approved;
   const field=(key:string,label:string,body:string)=>formField(label,body.replace("GD_FIELD",'data-gd-field="'+key+'"'));
-  const basis=source ? '<p><strong>'+esc(source.scope+' grader · '+source.name+' v'+source.version)+'</strong></p><p>'+esc(source.criteria)+'</p>'+
+  const rubric=field("criteria",judge?"Scoring rubric":"Scoring rule",'<textarea class="gd-rubric" GD_FIELD maxlength="6000">'+esc(g.criteria)+'</textarea>');
+  const basis=source ? '<p><strong>'+esc(source.scope+' grader · '+source.name+' v'+source.version)+'</strong></p><p class="gd-source-rule">'+esc(source.criteria)+'</p><small>'+esc('Pass threshold · '+g.threshold+' / 1')+'</small>'+
     (source.hosted ? '<p>Uses OpenRouter · '+esc(source.model)+'. Running this grader requires confirmation before case evidence is sent.</p>' : '') : '';
   return '<article class="gd-check" data-gd-check="'+i+'"><label class="gd-inclusion"><input type="checkbox" data-gd-field="included" '+(g.included?"checked":"")+'><span>'+
-    esc(g.name || "Proposed grader")+'</span></label><small>'+esc(g.reason)+'</small><fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
+    esc(g.name || "Proposed grader")+'</span></label><fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
     basis+(source ? field("action","After approval",'<select GD_FIELD>'+opt("reuse","Use this exact version",g.action)+opt("derive","Create a customer rubric from this version",g.action)+'</select>') : '<p>New customer grader</p>')+
-    (reuse ? '' : '<div class="cols">'+field("name","Grader name",'<input GD_FIELD maxlength="100" value="'+esc(g.name)+'">')+
+    (reuse ? '' : rubric+'<div class="cols">'+field("name","Grader name",'<input GD_FIELD maxlength="100" value="'+esc(g.name)+'">')+
     field("category","Category",'<input GD_FIELD maxlength="100" value="'+esc(g.category)+'">')+'</div><div class="cols">'+
     field("industry","Applies to industry",'<select GD_FIELD '+(editableIndustry?'':'disabled')+'>'+[...new Set([g.industry,"Cross-industry","Financial Services","Manufacturing","General"])].map(v=>opt(v,v,g.industry)).join("")+'</select>')+
     field("type","Method",'<select GD_FIELD '+(g.source?'disabled':'')+'>'+(g.source?opt("opik",graderTypes.opik,"opik"):methods.map(v=>opt(v,graderTypes[v],g.type)).join(""))+'</select>')+'</div>'+
     field("threshold","Pass threshold (0–1)",'<input GD_FIELD type="number" min="0" max="1" step="any" value="'+esc(g.threshold)+'">')+
-    field("criteria","Grading criteria",'<textarea GD_FIELD maxlength="6000">'+esc(g.criteria)+'</textarea>')+
     (judge?field("evidenceView","Evidence shown to the judge",'<select GD_FIELD>'+opt("case","Task, answer and available case evidence",g.evidenceView || "case")+
       (g.requiredEvidence?.length?'':opt("answer-only","Answer only",g.evidenceView))+'</select>'):'')+
     (judge && g.requiredEvidence?.length?'<small>Cases without '+g.requiredEvidence.map(kind=>kind==="reference"?'a reference':'observed agent steps').join(" or ")+' stay unscored.</small>':'')+
     (judge?field("judgeId","Local judge model",'<select GD_FIELD>'+opt("","Choose a connected model",g.judgeId)+gradeDesignerLocalJudges().map(m=>opt(m.id,
       m.model+' · '+m.provider+(m.loaded?' · loaded':''),g.judgeId)).join("")+'</select>'):''))+'</fieldset></article>';
 }
+function gradeDesignerPreparation(scope:string,d:UiGraderDraft,workspace:boolean) {
+  const record=gradeScopeRecord(scope), w=d.planner;
+  const p=w?.approved ?? (record && "prompt" in record ? record : undefined);
+  const propose='<button type="button" class="gd-generate" data-gd-action="design">'+(d.busy==="design"?'Designing graders…':d.hasPlan || d.saved.length?'Design a new plan':'Propose graders')+'</button>';
+  if(workspace && w && !p)return (w.mode==="quick" ? graderTarget(d):"")+
+    (w.draft ? workflowReview(w,true):workflowCompose(w,true))+
+    (w.error?'<p role="alert" class="wf-error">'+esc(w.error)+'</p>':'');
+  if(p)return approvedGradeBrief(p)+(workspace && p.mode==="quick"?graderTarget(d):"")+propose+
+    (w?'<button type="button" data-gd-action="edit">Edit objective</button>':'');
+  const snapshot=record && "pack" in record ? record : undefined;
+  return formField("Task objective",'<textarea data-gd-brief="objective" maxlength="12000">'+esc(d.objective)+'</textarea>')+
+    formField("Success measures (optional, one per line)",'<textarea data-gd-brief="metrics" maxlength="3000">'+esc(d.metrics)+'</textarea>')+
+    '<small>'+esc(snapshot?.metadata.industry)+' · '+esc(snapshot?.metadata.family || snapshot?.name)+' · '+esc(snapshot?.version)+'</small>'+propose;
+}
+function graderPlanExplanation(d:UiGraderDraft) {
+  const gaps=d.gaps ?? [];
+  const designedBy=d.designer?.model ? '<small class="gd-model">Grader designer · '+esc([d.designer.provider,d.designer.model].filter(Boolean).join(" · "))+'</small>' : "";
+  const reasons=d.checks.map(g=>'<li><strong>'+esc(g.name)+'</strong><p>'+esc(g.reason)+'</p></li>');
+  const coverage=(d.covered ?? []).map(({measure,grader,reason})=>'<li><strong>'+esc(measure)+'</strong><p>'+esc(grader.name)+' v'+esc(grader.version)+' · '+esc(reason)+'</p></li>');
+  const skipped=gaps.map(g=>'<li><strong>'+esc(g.measure)+'</strong><p>'+esc(g.reason)+'</p></li>');
+  return designedBy+'<details class="gd-explanation"><summary>Reasoning summary</summary>'+
+    (reasons.length?'<h4>Why these checks were proposed</h4><ul>'+reasons.join("")+'</ul>':'')+
+    (coverage.length?'<h4>Measures scored automatically</h4><ul>'+coverage.join("")+'</ul>':'')+
+    (skipped.length?'<h4>Measures without a score</h4><ul>'+skipped.join("")+'</ul>':'')+
+    (!reasons.length && !coverage.length && !skipped.length?'<p>'+esc(d.summary || "No scoring decision was recorded.")+'</p>':'')+'</details>';
+}
+function graderPlanDiagnostics(names:string[]) {
+  const explanations:Record<string,string>={
+    "Generation completed":"The runtime reported a normal stop.",
+    "Response present":"The model returned nonblank text.",
+    "Valid JSON":"The response parses as JSON."
+  };
+  const diagnostics=names.filter(name=>Object.hasOwn(explanations,name));
+  const other=names.filter(name=>!Object.hasOwn(explanations,name));
+  return (diagnostics.length?'<details class="gd-diagnostics"><summary>Runtime and format checks</summary><p>These checks describe the response delivery and format. The rubric determines whether the answer meets the objective.</p><ul>'+
+    diagnostics.map(name=>'<li><strong>'+esc(name)+'</strong> · '+esc(explanations[name])+'</li>').join("")+'</ul></details>':'')+
+    (other.length?'<p>Other automatic graders · '+esc(other.join(" · "))+'</p>':'');
+}
 function gradeDesignerView(scope:string,workspace=false,open=workspace) {
-  const d=gradeDesignerDraft(scope,workspace), record=gradeScopeRecord(scope);
+  const d=gradeDesignerDraft(scope,workspace);
   const count=d.checks.filter(g=>g.included).length;
+  const hasCoverage=!!d.covered?.length;
+  const fullyCovered=hasCoverage && !d.gaps?.length && !d.checks.length;
+  const emptyHeading=fullyCovered?"Existing graders cover all measures":hasCoverage?"Some measures already have graders":"No quality rubric is ready";
   const label=workspace?'Design with an agent':'Design graders for this '+(scope.startsWith("prompt:")?'prompt':'dataset');
   const start=workspace ? '<section class="gd-panel gd-workspace" data-gd-workspace data-gd-scope="'+esc(scope)+'" aria-label="'+label+'">' :
     '<details class="gd-panel" data-gd-scope="'+esc(scope)+'" '+(open?'open':'')+'><summary>'+label+'</summary>';
   return start+
-    '<div class="gd-content">'+(workspace?gradeDesignerScopeSelector():'')+
-    '<fieldset class="gd-fields" '+(d.busy?'disabled':'')+'>'+graderDesignInputs(scope,d,record)+
-    '<button type="button" class="gd-generate" data-gd-action="design">'+(d.busy==="design"?'Designing graders…':d.hasPlan || d.saved.length?'Design a new plan':'Propose graders')+'</button>'+
+    '<div class="gd-content">'+(workspace?gradeDesignerScopeSelector(!!(d.busy || d.planner?.busy)):'')+
+    '<fieldset class="gd-fields" '+(d.busy?'disabled':'')+'>'+gradeDesignerPreparation(scope,d,workspace)+
     (d.error?'<p role="alert" class="wf-error">'+esc(d.error)+'</p>':'')+
-    (d.hasPlan?'<section class="gd-proposals"><h3>Review your plan · '+d.checks.length+' proposed '+(d.checks.length===1?'check':'checks')+'</h3><p>'+esc(d.summary)+'</p>'+
-      (d.designer?.model?'<small>Designed by '+esc([d.designer.provider,d.designer.model].filter(Boolean).join(" · "))+'</small>':'')+
-      (d.automatic.length ? '<p>Automatic checks · '+esc(d.automatic.join(' · '))+'</p>' : '')+
-      (d.checks.length?'<p>Review the criteria, evidence and pass threshold before saving.</p>':'')+
+    (d.hasPlan?'<section class="gd-proposals" aria-label="Proposed graders"><h3>'+
+      (d.checks.length ? (d.checks.length===1 ? "Review the proposed grader" : "Review "+d.checks.length+" proposed graders") : emptyHeading)+'</h3>'+
+      (d.checks.length?'':fullyCovered?'<p>These graders run automatically. You can continue without saving a new grader.</p>':'<p>Review the evidence needed below. Edit the objective to describe an observable part of the answer, or choose a labeled dataset for a reference-based check.</p>')+
+      graderPlanExplanation(d)+
       d.checks.map((g,i)=>designCheckFields(g,i,d.editableMethods,scope)).join("")+
       '<div class="gd-actions">'+(d.checks.length?'<button type="button" class="yellow" data-gd-action="confirm" '+(count?'':'disabled')+'>'+
       (d.busy==="confirm"?'Saving versions…':(workspace || scope==="custom"?'Save ':'Save and select ')+count+' '+(count===1?'grader':'graders'))+'</button>':'')+
-      '<button type="button" data-gd-action="discard">Discard plan</button></div></section>':'')+
+      '<button type="button" data-gd-action="discard">'+(fullyCovered?"Done":"Discard plan")+'</button></div>'+graderPlanDiagnostics(d.automatic)+'</section>':'')+
     (!workspace && d.saved.length?'<div class="gd-saved" role="status"><strong>'+(workspace || scope==="custom"?'Saved in the grader library':'Confirmed for this '+(scope.startsWith("prompt:")?'prompt version':'dataset snapshot'))+
       '</strong><ul>'+d.saved.map(g=>'<li>'+esc(g.label)+'</li>').join("")+'</ul></div>':'')+'</fieldset></div>'+(workspace?'</section>':'</details>');
 }
@@ -179,7 +228,8 @@ function updateDesignerField(t:EventTarget|null) {
     if (draft.hasPlan) {
       draft.hasPlan=false;draft.checks=[];draft.summary="";
       panel.querySelector(".gd-proposals")?.remove();
-      $("[data-gd-action=design]",panel).textContent="Propose graders";
+      const button=panel.querySelector("[data-gd-action=design]");
+      if(button)button.textContent="Propose graders";
     }
     draft.error="";panel.querySelector("[role=alert]")?.remove();
     return;
@@ -204,10 +254,14 @@ document.addEventListener("change",e=>{
   if (!panel?.dataset.gdScope) return;
   if (t.hasAttribute("data-gd-source")) {
     const prior=gradeDesignerDraft(panel.dataset.gdScope,true),next=gradeDesignerDraft(t.value,true);
-    if(!next.hasPlan && !next.saved.length && !t.value.startsWith("prompt:")) {
-      if(prior.objectiveEdited && !next.objectiveEdited){next.objective=prior.objective;next.objectiveEdited=true;}
-      if(prior.metricsEdited && !next.metricsEdited){next.metrics=prior.metrics;next.metricsEdited=true;}
-      if(prior.objectiveEdited && !prior.metrics.trim() && !next.metricsEdited)next.metrics="";
+    if(prior.busy || prior.planner?.busy)return;
+    // Carry manually entered text into an untouched source, never another domain's suggestions or rubric.
+    if(panel.dataset.gdScope==="custom" && prior.planner && next.planner && !prior.planner.draft && !prior.planner.suggestion &&
+      !next.planner.draft && !next.planner.suggestion && !next.planner.approved &&
+      (!prior.planner.domain || prior.planner.domain===next.industry)){
+      if(prior.objectiveEdited && !next.objectiveEdited){next.planner.objective=prior.planner.objective;next.objectiveEdited=true;}
+      if(prior.metricsEdited && !next.metricsEdited && prior.planner.domain===next.industry){next.planner.metrics=prior.planner.metrics;next.metricsEdited=true;}
+      else if(prior.objectiveEdited && !prior.planner.metrics.trim() && !next.metricsEdited)next.planner.metrics="";
     }
     workspaceGradeScope=t.value;
     panel.outerHTML=gradeDesignerView(workspaceGradeScope,true,true);
@@ -220,6 +274,29 @@ document.addEventListener("change",e=>{
     }
   }
 });
+async function proposeGraderChecks(scope:string,d:UiGraderDraft) {
+  const promptId=d.planner?.approved?.id ?? (scope.startsWith("prompt:")?scope.slice(7):undefined);
+  const request:UiDesignGraderRequest=promptId ? {promptId,target:d.target} : {objective:d.objective.trim(),metrics:d.metrics.trim(),
+    target:d.target,...(scope.startsWith("dataset:")?{datasetId:scope.slice(8)}:d.industry==="Cross-industry"?{}:{domainId:d.industry})};
+  if ("objective" in request && !request.objective) throw Error("Describe the task you want to evaluate.");
+  const result=await api.designGraders(request);
+  const judges=gradeDesignerLocalJudges();
+  const preferred=judges.find(m=>m.loaded && m.provider===result.designer?.provider && m.model===result.designer.model) || judges.find(m=>m.loaded);
+  d.editableMethods=result.editableMethods;
+  d.checks=result.checks.map(g=>({...g,included:!g.source?.hosted,judgeId:preferred?.id || ""}));
+  d.covered=result.covered;d.gaps=result.gaps;d.draftId=result.draftId;d.automatic=result.automatic;d.summary=result.summary;d.designer=result.designer;d.hasPlan=true;
+}
+
+async function proposeReviewedGraders(d:UiGraderDraft) {
+  const id=d.planner?.approved?.id;
+  if(!id)throw Error("Approve a prompt version before proposing graders.");
+  d.error="";d.busy="design";
+  try{
+    if(d===activeGraderPlanning())repaintGradeDesigner(workspaceGradeScope,true);
+    await proposeGraderChecks("prompt:"+id,d);
+  }catch(error){d.error=errorText(error);}
+  finally{d.busy="";}
+}
 document.addEventListener("click", async e=>{
   if (!(e.target instanceof Element)) return;
 
@@ -228,6 +305,10 @@ document.addEventListener("click", async e=>{
   e.preventDefault();
   const workspace=panel.hasAttribute("data-gd-workspace"),scope=panel.dataset.gdScope,d=gradeDesignerDraft(scope,workspace),action=button?.dataset.gdAction;
   if (!action || !button || d.busy) return;
+  if(action==="edit" && d.planner && !d.planner.busy){
+    d.planner.parentId=d.planner.approved?.id ?? d.planner.parentId;d.planner.approved=null;d.planner.draft=null;d.planner.error="";d.hasPlan=false;d.checks=[];d.summary="";d.error="";
+    repaintGradeDesigner(scope,workspace);return;
+  }
   if (action==="discard") {
     d.hasPlan=false;d.checks=[];d.summary="";d.error="";
     repaintGradeDesigner(scope,workspace);return;
@@ -235,15 +316,7 @@ document.addEventListener("click", async e=>{
   d.error="";d.busy=action;repaintGradeDesigner(scope,workspace);syncGraderDesignLaunch();
   try {
     if (action==="design") {
-      const request:UiDesignGraderRequest=scope.startsWith("prompt:") ? {promptId:scope.slice(7)} : {objective:d.objective.trim(),metrics:d.metrics.trim(),
-        target:d.target,...(scope.startsWith("dataset:")?{datasetId:scope.slice(8)}:d.industry==="Cross-industry"?{}:{domainId:d.industry})};
-      if ("objective" in request && !request.objective) throw Error("Describe the task you want to evaluate.");
-      const result=await api.designGraders(request);
-      const judges=gradeDesignerLocalJudges();
-      const preferred=judges.find(m=>m.loaded && m.provider===result.designer?.provider && m.model===result.designer.model) || judges.find(m=>m.loaded);
-      d.editableMethods=result.editableMethods;
-      d.checks=result.checks.map(g=>({...g,included:!g.source?.hosted,judgeId:preferred?.id || ""}));
-      d.draftId=result.draftId;d.automatic=result.automatic;d.summary=result.summary;d.designer=result.designer;d.hasPlan=true;
+      await proposeGraderChecks(scope,d);
     } else if (action==="confirm") {
       const choices=reviewChoices(d),definitions=choices.map(c=>d.checks[c.index]);
       const selected=workspace?null:gradeSelectionForScope(scope);

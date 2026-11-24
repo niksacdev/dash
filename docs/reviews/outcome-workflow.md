@@ -39,3 +39,7 @@ The operator can expand **Why these metrics?** before drafting. Edits to the sel
 A live LM Studio test used LFM3 1.7B to prepare and execute the five synthetic Manufacturing inspection cases. Two passed the scenario grader, two returned incorrect proposed accepts and one further response failed grading. Tokenizer preflight matched reported input usage on all five. This test used an isolated database.
 
 The desktop integration tests exercise the Quick compare and Dataset interfaces, approval, prompt and role revisions, request formatting across two adapters, dataset grading, run-informed revision, and historical replay. Their model responses are deterministic. See the [contributor guide](../../.github/CONTRIBUTING.md) for test commands.
+
+## Author a grader from the same business outcome
+
+In Create a grader, an inspection lead selects a Manufacturing snapshot, asks the shared domain expert to suggest success metrics, and reviews the metric auditor’s evidence requirements. The operator can edit the draft to require an active drawing citation and the actual lot ID before approving it. The grader designer receives that exact approved prompt version and the final measures. Proposals remain editable until the operator saves them. Choosing an existing approved prompt uses that version directly. Changing source keeps prepared suggestions scoped to their originating objective and snapshot. Grader planning leaves a simultaneous Quick compare draft and its candidate selections intact. [Decision record](../adr/0026-reuse-grader-planning.md)

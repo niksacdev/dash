@@ -56,3 +56,41 @@
 @media(max-width:680px){.gc-use button,.gc-manage summary {min-height:44px}}
 #dataset-judge-note:empty {display:none}
 .gc-sample-fields {border:0;padding:0;margin:0;min-width:0}
+
+
+.gc-section[data-catalog-scope="industry"] {padding:0;background:transparent;border:0}
+.gc-shelves {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,23rem),1fr));gap:1rem;align-items:start}
+.gc-industry {min-width:0;border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:clip}
+.gc-shelf-head {display:flex;align-items:center;gap:.75rem;padding:1rem;background:var(--surface-soft);border-bottom:1px solid var(--border)}
+.gc-domain-mark {display:grid;place-items:center;width:2.6rem;height:2.6rem;border-radius:10px;background:var(--selected);color:var(--accent-strong)}
+.gc-domain-mark.factory-i {color:light-dark(#584497,#c8b6ff);background:light-dark(#ede8fa,#332c4a)}
+.gc-domain-mark .icon {width:1.52rem;height:1.52rem}
+.gc-shelf-head h4 {margin:0;font-size:1.06rem}
+.gc-shelf-head small {margin-inline-start:auto;color:var(--muted);white-space:nowrap}
+.gc-industry .gc-family {padding:0 1rem}
+.gc-industry .gc-family+.gc-family {border-block-start:0}
+.gc-industry .gc-family+.gc-family>.gc-card {border-top:1px solid var(--border)}
+.gc-section .gc-card {padding:.9rem 0}
+.gc-card .gc-revision-head {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline}
+.gc-version {font-family:var(--mono);font-size:.73rem;color:var(--muted);white-space:nowrap}
+.gc-card .gc-description {color:var(--muted);font-size:.9rem;margin:.25rem 0 .65rem}
+.gc-section .gc-use button,.gc-card .gc-info,.gc-jumps button {--button-fill:var(--surface-soft);--button-hover:var(--selected);--button-active:var(--selected);--button-border:var(--border);--button-ink:var(--ink);min-height:30px;padding:.23rem .6rem;font-size:.8rem}
+.gc-section .gc-use button[data-grade-run] {color:var(--accent-strong);background:var(--selected)}
+.gc-card .gc-info,.gc-jumps button {background:transparent;color:var(--accent-strong);border-color:transparent}
+.gc-card .gc-info[aria-expanded=true] {text-decoration:underline;text-underline-offset:.18em}
+.gc-detail-body {margin-top:.65rem;border-inline-start:2px solid var(--control-border);padding-inline:.65rem;font-size:.88rem}
+.gc-detail-body small {display:block;color:var(--muted)}
+.gc-card .gc-manage {font-size:.8rem}
+.gc-section .gc-target:empty,.gc-section .gc-target[hidden] {display:none}
+.gc-target form {display:grid;gap:.65rem}
+.gc-target pre {max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.gc-jumps {display:flex;gap:.35rem;flex-wrap:wrap}
+@media(pointer:coarse),(max-width:680px){.gc-section .gc-use button,.gc-card .gc-info,.gc-jumps button {min-height:44px}}
+
+.gd-model {display:block;color:var(--accent-strong);margin:.3rem 0}
+.gd-explanation,.gd-diagnostics {margin:.35rem 0 .85rem}
+.gd-explanation summary,.gd-diagnostics summary {cursor:pointer;width:fit-content;color:var(--muted)}
+.gd-explanation h4 {margin:.65rem 0 .25rem}
+.gd-explanation ul,.gd-diagnostics ul {padding-left:1.25rem}
+.gd-panel .field .gd-rubric {min-height:8rem;line-height:1.5}
+.gd-source-rule {white-space:pre-line}

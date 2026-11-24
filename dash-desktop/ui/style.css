@@ -665,13 +665,13 @@ a.link:hover {
 .hosting-items figcaption span {font-size:12px;color:var(--muted);line-height:1.4;margin-top:2px}
 
 @media(max-width:680px){
-  body:has(#quick-models) aside, body:has(.capability-reel) aside {width:52px;padding:0 3px;overflow-y:auto}
-  body:is(:has(#quick-models),:has(.capability-reel)) aside .brand {margin:12px auto 18px;justify-content:center;gap:0;font-size:0}
-  body:is(:has(#quick-models),:has(.capability-reel)) aside .brand img {width:28px;height:28px}
-  body:is(:has(#quick-models),:has(.capability-reel)) aside :is(.railgroup,.railfoot) {display:none}
-  body:is(:has(#quick-models),:has(.capability-reel)) nav a {font-size:0;gap:0;min-height:44px;justify-content:center;padding:7px}
-  body:is(:has(#quick-models),:has(.capability-reel)) .desk {margin-left:52px}
-  body:is(:has(#quick-models),:has(.capability-reel)) main {padding:18px 12px 36px}
+  body:has(#quick-models,.capability-reel,[data-catalog-scope]) aside {width:52px;padding:0 3px;overflow-y:auto}
+  body:has(#quick-models,.capability-reel,[data-catalog-scope]) aside .brand {margin:12px auto 18px;justify-content:center;gap:0;font-size:0}
+  body:has(#quick-models,.capability-reel,[data-catalog-scope]) aside .brand img {width:28px;height:28px}
+  body:has(#quick-models,.capability-reel,[data-catalog-scope]) aside :is(.railgroup,.railfoot) {display:none}
+  body:has(#quick-models,.capability-reel,[data-catalog-scope]) nav a {font-size:0;gap:0;min-height:44px;justify-content:center;padding:7px}
+  body:has(#quick-models,.capability-reel,[data-catalog-scope]) .desk {margin-left:52px}
+  body:has(#quick-models,.capability-reel,[data-catalog-scope]) main {padding:18px 12px 36px}
   body:has(#quick-models) #setup {padding:14px}
   body:has(#quick-models) #setup .listrow {align-items:stretch;flex-direction:column}
   .hosting-items {grid-template-columns:1fr}

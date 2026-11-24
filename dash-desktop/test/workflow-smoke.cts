@@ -1,6 +1,6 @@
 // Run the compiled test with npm run test:workflow.
 import assert from "node:assert/strict";
-import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {DatabaseSync} from "node:sqlite";
@@ -54,8 +54,11 @@ const roleEdit = "Trace the inspection record to the incoming lot.";
 
 function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   if(stage==="grader-plan") {
-    const {goals}=z.object({goals:z.array(z.object({key:z.string()}))}).parse(raw);
-    return Object.fromEntries(goals.map(({key},i)=>[key,{choice:"NEW:judge",name:i?"Evidence citation":"Inspection disposition reasoning",
+    const {goals,automatic}=z.object({goals:z.array(z.object({key:z.string(),metric:z.string()})),
+      automatic:z.array(z.object({option:z.string(),name:z.string()}))}).parse(raw);
+    return Object.fromEntries(goals.map(({key,metric},i)=>[key,metric==="Response present"?
+      {choice:z.string().parse(automatic.find(g=>g.name===metric)?.option),reason:"   The response-presence check detects an empty answer.   "}:
+      {choice:"NEW:judge",name:i?"Evidence citation":"Inspection disposition reasoning",
       criteria:i?"Check whether the answer cites the current inspection record.":"Assess the proposed disposition against the supplied inspection details.",
       anchors:{full:"Cites the record and connects it to the decision.",partial:"Names a record without connecting the decision.",zero:"Omits the record.",evidence:"response"},
       threshold:i ? .8 : .9,reason:"A local judge can evaluate the supplied answer."}]));
@@ -683,7 +686,79 @@ async function smoke() {
     await wait(()=>js("innerWidth<=400"),"Phone-width catalog");
     assert.ok(await js("document.documentElement.scrollWidth<=innerWidth+1"),"Catalog fits a phone viewport");
     assert.ok(await js("document.querySelector('[data-grade-run]').getBoundingClientRect().height>=44"),"Touch-size catalog action");
+    const shelfNames=await js("Array.from(document.querySelectorAll('.gc-shelf-head h4'),h=>h.textContent)");
+    assert.deepEqual(shelfNames,["Financial Services","Manufacturing"]);
+    assert.ok(await js("Array.from(document.querySelectorAll('.gc-shelf-head use')).every(u=>document.getElementById(u.getAttribute('href').slice(1)) && u.getBoundingClientRect().width>0)"),"Industry icons render in the catalogue");
+    assert.ok(await js("document.querySelector('.gc-section').dataset.catalogScope==='industry' && !!document.querySelector('.gc-section[data-catalog-scope=customer]')"),"Industry catalogue and personal versions are separate");
+    assert.ok(await js("!!(document.querySelector('#grader-authoring').compareDocumentPosition(document.querySelector('.gc-section')) & Node.DOCUMENT_POSITION_FOLLOWING)"),"Create a grader stays above the catalogue");
+    const firstCard=".gc-industry .grader-row";
+    assert.deepEqual(await js("Array.from(document.querySelector("+q(firstCard)+").querySelectorAll('.gc-use > button'),b=>b.textContent)"),["Create Version","Test","Use in Run"]);
+    assert.ok(await js("Array.from(document.querySelector("+q(firstCard)+").querySelectorAll('.gc-use > button')).every(b=>b.getBoundingClientRect().height>=44)"),"Compact catalogue actions are touch sized");
+    const detailsButton=firstCard+" [data-grader-details]";
+    const expanded=()=>js("document.querySelector("+q(detailsButton)+").getAttribute('aria-expanded')==='true'");
+    const detailsPoint=async()=>z.object({x:z.number(),y:z.number()}).parse(await js("(() => {const b=document.querySelector("+q(detailsButton)+");b.scrollIntoView({block:'center'}); const r=b.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()"));
+    const keyboard=(key:string)=>js("document.querySelector("+q(detailsButton)+").dispatchEvent(new KeyboardEvent('keydown',{key:"+q(key)+",bubbles:true}));true");
+    wc.debugger.attach("1.3");
+    try{
+      await wc.debugger.sendCommand("Input.dispatchMouseEvent",{type:"mouseMoved",...await detailsPoint()});
+      await wait(expanded,"Hover reveals the saved criterion");
+      await js("document.querySelector("+q(detailsButton)+").focus();true");
+      await keyboard("Escape");await wait(async()=>!(await expanded()),"Keyboard dismisses grader details");
+      await wc.debugger.sendCommand("Input.dispatchMouseEvent",{type:"mouseMoved",x:0,y:0});
+      await js("document.activeElement.blur();document.querySelector("+q(detailsButton)+").focus();true");
+      await wait(expanded,"Keyboard focus reveals the same criterion");
+      await keyboard("Escape");await js("document.activeElement.blur();true");
+      await wc.debugger.sendCommand("Emulation.setTouchEmulationEnabled",{enabled:true,maxTouchPoints:1});
+      try{
+        await wc.debugger.sendCommand("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[await detailsPoint()]});
+        await wc.debugger.sendCommand("Input.dispatchTouchEvent",{type:"touchEnd",touchPoints:[]});
+        await wait(expanded,"Touch opens the grader details");
+      }finally{await wc.debugger.sendCommand("Emulation.setTouchEmulationEnabled",{enabled:false});}
+      await keyboard("Escape");
+    }finally{wc.debugger.detach();}
+
     win.setContentSize(1280,850);
+    const runCount=()=>Number(db.prepare("SELECT count(*) n FROM runs").get()?.n);
+    const manualCount=()=>Number(db.prepare("SELECT count(*) n FROM assessments WHERE run IS NULL").get()?.n);
+    const shippedId=(key:string)=>z.string().parse(db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.ruleKey')=? AND json_extract(spec,'$.library.scope')!='customer'").get(key)?.id);
+    // Industry catalogue tests use only the existing saved case and a pasted answer.
+    const beforeTests={models:calls.length,jobs:runCount(),scores:manualCount()};
+    let scored=0;
+    for(const example of [
+      {pack:"earnings",rule:"earnings-fact",pass:"rev-scale",fail:"eps-gaap"},
+      {pack:"manufacturing",rule:"inspection-drawing",pass:"bushing-within",fail:"shaft-superseded-revision"},
+    ]) {
+      const grader=shippedId(example.rule);
+      const card='[data-grade-version="'+grader+'"] ';
+      const form=card+"[data-industry-test-form] ";
+      await click(card+"[data-industry-test]");
+      const snapshotId=z.string().parse(db.prepare("SELECT id FROM datasets WHERE pack=? ORDER BY rowid LIMIT 1").get(example.pack)?.id);
+      const snapshot=form+"[name=snapshot]",cases=form+"[name=caseId]",answer=form+"[name=output]";
+      await wait(()=>exists(snapshot+' option[value="'+snapshotId+'"]'),"Compatible case-test snapshot");
+      await fill(snapshot,snapshotId);
+      await wait(()=>exists(cases+' option[value="'+example.pass+'"]'),"Available domain cases");
+      const replay=z.record(z.string(),z.unknown()).parse(JSON.parse(readFileSync(path.join(__dirname,"../packs",example.pack,"replay.json"),"utf8")));
+      for(const [caseId,expected] of [[example.pass,1],[example.fail,0]] as const){
+        await fill(cases,caseId);
+        await fill(answer,"");
+        assert.equal(await js("document.querySelector("+q(form+"button[type=submit]")+").disabled"),true);
+        assert.ok(await js("document.querySelector("+q(form+"[data-case-source]")+").textContent.includes('Required response format')"));
+        await fill(answer,JSON.stringify(replay[caseId]));
+        await click(form+"[type=submit]");
+        const verdict=expected?"Passed":"Failed";
+        await wait(()=>js("document.querySelector("+q(form+"[data-case-result]")+").innerText.includes("+q(verdict)+")"),"Catalogue verdict for "+caseId);
+        assert.ok(await js("document.querySelector("+q(form+"[data-case-result]")+").innerText.includes("+q(caseId)+")"));
+        await js("document.querySelector("+q(form.trim())+").requestSubmit();true");
+        const assessment=z.object({graderId:z.string(),value:z.number(),reason:z.string().min(1),datasetCase:z.object({datasetId:z.string(),caseId:z.string()})}).parse(JSON.parse(z.string().parse(db.prepare("SELECT record FROM assessments WHERE run IS NULL ORDER BY rowid DESC LIMIT 1").get()?.record)));
+        assert.equal(assessment.graderId,grader);assert.equal(assessment.value,expected);
+        assert.deepEqual([assessment.datasetCase.datasetId,assessment.datasetCase.caseId],[snapshotId,caseId]);
+        assert.equal(manualCount(),beforeTests.scores+(++scored));
+      }
+      await click(form+"[data-close-test]");
+    }
+    assert.equal(calls.length,beforeTests.models,"Case tests do not call a candidate or a judge model");
+    assert.equal(runCount(),beforeTests.jobs,"Testing a single answer never creates a run");
+
     // Workspace creation reviews several checks without attaching them to a run.
     const designer="#grader-authoring [data-gd-workspace]";
     assert.equal(await js("document.querySelector('#grader-authoring').open"),false);
@@ -691,19 +766,65 @@ async function smoke() {
     const source=designer+" [data-gd-source]";
     const goal="Review the active drawing before accepting a synthetic inspection lot.";
     const proposedCount=()=>Number(db.prepare("SELECT COUNT(*) AS n FROM graders").get()?.n);
-    await fill(designer+" [data-gd-brief=objective]",goal);
-    const snapshot=await text("document.querySelector('[data-gd-source] option[value^=\"dataset:\"]').value");
+    const quickSelectionBefore=await js("JSON.stringify(modelSelections.quick.lanes)");
+    await fill(source,"prompt:"+first.id);
+    assert.equal(await exists("#wf-design-form"),false,"An approved prompt skips drafting");
+    assert.ok(await js("document.querySelector("+q(designer+" .gd-brief pre")+").textContent==="+q(first.prompt)));
+    const reusedStart=calls.length;
+    await fill(designer+" [data-gd-brief=target]","agent");
+    await click(designer+" [data-gd-action=design]");
+    await wait(()=>exists(designer+" .gd-explanation"),"Grader design from approved version");
+    const savedBrief=z.object({target:z.literal("agent"),approvedPrompt:z.string(),metrics:z.array(z.string())})
+      .parse(calls.slice(reusedStart).find(c=>c.stage==="grader-plan")?.brief);
+    assert.deepEqual(savedBrief,{target:"agent",approvedPrompt:first.prompt,metrics:first.metrics});
+    assert.equal(calls.slice(reusedStart).some(c=>["audit","expert","implementer","route"].includes(c.stage)),false);
+    await fill(source,"custom");
+    await fill(designer+" #wf-objective",goal);
+    await click("#wf-suggest");
+    await wait(()=>exists("#wf-chosen-metrics"),"First draft has scoped suggestions");
+    const otherSnapshot=z.string().parse(db.prepare("SELECT id FROM datasets WHERE pack='earnings' ORDER BY rowid LIMIT 1").get()?.id);
+    await fill(source,"dataset:"+otherSnapshot);
+    assert.equal(await exists("#wf-chosen-metrics"),false,"A Financial Services snapshot has no Manufacturing metric audit");
+    assert.ok(!(await text("document.querySelector('#wf-metrics').value")).includes("Share of cases with cited evidence"));
+    await fill(source,"custom");
+    assert.equal(await exists("#wf-chosen-metrics"),true,"The original source keeps its own draft");
+    await fill("#wf-objective",goal+" Reassess all lots.");
+    await fill("#wf-objective",goal);
+    assert.equal(await exists("#wf-chosen-metrics"),false,"Editing the objective invalidates its audit");
+    const inspectionId=z.string().parse(db.prepare("SELECT id FROM datasets WHERE pack='manufacturing' ORDER BY rowid LIMIT 1").get()?.id);
+    const snapshot="dataset:"+inspectionId;
     await fill(source,snapshot);
-    assert.equal(await text("document.querySelector('[data-gd-brief=objective]').value"),goal);
-    assert.equal(await text("document.querySelector('[data-gd-brief=metrics]').value"),"");
+    assert.equal(await text("document.querySelector('#wf-objective').value"),goal);
+    assert.equal(await text("document.querySelector('#wf-metrics').value"),"");
     const attachmentBefore=await js("localStorage.getItem('dash.attachedGraders.v1.'+"+q(snapshot)+")");
-    const initial=proposedCount();
-    await click(designer+" [data-gd-action=design]");
-    await wait(()=>exists(designer+" [data-gd-check]"),"Objective-only proposal inside Create a grader");
-    assert.equal(proposedCount(),initial);
-    await fill(designer+" [data-gd-brief=metrics]","Disposition rationale\nInspection record citation");
-    await click(designer+" [data-gd-action=design]");
-    await wait(()=>exists(designer+" [data-gd-check='1']"),"Two editable proposals");
+    const initial=proposedCount(), planStart=calls.length;
+    await click("#wf-suggest");
+    await wait(()=>exists("#wf-chosen-metrics"),"Shared suggestions inside Create a grader");
+    assert.ok(await js("document.querySelector('#wf-measures').innerText.includes('Why these metrics?')"));
+    const readyCalls=calls.filter(c=>c.stage==="expert").length;
+    await click("#wf-design");
+    await wait(()=>exists("#wf-prompt"),"Shared editable prompt review inside Create a grader");
+    assert.equal(calls.filter(c=>c.stage==="expert").length,readyCalls,"Draft reused the unchanged audited suggestion");
+    const approvedTask=goal+"\n\nRequire a quoted active drawing revision and the inspection lot ID.";
+    await fill("#wf-prompt",approvedTask);
+    const reviewedMetrics=["Disposition rationale","Inspection record citation"];
+    await fill("#wf-review-metrics",reviewedMetrics.join("\n"));
+    assert.equal(calls.slice(planStart).some(c=>c.stage==="grader-plan"),false,"No grader proposal before prompt approval");
+    await click("#wf-approve");
+    await wait(()=>exists(designer+" [data-gd-check='1']"),"Two editable proposals for the approved prompt and metrics");
+    assert.ok(await js("document.querySelector('.gd-model + details.gd-explanation > summary')?.textContent==='Reasoning summary'"),"Rationale is directly beneath the model");
+    assert.equal(await js("document.querySelector('.gd-explanation').open"),false);
+    await click(".gd-explanation summary");
+    assert.ok(await js("document.querySelector('.gd-explanation li p').innerText.trim().length>0"));
+    assert.ok(await js("document.querySelector('.gd-proposals [data-gd-field=criteria]').value.trim().length>0"),"The actual editable rule is visible in the review");
+    assert.equal(await js("document.querySelector('.gd-diagnostics').open"),false);
+    await click(".gd-diagnostics summary");
+    assert.ok(await js("document.querySelector('.gd-diagnostics').innerText.includes('runtime reported a normal stop')"),"Completion diagnostics are explained separately");
+    const planCall=calls.slice(planStart).find(c=>c.stage==="grader-plan");
+    const planBrief=z.object({approvedPrompt:z.string(),objective:z.string(),metrics:z.array(z.string()),industry:z.string(),referenceCoverage:z.string()}).parse(planCall?.brief);
+    assert.deepEqual(planBrief,{approvedPrompt:approvedTask,objective:goal,metrics:reviewedMetrics,industry:"Manufacturing",referenceCoverage:"all"});
+    assert.deepEqual(await js("JSON.stringify(modelSelections.quick.lanes)"),quickSelectionBefore);
+    assert.equal(proposedCount(),initial,"Approving the prompt and proposing checks does not save a grader");
     const proposal=designer+" [data-gd-check='0']";
     assert.equal(await text("document.querySelector("+q(proposal+" [data-gd-field=name]")+").value"),"Inspection disposition reasoning");
     assert.equal(await text("document.querySelector("+q(proposal+" [data-gd-field=threshold]")+").value"),"0.9");
@@ -758,7 +879,6 @@ async function smoke() {
     const versionId=(n:number)=>db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.name')=? AND version=?").get("Inspection disposition evidence",n)?.id;
     await wait(()=>versionId(1),"Saved local decision grader");
     const localId=z.string().parse(versionId(1));
-    const manualCount=()=>Number(db.prepare("SELECT count(*) n FROM assessments WHERE run IS NULL").get()?.n);
     async function provideSample(id:string,output:string,reference:string) {
       await wait(()=>exists('#grade-sample [value="'+id+'"]'),"Grader available to assess");
       await fill("#grade-sample [name=grader]",id);
@@ -855,13 +975,12 @@ async function smoke() {
       const item=pick(provider);
       if(await js("document.querySelector("+q(item)+").getAttribute('aria-pressed')")!=="true")await click(item);
     }
-    const runCount=()=>Number(db.prepare("SELECT count(*) n FROM runs").get()?.n),beforeHostedRun=runCount();
+    const beforeHostedRun=runCount();
     await click("#setup .go-button");
     assert.match(await text("window.consentPrompts.at(-1)"),/Quick comparison/);
     assert.equal(runCount(),beforeHostedRun);
     await route("new");
     await fill("#pack","manufacturing");
-    const inspectionId=z.string().parse(db.prepare("SELECT id FROM datasets WHERE pack='manufacturing' ORDER BY rowid LIMIT 1").get()?.id);
     await fill("#ds",inspectionId);
     await reveal('[name=custom-grader][value="'+hostedId+'"]');
     await click('[name=custom-grader][value="'+hostedId+'"]');
@@ -903,7 +1022,6 @@ async function smoke() {
     // Customize a shipped check, change its scoring method in a new revision,
     // and find two saved runs from the exact grader version.
     for(const section of ["general","industry","customer"])assert.ok(await exists('[data-catalog-scope="'+section+'"]'));
-    const shippedId=(key:string)=>z.string().parse(db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.ruleKey')=? AND json_extract(spec,'$.library.scope')!='customer'").get(key)?.id);
     const original=shippedId("response-present");
     await click('[data-customize="'+original+'"]');
     await wait(()=>js("document.querySelector('#grade-create [name=criteria]').readOnly"),"Deterministic catalog criterion pinned");
@@ -1058,6 +1176,38 @@ async function smoke() {
     assert.equal(repeated.parentId,largeParent.id);
     assert.deepEqual(repeated.caseIds,largeParent.caseIds);
     assert.deepEqual(repeated.graders,largeParent.graders);
+
+    // Design from a snapshot to verify actual automatic assignments in the operator's review.
+    await route("new");await fill("#ds",inputOnly);
+    const coveragePanel='[data-gd-scope="dataset:'+inputOnly+'"] ';
+    await reveal(coveragePanel+"[data-gd-brief=objective]");
+    await fill(coveragePanel+"[data-gd-brief=objective]","Review the synthetic lot response.");
+    const coverageReason="The response-presence check detects an empty answer.";
+    const initialCount=proposedCount();
+    for(const measures of [["Response present"],["Response present","Disposition reasoning","Reduce operating costs"]]){
+      await fill(coveragePanel+"[data-gd-brief=metrics]",measures.join("\n"));
+      await click(coveragePanel+"[data-gd-action=design]");
+      await wait(()=>exists(coveragePanel+".gd-proposals"),"Review actual automatic coverage");
+      const title=await text("document.querySelector("+q(coveragePanel+".gd-proposals h3")+").textContent");
+      assert.equal(title,measures.length===1?"Existing graders cover all measures":"Review the proposed grader");
+      await click(coveragePanel+".gd-explanation summary");
+      const reasoning=await text("document.querySelector("+q(coveragePanel+".gd-explanation")+").innerText");
+      assert.match(reasoning,/Response present v1/);
+      assert.ok(reasoning.includes(coverageReason));
+      if(measures.length===1){
+        assert.equal(await exists(coveragePanel+"[data-gd-action=confirm]"),false);
+        assert.equal(await text("document.querySelector("+q(coveragePanel+"[data-gd-action=discard]")+").textContent"),"Done");
+      }else{
+        assert.ok(reasoning.includes("Reduce operating costs"));
+        assert.ok(reasoning.includes("Disposition reasoning"));
+      }
+      const draft=z.object({covered:z.array(z.object({measure:z.string(),reason:z.string(),grader:z.object({id:z.string(),version:z.number(),name:z.string()})}))})
+        .parse(JSON.parse(z.string().parse(db.prepare("SELECT draft FROM grader_design_drafts ORDER BY rowid DESC LIMIT 1").get()?.draft)));
+      assert.deepEqual(draft.covered,[{measure:"Response present",reason:coverageReason,grader:{id:shippedId("response-present"),version:1,name:"Response present"}}]);
+      await click(coveragePanel+"[data-gd-action=discard]");
+    }
+    assert.equal(proposedCount(),initialCount);
+
   } finally {
     decisionOrigin="";
     server.closeAllConnections();server.close();
@@ -1067,7 +1217,7 @@ async function smoke() {
 
 app.whenReady().then(smoke).then(() => {
   console.log("Workflow smoke passed: mobile planning, automatic Quick judging, winner and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader consent, catalog forks, pinned prior revisions across two runs, native metric defaults and version-specific run links.");
-  rmSync(profile, { recursive: true, force: true });
+  rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   app.exit(0);
 }).catch(err => {
   console.error(err, "\nIsolated test profile:", profile);
