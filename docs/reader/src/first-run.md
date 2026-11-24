@@ -21,6 +21,10 @@ After `npm ci`, double-click **Open DASH.command** in `dash-desktop/`. It builds
 
 Finder shows the red D launcher. The running workbench uses the same Dock mark, the title **DASH — Domain Assessment & Scoring Harness**, and the tagline in **About DASH**. The launcher starts the installed Electron development runtime, which macOS may identify as Electron in system tools. Both launch methods use the existing DASH profile.
 
+### When the desktop cannot open
+
+Read the startup dialog before retrying. For an interrupted file read, make the checkout and installed dependencies available locally. For a permissions or disk error, check the workspace drive and profile folder. Keep the existing profile so its saved runs can be recovered. When a command says the running version is outdated, copy any unsaved objective or edits, quit DASH completely, and reopen the launcher. Opening the launcher while DASH is running focuses the existing process.
+
 ## Find an incorrect earnings figure
 
 1. Open **Dataset run** and choose **Earnings release capture**.

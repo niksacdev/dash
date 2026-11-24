@@ -68,13 +68,32 @@ export async function cachePublicFile(file: string, expected: string, download: 
   atomicWrite(file, bytes, 0o644);
 }
 
+async function replyBytes(response:Response,maxBytes:number):Promise<Buffer> {
+  if (!response.body) throw Error("The service returned an empty response.");
+  if (Number(response.headers.get("content-length"))>maxBytes) {
+    await response.body.cancel().catch(()=>{});
+    throw Error("The service response exceeded the permitted size.");
+  }
+  const chunks:Uint8Array[]=[];
+  let size=0;
+  for await(const chunk of response.body) {
+    size+=chunk.byteLength;
+    if (size>maxBytes) throw Error("The service response exceeded the permitted size.");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks,size);
+}
+
 async function prepare(): Promise<void> {
   for (const [name, expected] of Object.entries(files)) {
     await cachePublicFile(join(upstream, name), expected, async () => {
       const response = await fetch(`https://raw.githubusercontent.com/comet-ml/opik/${revision}/deployment/docker-compose/${name}`,
         { redirect: "error", signal: AbortSignal.timeout(30000) });
-      if (!response.ok) throw Error(`Could not download upstream ${name} (HTTP ${response.status}).`);
-      return new Uint8Array(await response.arrayBuffer());
+      if (!response.ok) {
+        await response.body?.cancel().catch(()=>{});
+        throw Error("Could not download upstream "+name+" (HTTP "+response.status+").");
+      }
+      return replyBytes(response,1_048_576);
     });
   }
   chmodSync(join(upstream, "clickhouse_config"), 0o755);
@@ -92,13 +111,21 @@ const cliEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) =>
   /^(PATH|HOME|USER|USERPROFILE|APPDATA|LOCALAPPDATA|SYSTEMROOT|SystemRoot|TMP|TEMP|TMPDIR|LANG|XDG_RUNTIME_DIR|XDG_CONFIG_HOME|DOCKER_CONFIG|DOCKER_CONTEXT|DOCKER_HOST|DOCKER_TLS_VERIFY|DOCKER_CERT_PATH|SSH_AUTH_SOCK|HTTP_PROXY|NO_PROXY|HTTPS_PROXY)$/i.test(k)));
 Object.assign(cliEnv, { COMPOSE_DISABLE_ENV_FILE: "1", OPIK_VERSION: "2.2.144", COMPOSE_PARALLEL_LIMIT: "3" });
 
+function launchError(error:unknown):Error {
+  const code=typeof error==="object" && error!==null && "code" in error ? error.code : undefined;
+  if(code==="ENOENT") return Error("Docker CLI was not found. Install Docker with the Compose plugin and reopen the terminal.");
+  if(code==="ETIMEDOUT") return Error("The Docker command timed out. Check the local engine and run npm run opik:status before retrying.");
+  return Error("Docker could not complete the command. Check the selected local Docker context and engine.");
+}
 function docker(...args: string[]): string {
-  return execFileSync("docker", args, { env: cliEnv, encoding: "utf8", timeout: 30000,
-    stdio: ["ignore","pipe","pipe"] }).trim();
+  try {
+    return execFileSync("docker", args, { env: cliEnv, encoding: "utf8", timeout: 30000,
+      stdio: ["ignore","pipe","pipe"] }).trim();
+  } catch(error) {throw launchError(error);}
 }
 function action(args: string[], timeout: number): void {
   const result = spawnSync("docker", args, { env: cliEnv, stdio: "inherit", timeout });
-  if (result.error) throw result.error;
+  if (result.error) throw launchError(result.error);
   if (result.status !== 0) throw Error("Docker failed. Run npm run opik:status to inspect the local stack.");
 }
 function engine(start: boolean): void {
@@ -152,10 +179,17 @@ export async function healthy(request: typeof fetch = fetch): Promise<boolean> {
   try {
     const options = { redirect: "error" as const, signal: AbortSignal.timeout(4000) };
     const nginx = await request(origin + "/health", options);
-    if (!nginx.ok || (await nginx.text()).trim() !== "healthy") return false;
+    if (!nginx.ok) {
+      await nginx.body?.cancel().catch(()=>{});
+      return false;
+    }
+    if ((await replyBytes(nginx,1024)).toString("utf8").trim() !== "healthy") return false;
     const api = await request(origin + "/api/v1/private/projects?size=1", options);
-    if (!api.ok || !api.headers.get("content-type")?.includes("application/json")) return false;
-    const page: unknown = await api.json();
+    if (!api.ok || !api.headers.get("content-type")?.includes("application/json")) {
+      await api.body?.cancel().catch(()=>{});
+      return false;
+    }
+    const page:unknown=JSON.parse((await replyBytes(api,1_048_576)).toString("utf8"));
     return !!page && typeof page === "object" && "content" in page && Array.isArray(page.content) &&
       "total" in page && typeof page.total === "number";
   } catch { return false; }

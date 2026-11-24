@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import * as os from "node:os";
 import { z } from "zod";
+import { operatorProviderMessage } from "./lib/provider-errors.cjs";
+import { desktopFailure } from "./lib/desktop-errors.cjs";
 import { Bench } from "./lib/bench.cjs";
 import { PromptGuide } from "./lib/prompt-guide.cjs";
 import { OpikExperiments } from "./lib/opik-experiments.cjs";
@@ -26,12 +28,13 @@ type Command = Exclude<keyof DashBridge,"onPlanningStage">;
 type Reply<K extends Command> = Awaited<ReturnType<DashBridge[K]>>;
 
 function bind<K extends Command>(name:K, handler:(...args:unknown[])=>Reply<K>|Promise<Reply<K>>, minimumArgs=handler.length):void {
-  ipcMain.handle("dash:"+name,(event,...args:unknown[])=>{
+  ipcMain.handle("dash:"+name,async (event,...args:unknown[])=>{
     const frame=event.senderFrame;
     if (!win || win.isDestroyed() || !frame || event.sender!==win.webContents ||
         frame!==win.webContents.mainFrame || frame.url.split("#")[0]!==pageUrl) throw Error("Invalid sender.");
     if (args.length<minimumArgs || args.length>handler.length) throw Error("Invalid arguments for "+name+".");
-    return handler(...args);
+    try { return await handler(...args); }
+    catch (error) { throw Error(desktopFailure(name,error)); }
   });
 }
 
@@ -75,7 +78,10 @@ function initialize():void {
   bind("refresh",()=>bench.refresh());
   bind("loadLocalModel",raw=>bench.loadLocalModel(z.string().min(1).max(300).parse(raw)));
   bind("dataset",raw=>bench.dataset(identifier(raw)));
-  bind("detail",raw=>bench.detail(identifier(raw)));
+  bind("detail",raw=>{
+    const run=bench.detail(identifier(raw));
+    return {...run,results:run.results.map(row=>row.error ? {...row,error:operatorProviderMessage(row.error)} : row)};
+  });
   const cursorNumber=z.number().int().nonnegative().safe();
   bind("runProgress",(id,revision,offset)=>bench.runProgress(identifier(id),cursorNumber.parse(revision),cursorNumber.parse(offset)));
   bind("guidePrompt",value=>bench.active || bench.modelLoading ? {status:"busy"} : bench.withRuntimeUse(()=>guide.suggest(value)));
@@ -136,13 +142,27 @@ function initialize():void {
   bind("performance",value=>performance(bench.db,identifier(value)));
   bind("opikExperimentStatus",value=>opik.status(identifier(value)));
   bind("syncOpikExperiment",value=>opik.sync(identifier(value)));
-  bind("openOpikDashboard",()=>{
+  bind("openOpikDashboard",async ()=>{
     if (!opik.config.configured || !opik.config.dashboard) throw Error("No Opik dashboard was configured.");
-    return shell.openExternal(opik.config.dashboard);
+    try { await shell.openExternal(opik.config.dashboard); }
+    catch { throw Error("DASH could not open the Opik dashboard in your browser. Check the default browser and the configured dashboard address."); }
   });
   bind("start",value=>{
     const parsed=startRequest.safeParse(value);
-    if (!parsed.success) throw Error("Invalid run configuration.");
+    if (!parsed.success) {
+      const field=parsed.error.issues[0]?.path[0];
+      const guidance:Record<string,string>={
+        mode:"Open Quick compare or Dataset run to select a run type.",
+        candidateIds:"Choose one or two models from the current roster.",
+        datasetId:"Select the dataset snapshot again.",
+        approvedPromptId:"Choose an approved prompt version.",
+        graderIds:"Choose up to eight saved grader versions.",
+        inputCap:"Use a positive whole number for the input token limit.",
+        outputCap:"Use a positive whole number for the output token limit.",
+      };
+      const next=typeof field==="string" ? guidance[field] : undefined;
+      throw Error("Invalid run configuration. "+(next ?? "Review the run setup and its selected versions."));
+    }
     const request:StartRun={...parsed.data,datasetId:parsed.data.datasetId ?? undefined};
     if (request.parentId) bench.detail(request.parentId);
     guide.cancel();
@@ -177,10 +197,16 @@ function initialize():void {
     const target=await dialog.showSaveDialog(owner(),{title:"Export this run",defaultPath:"DASH-"+key+".json",filters:[{name:"JSON",extensions:["json"]}]});
     if (target.canceled || !target.filePath) return false;
     const temp=path.join(path.dirname(target.filePath),".dash-"+randomUUID()+".tmp");
-    try{
-      await fs.writeFile(temp,JSON.stringify(saved,null,2)+"\n",{flag:"wx",mode:0o600});
+    const file=await fs.open(temp,"wx",0o600);
+    try {
+      try { await file.writeFile(JSON.stringify(saved,null,2)+"\n"); }
+      finally { await file.close(); }
       await fs.rename(temp,target.filePath);
-    } finally {await fs.rm(temp,{force:true});}
+    } catch (error) {
+      // Cleanup is best-effort. Retain the reason the requested export failed.
+      await fs.rm(temp,{force:true}).catch(()=>{});
+      throw error;
+    }
     return true;
   });
 }

@@ -121,7 +121,9 @@ test("model boundary excludes reference labels and distinguishes runtime failure
   assert.equal(run.results.length, 8);
   assert.equal(scoreOf(run.results[0]).review, true);
   assert.equal(run.results[1].score, null);
-  assert.equal(run.results[1].error, "test provider refused this request");
+  assert.equal(b.detail(run.manifest.id).results[1].error,"test provider refused this request");
+  assert.ok(run.results[1].error);
+  assert.ok(!run.results[1].error.includes("test provider refused"));
   assert.equal(run.results[1].dispatchState,undefined);
   b.db.close();
 });
@@ -407,11 +409,13 @@ test("storage errors stop a queued job before inference and terminal report erro
   assert.equal(partial.results[0].score,null);
   assert.equal(calls,1);
   b.db.exec("DROP TRIGGER deny_final");
-  const logged=t.mock.method(console,"error",()=>{});
   b.db.exec("CREATE TRIGGER deny_report BEFORE INSERT ON run_reports BEGIN SELECT RAISE(FAIL,'report storage unavailable'); END");
   const finished=start();await completion(b);
   assert.equal(b.active,null);
-  assert.equal(logged.mock.callCount(),1);
+  const uncached=b.exportRun(finished);
+  assert.match(present(uncached.report?.cacheIssue),/rebuilt from the saved case results/);
+  assert.equal(uncached.status,"completed");
+  assert.equal(uncached.results[0].output,"blue");
   b.db.exec("DROP TRIGGER deny_report");
   assert.equal(b.exportRun(finished).status,"completed");
   assert.equal(b.exportRun(finished).results[0].output,"blue");

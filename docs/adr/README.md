@@ -40,6 +40,7 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0021 · Planning activity](0021-planning-activity.md) | Accepted | The per-query activity and usage display landed on main. | [PR #24](https://github.com/niksacdev/dash/pull/24) |
 | 2026-11-24 | [0022 · Review metric feasibility](0022-review-metrics-and-grader-drafts.md) | Proposed | Review proposed measures against available evidence, explain prompt additions, and reuse grader design at library creation. | [Workflow](../reviews/outcome-workflow.md) |
 | 2026-11-24 | [0022 · Review metric feasibility](0022-review-metrics-and-grader-drafts.md) | Accepted | Nik requested an independent measurability check, inspectable prompt decisions and editable metric-based grader suggestions before saving. | [Grader design](../reader/src/graders.md) |
+| 2026-11-24 | [0023 · Workflow failures](0023-workflow-failures.md) | Proposed | Preserve each stage’s confirmed outcome and give a recovery action that respects dispatch and storage evidence. | [Audit](../reviews/error-handling.md) |
 
 ## Maintaining the history
 

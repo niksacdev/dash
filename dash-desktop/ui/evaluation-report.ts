@@ -58,6 +58,7 @@ function evaluationReport(run: UiRunDetail) {
   })[r.verdict] || "Evaluation report";
   return '<section class="er-report" aria-labelledby="er-title" data-verdict="'+esc(r.verdict)+'">'+
     '<div class="er-intro"><small class="er-kicker">Evaluation report</small><h2 id="er-title">'+esc(headline)+'</h2><p>'+esc(r.summary)+'</p></div>'+
+    (r.cacheIssue ? '<p class="note">'+esc(r.cacheIssue)+'</p>' : "")+
     (r.metrics.length?'<div class="er-metrics">'+r.metrics.map((m,i)=>
       '<article class="er-metric"><div class="er-metric-head"><div><small>'+(m.informational?'Response diagnostic · ':'')+(m.lineage?esc(m.lineage.scope)+' library · ':'')+esc(scoreMethod(m.method))+(m.judge?' · '+esc(m.judge)+(r.candidates.some(c=>c.id===m.judge)?' · also a candidate':''):'')+'</small><h3>'+esc(m.label)+'</h3></div>'+
       '<span>'+esc(m.pairedCases)+' / '+esc(m.totalCases)+' matched cases</span></div>'+

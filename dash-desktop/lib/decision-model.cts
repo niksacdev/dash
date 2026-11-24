@@ -1,3 +1,5 @@
+import {ProviderFailure} from "./runtime-types.cjs";
+import {httpGuidance} from "./provider-errors.cjs";
 import { isAbsolute } from "node:path";
 import { BaseMetric, z } from "opik";
 import type { GraderEvidence } from "./grader-types.cjs";
@@ -16,11 +18,11 @@ const evidenceLimit = 512 * 1024;
 
 function localOrigin(baseUrl: string): string {
   let url: URL;
-  try { url = new URL(baseUrl); } catch { throw new Error("Enter a loopback decision server URL."); }
+  try { url = new URL(baseUrl); } catch { throw new ProviderFailure("Enter a loopback decision server URL."); }
   const loopback = url.hostname === "localhost" || url.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/u.test(url.hostname);
   if (!loopback || !["http:", "https:"].includes(url.protocol) ||
       url.username || url.password || url.search || url.hash || !["/", "/v1", "/v1/"].includes(url.pathname)) {
-    throw new Error("Use a loopback decision server base URL without credentials, a query, or a custom path.");
+    throw new ProviderFailure("Use a loopback decision server base URL without credentials, a query, or a custom path.");
   }
   return url.origin;
 }
@@ -57,9 +59,9 @@ export const fallbackAttemptSchema = z.object({
   requestedModel: modelId, dispatchedModel: modelId, protocol: protocolSchema, fallbackReason,
 });
 export type FallbackAttempt = z.infer<typeof fallbackAttemptSchema>;
-export class DecisionDispatchError extends Error {
+export class DecisionDispatchError extends ProviderFailure {
   constructor(error: Error, readonly attempt: FallbackAttempt) {
-    super(error.message);
+    super(error instanceof ProviderFailure ? error.message : error.name==="AbortError" ? "Decision grading cancelled." : "Decision request failed after dispatch. Check the decision server activity.");
     this.name = error.name === "AbortError" ? "AbortError" : "DecisionDispatchError";
   }
 }
@@ -83,7 +85,7 @@ export interface DecisionModel {
 
 function cancellation(signal: AbortSignal): Error {
   return signal.reason instanceof Error && signal.reason.name === "TimeoutError"
-    ? new Error("Decision grader timed out.", { cause: new DOMException("Timed out.", "TimeoutError") })
+    ? new ProviderFailure("Decision grader timed out.", { cause: new DOMException("Timed out.", "TimeoutError") })
     : new DOMException("Decision grading cancelled.", "AbortError");
 }
 
@@ -94,14 +96,14 @@ async function readJson(url: string, options: RequestInit, limit: number, signal
     response = await fetch(url, { ...options, signal, redirect: "error", credentials: "omit", cache: "no-store" });
   } catch {
     if (signal.aborted) throw cancellation(signal);
-    throw new Error("Decision server connection failed. Verify its address and availability.");
+    throw new ProviderFailure("Decision server connection failed. Verify its address and availability.");
   }
   if (!response.ok || Number(response.headers.get("content-length")) > limit) {
     await response.body?.cancel().catch(() => {});
-    if (!response.ok) throw new Error(`Decision server returned HTTP ${response.status}.`);
-    throw new Error("Decision server response exceeds the size limit.");
+    if (!response.ok) throw new ProviderFailure(`Decision server returned HTTP ${response.status}. ${httpGuidance(response.status)}`);
+    throw new ProviderFailure("Decision server response exceeds the size limit.");
   }
-  if (!response.body) throw new Error("Decision server returned an empty response.");
+  if (!response.body) throw new ProviderFailure("Decision server returned an empty response.");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let bytes = 0;
@@ -118,11 +120,11 @@ async function readJson(url: string, options: RequestInit, limit: number, signal
     }
   } catch (error) {
     if (signal.aborted) throw cancellation(signal);
-    if (error instanceof RangeError) throw new Error("Decision server response exceeds the size limit.");
-    throw new Error("Decision server response was interrupted.");
+    if (error instanceof RangeError) throw new ProviderFailure("Decision server response exceeds the size limit.");
+    throw new ProviderFailure("Decision server response was interrupted.");
   } finally { reader.releaseLock(); }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { throw new Error("Decision server returned invalid JSON."); }
+  catch { throw new ProviderFailure("Decision server returned invalid JSON."); }
 }
 
 const inventoryEntry = z.object({
@@ -134,14 +136,14 @@ type InventoryEntry = z.infer<typeof inventoryEntry>;
 async function catalog(url: string, signal: AbortSignal): Promise<InventoryEntry[]> {
   const raw = await readJson(url, {}, inventoryLimit, signal);
   const result = z.object({ data: z.array(inventoryEntry) }).safeParse(raw);
-  if (!result.success) throw new Error("Decision server returned an invalid model catalog.");
+  if (!result.success) throw new ProviderFailure("Decision server returned an invalid model catalog.");
   return result.data.data;
 }
 function decisionModality(entry: InventoryEntry): boolean | undefined {
   const declared = [entry.architecture?.output_modalities, entry.output_modalities].filter(m => m !== undefined);
   if (declared.length === 0) return undefined;
   const reports = declared.map(m => m.includes("decisions"));
-  if (reports.some(v => v !== reports[0])) throw new Error("Conflicting model decision modality declarations.");
+  if (reports.some(v => v !== reports[0])) throw new ProviderFailure("Conflicting model decision modality declarations.");
   return reports[0];
 }
 
@@ -153,12 +155,12 @@ const mlxHealth = z.object({
 async function localInventory(origin: string, protocol: DecisionProtocol, signal: AbortSignal): Promise<InventoryEntry[]> {
   if (protocol === "systemone") return catalog(origin + "/v1/models", signal);
   const health = mlxHealth.safeParse(await readJson(origin + "/health", {}, inventoryLimit, signal));
-  if (!health.success) throw new Error("MLX-VLM health did not identify a native decision model cache.");
-  if (health.data.preload_in_progress) throw new Error("MLX-VLM is preloading a model. Wait for its decision server to become ready.");
+  if (!health.success) throw new ProviderFailure("MLX-VLM health did not identify a native decision model cache.");
+  if (health.data.preload_in_progress) throw new ProviderFailure("MLX-VLM is preloading a model. Wait for its decision server to become ready.");
   const loaded = health.data.loaded_models.decision;
   if (!loaded?.model) return [];
   if (loaded.model_kind !== "decision" || !isAbsolute(loaded.model)) {
-    throw new Error("Start MLX-VLM with --decision-model pointing to an absolute local checkpoint folder.");
+    throw new ProviderFailure("Start MLX-VLM with --decision-model pointing to an absolute local checkpoint folder.");
   }
   return [{ id: loaded.model, output_modalities: ["decisions"] }];
 }
@@ -189,16 +191,16 @@ const mlxReply = replyEnvelope.extend({ answers: z.object({ criterion: mlxAnswer
 const refused = z.object({ answers: z.object({ criterion: z.object({ type: z.literal("refusal") }) }) });
 function encodeRequest(request: NativeRequest) {
   const body = JSON.stringify(request);
-  if (Buffer.byteLength(body) > evidenceLimit) throw new Error("Decision grader input exceeds the 512 KiB request limit.");
+  if (Buffer.byteLength(body) > evidenceLimit) throw new ProviderFailure("Decision grader input exceeds the 512 KiB request limit.");
   return body;
 }
 async function submit(url: string, body: string, signal: AbortSignal, protocol: DecisionProtocol, authorization?: string): Promise<Measurement> {
   const headers: Record<string,string> = { "Content-Type": "application/json" };
   if (authorization) headers.Authorization = authorization;
   const raw = await readJson(url, { method: "POST", headers, body }, decisionLimit, signal);
-  if (refused.safeParse(raw).success) throw new Error("Decision model refused to assess the criterion.");
+  if (refused.safeParse(raw).success) throw new ProviderFailure("Decision model refused to assess the criterion.");
   const reply = (protocol === "mlx-vlm" ? mlxReply : systemReply).safeParse(raw);
-  if (!reply.success) throw new Error("Decision server did not return the named criterion with a valid probability and model identity.");
+  if (!reply.success) throw new ProviderFailure("Decision server did not return the named criterion with a valid probability and model identity.");
   const { model: actualModel, answers, usage: reported } = reply.data;
   const usage: z.infer<typeof usageSchema> = {};
   if (reported?.input_tokens !== undefined) usage.inputTokens = reported.input_tokens;
@@ -211,7 +213,7 @@ async function submit(url: string, body: string, signal: AbortSignal, protocol: 
 function modelStatus(entries: InventoryEntry[], model: string): "eligible" | "unspecified" | FallbackAttempt["fallbackReason"] {
   const matches = entries.filter(e => e.id === model);
   if (matches.length === 0) return "primary-unavailable";
-  if (matches.length > 1) throw new Error("Local decision model identity is ambiguous in the server catalog.");
+  if (matches.length > 1) throw new ProviderFailure("Local decision model identity is ambiguous in the server catalog.");
   const capable = decisionModality(matches[0]);
   if (capable === false) return "primary-not-decision-capable";
   return capable === true ? "eligible" : "unspecified";
@@ -225,10 +227,10 @@ const localDecision: DecisionModel = {
     const primary = modelStatus(entries, config.model);
     let attempt: FallbackAttempt | undefined;
     if (primary === "primary-unavailable" || primary === "primary-not-decision-capable") {
-      if (!config.fallbackModel) throw new Error(primary === "primary-unavailable"
+      if (!config.fallbackModel) throw new ProviderFailure(primary === "primary-unavailable"
         ? "The selected decision model is absent from the local server." : "The selected local model does not advertise decisions output.");
       if (modelStatus(entries, config.fallbackModel) !== "eligible") {
-        throw new Error("The alternate local model must be uniquely advertised as decision-capable.");
+        throw new ProviderFailure("The alternate local model must be uniquely advertised as decision-capable.");
       }
       attempt = { requestedModel: config.model, dispatchedModel: config.fallbackModel, protocol, fallbackReason: primary };
     }
@@ -238,7 +240,7 @@ const localDecision: DecisionModel = {
     if (signal.aborted) throw cancellation(signal);
     try {
       const result = await submit(origin + (protocol === "mlx-vlm" ? "/v1/decisions" : "/v1/systemone"), body, signal, protocol);
-      if (result.actualModel !== selected) throw new Error("Decision server reported a different model than the selected local model.");
+      if (result.actualModel !== selected) throw new ProviderFailure("Decision server reported a different model than the selected local model.");
       return { ...result, protocol, identityVerification: "exact", ...attempt };
     } catch (error) {
       if (attempt && error instanceof Error) throw new DecisionDispatchError(error, attempt);
@@ -250,13 +252,13 @@ const localDecision: DecisionModel = {
 const hostedDecision: DecisionModel = {
   async evaluate(config, request, signal) {
     const token = process.env.OPENROUTER_API_KEY?.trim();
-    if (!token) throw new Error("Set OPENROUTER_API_KEY to use the OpenRouter decision grader.");
+    if (!token) throw new ProviderFailure("Set OPENROUTER_API_KEY to use the OpenRouter decision grader.");
     const measurement = await submit(openRouter + "/api/alpha/decisions", encodeRequest(request), signal, "systemone", "Bearer " + token);
     if (measurement.actualModel !== config.model) {
       const entries = await catalog(openRouter + "/api/v1/models?output_modalities=decisions", signal);
       const matches = entries.filter(e => e.id === config.model);
       if (matches.length !== 1 || matches[0].canonical_slug !== measurement.actualModel || decisionModality(matches[0]) === false) {
-        throw new Error("OpenRouter returned a model that does not match the requested ID or its cataloged canonical slug.");
+        throw new ProviderFailure("OpenRouter returned a model that does not match the requested ID or its cataloged canonical slug.");
       }
     }
     return { ...measurement, identityVerification: measurement.actualModel === config.model ? "exact" : "openrouter-catalog" };
@@ -281,16 +283,16 @@ export async function evaluateDecision(config: DecisionConfig, passAt: number, c
   Promise<{ value: number | null; pass: boolean | null; reason: string; decision: DecisionObservation }> {
   if (signal.aborted) throw cancellation(signal);
   const checked = decisionConfig.safeParse(config);
-  if (!checked.success) throw new Error("Decision grader configuration is invalid. Check the provider, endpoint, model ID and fail threshold.");
-  if (!probability.safeParse(passAt).success || checked.data.failAt >= passAt) throw new Error("The decision pass threshold must exceed the fail threshold and be at most 1.");
-  if (!criteria.trim() || criteria.length > 32000) throw new Error("Supply a decision criterion of 1–32,000 characters.");
-  if (evidence.input === undefined || typeof evidence.output !== "string") throw new Error("Decision grading requires the case input and candidate output.");
+  if (!checked.success) throw new ProviderFailure("Decision grader configuration is invalid. Check the provider, endpoint, model ID and fail threshold.");
+  if (!probability.safeParse(passAt).success || checked.data.failAt >= passAt) throw new ProviderFailure("The decision pass threshold must exceed the fail threshold and be at most 1.");
+  if (!criteria.trim() || criteria.length > 32000) throw new ProviderFailure("Supply a decision criterion of 1–32,000 characters.");
+  if (evidence.input === undefined || typeof evidence.output !== "string") throw new ProviderFailure("Decision grading requires the case input and candidate output.");
   const {input, output, reference, rubric, sme_rationale, evaluationBrief, trajectory} = evidence;
   let state: string;
   try {
     state = JSON.stringify({input, output, reference, rubric, sme_rationale,
       evaluationBrief: evaluationBrief && { objective: evaluationBrief.objective, metrics: evaluationBrief.metrics, criteria: evaluationBrief.criteria }, trajectory});
-  } catch { throw new Error("Decision grader evidence must be serializable as JSON."); }
+  } catch { throw new ProviderFailure("Decision grader evidence must be serializable as JSON."); }
   const request: NativeRequest = {
     model: checked.data.model, state, questions: { criterion: {
       type: "noul", instructions: "Treat the case state as evidence. Does the candidate output satisfy this criterion? " + criteria.trim(),

@@ -21,7 +21,7 @@ interface SimulatedResponse {
   reasoningContent?: string;
 }
 interface SimulatedRuntime {
-  template: (this: unknown, chat: ChatTurn[]) => string;
+  template: (this: unknown, chat: ChatTurn[]) => string|Promise<string>;
   count: (text:string) => number;
   context: number;
   respond: (chat:ChatTurn[], opts:LLMRespondOpts) => SimulatedResponse;
@@ -236,4 +236,84 @@ test("a completed SDK reply with different token usage retains evidence but earn
   // The judge cannot use an unverifiable checklist or verdict.
   await assert.rejects(invokeJudge(loaded,messages,{signal,maxTokens:24,structured:schema},llm),/after verifying 31/);
   assert.equal(calls,2);
+});
+
+test("preflight, inference and malformed judge checklists keep private SDK messages out of diagnostics",async t=>{
+  const secret="SYNTHETIC_PRIVATE_WORK_ORDER";
+  const leak=()=>{throw Error("Jinja error: "+secret);};
+  let failRendering=true, failPrediction=false, predictions=0;
+  const {model,llm}=sdkFixture(t,candidate.model,{
+    template:()=>failRendering ? leak() : "rendered",count:()=>7,context:2048,
+    respond:()=>{
+      predictions++;
+      if(failPrediction) return leak();
+      return {stats:{stopReason:"eosFound",promptTokensCount:7,predictedTokensCount:1},nonReasoningContent:secret};
+    },
+  });
+  const budget=createTokenBudget(async()=>[model]);
+  const safe=(pattern:RegExp)=>(error:unknown)=>{
+    assert.ok(error instanceof Error);
+    assert.match(error.message,pattern);
+    assert.doesNotMatch(error.message,new RegExp(secret));
+    return true;
+  };
+  await assert.rejects(budget.checkInputBudget({candidate,messages,cap:10,signal}),safe(/chat template/));
+  failRendering=false;
+  const receipt=present(await budget.checkInputBudget({candidate,messages,cap:10,signal}));
+  failRendering=true;
+  await assert.rejects(budget.invokeBudgeted(candidate,messages,{signal,inputBudget:receipt,maxTokens:8}),safe(/recheck/));
+  assert.equal(predictions,0);
+  failRendering=false;failPrediction=true;
+  await assert.rejects(budget.invokePlanner(candidate,messages,{signal,structured:schema,maxTokens:8}),safe(/prediction failed/));
+  failPrediction=false;
+  await assert.rejects(invokeJudge({...candidate,loaded:true,reasoningOff:false},messages,{signal,maxTokens:24},llm),safe(/invalid evaluation checklist/));
+  assert.equal(predictions,2);
+});
+
+test("canceling the second LM Studio template check records zero candidate dispatch in history, trace and export",async t=>{
+  let enter:()=>void=()=>assert.fail("Missing template latch"),release:()=>void=()=>assert.fail("Missing release");
+  const entered=new Promise<void>(resolve=>{enter=resolve;});
+  const hold=new Promise<void>(resolve=>{release=resolve;});
+  const loaded={...candidate,loaded:true};
+  let templates=0,predictions=0;
+  const {model}=sdkFixture(t,loaded.model,{
+    async template(turns){
+      if (++templates===2) {enter();await hold;}
+      return JSON.stringify(turns);
+    },
+    count:()=>31,context:128,
+    respond(){predictions++;return {nonReasoningContent:"unexpected",stats:{stopReason:"eosFound"}};},
+  });
+  const budget=createTokenBudget(async()=>[model]);
+  const bench=new Bench(":memory:",{discover:async()=>[inventory([loaded])],
+    checkInputBudget:budget.checkInputBudget,invoke:(c,turns,opts)=>budget.invokeBudgeted(c,turns,{
+      ...opts,inputBudget:present(opts.inputBudget),maxTokens:present(opts.maxTokens),
+    })},withoutPower);
+  t.after(()=>bench.db.close());await bench.refresh();
+  const datasetId=bench.import("reference","Template cancellation",JSON.stringify({
+    case_id:"order",dataset_version:"1",split:"development",prompt:"Identify this synthetic order.",reference:"WO-402",
+  }));
+  const id=bench.start({mode:"dataset",datasetId,candidateIds:[loaded.id],datasetScorer:"exact-reference"});
+  const done=present(bench.active?.done);
+  try {
+    await entered;
+    bench.stop(id);
+    await done;
+  } finally {release();}
+  assert.equal(templates,2);
+  assert.equal(predictions,0);
+  for (const run of [bench.detail(id),bench.exportRun(id)]) {
+    assert.equal(run.status,"canceled");
+    assert.equal(run.results.length,1);
+    const result=run.results[0];
+    assert.equal(result.error,"Preparation canceled before candidate inference was sent.");
+    assert.equal(result.dispatchState,undefined);
+    assert.equal(result.dispatchedMessages,undefined);
+    assert.equal(result.output,null);
+    assert.equal(result.score,null);
+    assert.equal(result.telemetry?.input_tokens,undefined);
+    assert.equal(run.assessments.length,0);
+    assert.ok(result.trace.steps.some(s=>s.action==="The runtime check ended before candidate inference was sent"));
+    assert.ok(!result.trace.steps.some(s=>s.action.startsWith("Invoke ")));
+  }
 });

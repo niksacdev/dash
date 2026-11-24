@@ -124,14 +124,16 @@ document.addEventListener("submit",async e=>{
   e.preventDefault();
   const btn=dashElement("button[type=submit]",HTMLButtonElement,f) || f.querySelector("button");
   if (!btn || btn.disabled || (f.id==="dataset-run-form" && !canStartDataset())) return;
+  const stillHere=currentVisit(), workflow=workflows.dataset;
   btn.disabled=true;
+  f.querySelector(":scope > [data-action-error]")?.remove();
   try {
     if (f.id==="planner-fallback") {
       await api.savePlannerFallback({model:formText(f,"model"),key:formText(f,"key"),enabled:requireElement("[name=enabled]",HTMLInputElement,f).checked});
-      await render(); message("Planner preferences saved."); return;
+      if(stillHere()){await render();message("Planner preferences saved.");} return;
     }
     const d=dataset();
-    workflows.dataset.busy="start";
+    workflow.busy="start";
     const ids=selectedModels("dataset");
     const config:UiStartRun={mode:"dataset",datasetId:d.id,candidateIds:ids,graderIds:selectedGraderIds(),animation:!matchMedia("(prefers-reduced-motion: reduce)").matches};
     const scorer=formText(f,"datasetScorer");
@@ -144,13 +146,13 @@ document.addEventListener("submit",async e=>{
     const consent=graderConsentById(config.graderIds,"this dataset run of "+d.count+" cases across "+ids.length+" candidates");
     if(!consent)return;
     const run=await api.start({...config,...consent});
-    workflows.dataset.error=""; baseline=""; location.hash="run/"+run;
+    workflow.error=""; if(stillHere() && workflows.dataset===workflow){baseline="";location.hash="run/"+run;}
   } catch (err) {
-    const msg=String(errorText(err)).replace(/^Error invoking remote method .dash:[^ ]+ Error: /,"");
-    if (f.id==="dataset-run-form") {workflows.dataset.busy="";workflows.dataset.error=msg;await render();}
-    else message(msg);
+    const msg=errorText(err);
+    if (f.id==="dataset-run-form") {workflow.busy="";workflow.error=msg;if(stillHere() && workflows.dataset===workflow)await render();}
+    else inlineError(f,err);
   } finally {
-    if (f.id==="dataset-run-form") workflows.dataset.busy="";
+    if (f.id==="dataset-run-form") workflow.busy="";
     btn.disabled=false;
   }
 });

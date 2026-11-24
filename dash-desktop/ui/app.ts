@@ -18,7 +18,30 @@ function formText(form:HTMLFormElement,name:string):string {
   const field=form.elements.namedItem(name);
   return textInput(field) ? field.value : "";
 }
-function errorText(error:unknown):string {return error instanceof Error ? error.message : String(error);}
+function staleDesktopMethod(error:unknown) {
+  return /No handler registered|(?:api|window\.dash)\.[\w$]+ is not a function/i.test(error instanceof Error?error.message:String(error));
+}
+function errorText(error:unknown):string {
+  if(staleDesktopMethod(error))return "This action is unavailable in the current desktop session. Quit and reopen DASH to load its desktop services.";
+  const raw=error instanceof Error?error.message:String(error);
+  return raw.replace(/^(?:Error: )?(?:Error invoking remote method ['"][^'"]+['"]:\s*(?:Error:\s*)?)+/i,"").trim() || "DASH could not complete this action.";
+}
+function inlineError(host:HTMLElement,error:unknown) {
+  if(!host.isConnected)return;
+  const note=host.querySelector<HTMLElement>(":scope > [data-action-error]") || document.createElement("div");
+  note.dataset.actionError="";note.className="wf-error spacer";note.setAttribute("role","alert");
+  note.textContent=errorText(error);
+  if(!note.isConnected)host.append(note);
+}
+function readFailure(label:string,error:unknown,button:string) {
+  return '<section class="wf-error spacer" data-read-error role="alert"><strong>'+esc(label)+'</strong><p>'+esc(errorText(error))+
+    '</p><button type="button" data-act="retry-read">'+esc(button)+'</button></section>';
+}
+let visit=0;
+function currentVisit() {
+  const started=visit,hash=location.hash;
+  return ()=>started===visit && hash===location.hash;
+}
 function isRecord(value:unknown):value is Record<string,unknown> {return value!==null && typeof value==="object" && !Array.isArray(value);}
 function isRunMode(value:unknown):value is UiMode { return value==="quick" || value==="dataset"; }
 function isGradeType(value:unknown):value is UiGradeType {
@@ -290,10 +313,10 @@ function developerMetric(value:unknown, unit = "") {
     : "—";
 }
 async function developerPage(id?:string) {
-  let server = state.servers.find((s) => s.provider === "lmstudio");
+  let server = state.servers.find((s) => s.provider === "lmstudio"),inventoryFailure="";
   if (!server || Date.now() - Date.parse(server.checkedAt) > 15_000) {
-    const fresh = await api.refresh();
-    server = fresh.find((s) => s.provider === "lmstudio");
+    try{const fresh=await api.refresh();server=fresh.find(s=>s.provider==="lmstudio");}
+    catch(error){inventoryFailure=readFailure("Couldn’t refresh the LM Studio session inventory",error,"Retry session check");}
   }
   const instances = server?.instances;
   let out =
@@ -302,7 +325,7 @@ async function developerPage(id?:string) {
       "Developer",
       "Inspect local model sessions and the traces saved by DASH.",
     ) +
-    bar("LM Studio sessions", btn("Refresh sessions", "refresh")) +
+    bar("LM Studio sessions", btn("Refresh sessions", "refresh")) + inventoryFailure +
     '<section class="panel">' +
     '<div class="row">' +
     tag(server?.online ? "Connected" : server ? "Offline" : "Checking") +
@@ -333,7 +356,6 @@ async function developerPage(id?:string) {
       '<div class="panel">Saved runs will appear here.</div>'
     );
   const key = id || state.runs[0].id;
-  const run = await api.diagnostics(key);
   out +=
     bar("Run traces", link("Open run", "run/" + key, "link")) +
     '<div class="panel"><label class="field"><span>Saved run</span><select id="developer-run">' +
@@ -346,8 +368,11 @@ async function developerPage(id?:string) {
         ),
       )
       .join("") +
-    '</select></label><div class="row">' +
-    tag(run.status, true) +
+    '</select></label>';
+  let run:UiDiagnostic;
+  try{run=await api.diagnostics(key);}
+  catch(error){return out+'</div>'+readFailure("Couldn’t read the saved run traces",error,"Retry traces");}
+  out+='<div class="row">'+tag(run.status, true) +
     tag(run.fixture ? "Fixture replay" : "Local inference") +
     "</div>";
   const counts = run.candidates.map((c) => {
@@ -621,7 +646,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
             ? r.score?.pass
               ? "Passed"
               : "Failed check"
-            : "Response",
+            : r.gradingError ? "Scenario grader unavailable" : "Response",
       ) +
       (m.datasetId ? btn("Rerun case", "rerun") : "") +
       '</div><div class="cols spacer"><div class="panel">' +
@@ -630,6 +655,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
       esc(r.output ?? (r.dispatchState ? "No response text was observed." : r.error)) +
       "</pre>" +
       (r.error ? box(observationLabel(r) ?? "Runtime error", r.error) : "") +
+      (r.gradingError ? '<p class="note">'+esc(r.gradingError)+'</p>' : "") +
       (r.score ? box("Score explanation", r.score) : "") +
       '</div></div><details class="card spacer"><summary>Case trace and telemetry</summary>' +
       box("Trace", r.trace) +
@@ -652,6 +678,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     tag(run.status, true) + (m.mode==="quick" && !m.industry ? "" : tag(m.industry || state.datasets.find(d=>d.id===m.datasetId)?.metadata?.industry || "Industry unrecorded")) +
     (live ? btn("Stop run", "stop") : btn("Export run JSON", "export")) +
     "</div>";
+  if(live)out+='<div id="live-read-status"></div>';
   if (m.error) out += '<div class="wf-error spacer" role="alert">' + esc(m.error) + "</div>";
   if (live && run.partial?.stage) out += '<p role="status">'+esc(run.partial.stage)+' is reviewing the recorded scores…</p>';
   if (m.guardrailFailure) out += guardrailDetails(m.guardrailFailure);
@@ -744,11 +771,11 @@ async function runPage(id:string, record:string|undefined, seq:number) {
               esc(
                 r.error
                   ? observationLabel(r) ?? "Runtime error"
-                  : !r.score ? "Grader evaluation" : r.score?.pass
+                  : r.gradingError ? "Scenario grader unavailable" : !r.score ? "Grader evaluation" : r.score?.pass
                     ? "Passed"
                     : "Failed check",
               ),
-              esc(r.error || r.score?.reasons.join(", ") || (r.score ? "Matched reference" : "See grader scores and rationale")),
+              esc(r.error || r.gradingError || r.score?.reasons.join(", ") || (r.score ? "Matched reference" : "See grader scores and rationale")),
             ]),
           )
         : '<div class="empty">Waiting for case results.</div>') +
@@ -791,13 +818,16 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     "</pre></details>"
   );
 }
-function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.partial?.text?.length ?? 0) {
+function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.partial?.text?.length ?? 0, failures=0) {
   const revision=run.liveRevision;
-  if (revision===null) return;
+  if (revision==null || typeof api.runProgress!=="function") {
+    poll=window.setTimeout(()=>{if(seq===token)void render();},2000);return;
+  }
   poll=window.setTimeout(async () => {
     try {
       const update=await api.runProgress(id,revision,offset);
       if (seq!==token) return;
+      document.getElementById("live-read-status")?.replaceChildren();
       if (update.kind==="refresh") { await render(); return; }
       if (update.kind==="append") {
         const field=document.querySelector<HTMLElement>('[data-live-candidate="'+CSS.escape(update.candidateId)+'"]');
@@ -808,15 +838,24 @@ function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.part
       }
       pollRunProgress(seq,id,run,offset);
     } catch (e) {
-      if (seq===token) message(errorText(e));
+      if(seq!==token)return;
+      const slot=document.getElementById("live-read-status");
+      if(slot && !slot.firstElementChild)slot.innerHTML=readFailure("Live updates paused. Showing the last received result.",e,"Refresh run");
+      if(failures<3)pollRunProgress(seq,id,run,offset,failures+1);
     }
-  },220);
+  },failures ? 1000 * 2**(failures-1) : 220);
 }
+let renderedLocation:string|null=null;
 async function render() {
   const seq = ++token;
   clearTimeout(poll);
   const [route, id, rec] = trail();
-  if (route!=="run") current=null;
+  const place=location.hash;
+  const screen=$("#screen"), replacing=renderedLocation!==place;
+  if(replacing){
+    current=null;
+    screen.innerHTML='<p role="status">Loading workspace…</p>';
+  }
   try {
     const latest = await api.list();
     if (seq !== token) return;
@@ -893,7 +932,8 @@ async function render() {
       document.querySelectorAll("details[open] summary"),
       (el) => el.textContent,
     );
-    $("#screen").innerHTML = html;
+    renderedLocation=place;
+    screen.innerHTML = html;
     if(route==="graders")applyCatalogFilter();
     if (route==="compare") scheduleBudgetPreview();
     if (editing) {
@@ -921,7 +961,10 @@ async function render() {
     )
       pollRunProgress(seq,id,current);
   } catch (e) {
-    if (seq === token) $("#screen").textContent = errorText(e);
+    if(seq!==token)return;
+    const failure=readFailure("Couldn’t load "+(route==="run"?"this run":nav.find(([key])=>key===route)?.[1] || "this view"),e,"Try again");
+    if(replacing){screen.innerHTML=failure;}
+    else {screen.querySelector(":scope > [data-route-failure]")?.remove();screen.insertAdjacentHTML("afterbegin",failure);screen.firstElementChild?.setAttribute("data-route-failure","");}
   }
 }
 document.addEventListener("change", (e) => {
@@ -947,7 +990,7 @@ document.addEventListener("submit", async (e) => {
   e.preventDefault();
   const runMode = workflowMode();
   if (!runMode) return;
-  const w = workflows[runMode];
+  const w = workflows[runMode],stillHere=currentVisit();
   if (!w?.approved || w.busy || state.active) return;
   const form = e.target, approved = w.approved;
   const candidateIds = selectedModels(runMode);
@@ -966,10 +1009,10 @@ document.addEventListener("submit", async (e) => {
       animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
     });
     baseline = "";
-    if (showCurrentWorkflow(w)) location.hash = "run/" + id;
+    if (stillHere() && showCurrentWorkflow(w)) location.hash = "run/" + id;
   } catch (error) {
     w.error = errorText(error);
-    if (showCurrentWorkflow(w)) message(errorText(error));
+
   } finally {
     w.busy = "";
     if (showCurrentWorkflow(w)) await render();
@@ -981,8 +1024,10 @@ document.addEventListener("click", async (e) => {
   e.preventDefault();
   const act = el.dataset.act;
   const [, id, rec] = trail();
+  const stillHere=currentVisit();
   el.disabled = true;
   try {
+    if(act==="retry-read"){await render();return;}
     if (act==="load-local-model" && el.dataset.key && !loadingModelKey) {
       const key=el.dataset.key;
       loadingModelKey=key;
@@ -993,7 +1038,7 @@ document.addEventListener("click", async (e) => {
         else message("LM Studio confirms a loaded instance: "+result.instanceId);
       } finally {
         loadingModelKey=null;
-        await render();
+        if(stillHere() || trail()[0]==="providers")await render();
       }
     }
     if (act === "refresh") {
@@ -1004,7 +1049,7 @@ document.addEventListener("click", async (e) => {
       try { await api.refresh(); }
       finally {
         budgetPreviews.refreshing=false;
-        await render();
+        if(stillHere())await render();
       }
     }
     if (act === "cancel-import") { importDraft = null; await render(); }
@@ -1038,15 +1083,16 @@ document.addEventListener("click", async (e) => {
         parentId: id,
         animation: !matchMedia("(prefers-reduced-motion: reduce)").matches,
       });
-      location.hash = "run/" + next;
+      if(stillHere())location.hash = "run/" + next;
     }
   } catch (err) {
-    message(errorText(err));
+    if(stillHere())inlineError(el.isConnected ? el.closest<HTMLElement>("form,section,.panel,.card") || $("#screen") : $("#screen"),err);
   } finally {
     el.disabled = false;
   }
 });
 window.addEventListener("hashchange", () => {
+  visit++;
   clearBudgetPreviews();
   baseline = "";
   render();
@@ -1054,8 +1100,10 @@ window.addEventListener("hashchange", () => {
   $("#screen").focus({ preventScroll: true });
 });
 async function bootWorkspace() {
+  const stillHere=currentVisit();
   await render();
   const servers = await api.refresh();
+  if(!stillHere())return;
   clearBudgetPreviews();
   const route = trail()[0];
   const count = document.getElementById("overview-loaded-models");

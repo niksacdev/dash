@@ -66,8 +66,7 @@ test("a failed cap in a second lane stops both lanes before generation", async t
   const { bench, calls, ids } = harness(t, async ({candidate,messages}) => {
     checks.push(candidate.id);
     assert.match(messages[0].content, /Check the supplied sample/);
-    if (candidate.id.endsWith("/two")) throw Error("The cap is too small.");
-    return { tokens: 12, source: "test tokenizer" };
+    return { tokens: candidate.id.endsWith("/two") ? 128 : 12, source: "test tokenizer" };
   });
   await bench.refresh();
   const p = await approval(bench, {inputCap:64, outputCap:128});
@@ -77,7 +76,7 @@ test("a failed cap in a second lane stops both lanes before generation", async t
   const r = bench.detail(id);
   assert.equal(r.status, "failed");
   assert.ok(r.manifest.error);
-  assert.match(r.manifest.error, /two.*cap is too small/);
+  assert.match(r.manifest.error, /two.*requires 128 tokens.*64-token input cap/);
   assert.equal(r.results.length, 0);
   assert.deepEqual([...new Set(checks)], ids);
   assert.deepEqual(calls.filter(c => !c.options.planning), []);

@@ -15,6 +15,7 @@ DASH is a local-first domain assessment workbench. Keep the domain, scenario, ap
 - Enable strict compiler checks for migrated application code. Give domain concepts and IPC payloads named types. Use discriminated unions when the allowed operations or result shapes differ. Prefer the SDK's exported data contracts to handwritten copies.
 - Treat network responses, JSONL, persisted JSON, and IPC inputs as untrusted data. Decode and validate these at their boundaries. Use `unknown` until narrowed. Avoid broad `any`, unchecked casts, and file-wide compiler suppressions.
 - Give asynchronous operations explicit success, failure, and cancellation behavior. Keep candidate errors separate from grader, telemetry, and sync errors. Do not retry an inference call to recover a telemetry write.
+- Review operator errors at the boundary that knows whether dispatch and persistence occurred. Test the message and its recovery action, including private provider text, missing measurements and uncertain completion.
 - Preserve old run records, selected immutable versions and public entry points when changing storage, language, or adapters. A refactor should leave evaluation results comparable.
 
 ## Planning, critique, and drift

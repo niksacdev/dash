@@ -12,10 +12,12 @@ import { logger, setLoggerLevel } from "opik";
 import { buildReport } from "../lib/run-report.cjs";
 import { OpikExperiments } from "../lib/opik-experiments.cjs";
 import type { GraderSpec } from "../lib/grader-types.cjs";
-import type { SavedRun, SyncStore } from "../lib/opik-types.cjs";
+import type { Checkpoint, NativeOpik, SavedRun, SyncReceipt, SyncStore } from "../lib/opik-types.cjs";
 import type { RunManifest, RunResult, StoredGuardrail, DatasetCase, DatasetMetadata } from "../lib/run-types.cjs";
 import { isCaseRow } from "../lib/run-types.cjs";
 import type { Candidate } from "../lib/runtime-types.cjs";
+import { exportDiagnostics,publicProviderError } from "../lib/export-diagnostics.cjs";
+import { templateAdvice,httpGuidance } from "../lib/provider-errors.cjs";
 import { referencePack } from "../lib/evaluation-cases.cjs";
 import { loadPacks } from "../lib/packs.cjs";
 import { decodeApprovedPrompt } from "../lib/outcome-contracts.cjs";
@@ -84,6 +86,147 @@ test("Opik status remains offline and unconfigured unless the DASH destination i
     const enabled=new OpikExperiments(bench(db,{...run,status:"running"}),{env:{DASH_OPIK_API_URL:"http://127.0.0.1/api"},makeApi:()=>assert.fail("running")});
     return assert.rejects(enabled.sync(run.manifest.id),/finish before syncing/);
   } finally{db.close();}
+});
+
+test("SDK status failures disclose safe recovery and preserve the recorded run",async t=>{
+  let httpStatus=401;
+  const secret="synthetic sensitive response detail";
+  const server=http.createServer((_req,res)=>{
+    res.writeHead(httpStatus,{"Content-Type":"application/json"});
+    res.end(JSON.stringify({message:secret}));
+  });
+  server.listen(0,"127.0.0.1");
+  await once(server,"listening");
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const endpoint=server.address();
+  assert.ok(endpoint && typeof endpoint!=="string");
+  const run=savedRun(),db=new DatabaseSync(":memory:");
+  t.after(()=>db.close());
+  const sync=new OpikExperiments(bench(db,run),{env:{DASH_OPIK_API_URL:"http://127.0.0.1:"+endpoint.port+"/api"}});
+  for(const [code,expected] of [[401,/credential/i],[403,/permission/i],[413,/size limit/i],
+    [429,/rate limit/i],[503,/temporarily unavailable/i]] as const){
+    httpStatus=code;
+    await assert.rejects(sync.sync(run.manifest.id),expected);
+    const status=sync.status(run.manifest.id);
+    assert.ok(status.configured && status.state==="partial");
+    assert.match(status.receipt.error,expected);
+    assert.ok(!status.receipt.error.includes(secret));
+  }
+});
+
+test("live cross-session leases stay active and superseded publishers cannot journal writes or announce success",async t=>{
+  const run=savedRun(), db=new DatabaseSync(":memory:");
+  t.after(()=>db.close());
+  const env={DASH_OPIK_API_URL:"http://127.0.0.1:51899/api"},shared=bench(db,run);
+  const receipt:SyncReceipt={runId:run.manifest.id,datasetId:"dataset",datasetName:"QA",versionId:"version",
+    version:"1",caseCount:1,experiments:[],syncedAt:run.manifest.created};
+  const observer=new OpikExperiments(shared,{env});
+  let replaceDuringStep=true;
+  class Superseded extends OpikExperiments {
+    override async send(_api:NativeOpik,saved:SavedRun,step:Checkpoint):Promise<SyncReceipt>{
+      const progress=observer.status(saved.manifest.id);
+      assert.ok(progress.configured && progress.state==="syncing" && progress.active);
+      const replaceOwner=()=>db.prepare("UPDATE opik_export_jobs SET owner=?,pid=?,expires=? WHERE run=?")
+        .run("replacement",process.pid,Date.now()+300000,saved.manifest.id);
+      if(replaceDuringStep) await step("synthetic-step",z.string(),async()=>{replaceOwner();return "unconfirmed";});
+      else replaceOwner();
+      return receipt;
+    }
+  }
+  const publisher=new Superseded(shared,{env});
+  for(const duringStep of [true,false]){
+    replaceDuringStep=duringStep;
+    await assert.rejects(publisher.sync(run.manifest.id),/another session/i);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM opik_export_steps").get()?.n,0);
+    assert.equal(db.prepare("SELECT owner FROM opik_export_jobs").get()?.owner,"replacement");
+    db.prepare("UPDATE opik_export_jobs SET expires=0 WHERE owner='replacement'").run();
+    const expired=observer.status(run.manifest.id);
+    assert.ok(expired.configured && expired.state==="syncing" && !expired.active);
+  }
+});
+
+test("an incumbent renewal between lease inspection and takeover fences the contender before any SDK call",async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"dash-opik-lease-")),filename=path.join(dir,"state.sqlite");
+  const contenderDb=new DatabaseSync(filename),incumbentDb=new DatabaseSync(filename);
+  t.after(()=>{incumbentDb.close();contenderDb.close();fs.rmSync(dir,{recursive:true,force:true});});
+  const run=savedRun(),runId=run.manifest.id,renewed=Date.now()+300000;
+  let apiCalls=0;
+  const contender=new OpikExperiments(bench(contenderDb,run),{
+    env:{DASH_OPIK_API_URL:"http://127.0.0.1:51899/api"},
+    makeApi:()=>{apiCalls++;throw Error("Unexpected sync after incumbent renewal.");},
+  });
+  assert.ok(contender.config.configured);
+  const dest=contender.config.key;
+  incumbentDb.prepare("INSERT INTO opik_export_jobs VALUES(?,?,'syncing',NULL,'incumbent',?,0)").run(dest,runId,process.pid);
+  const prepare=contenderDb.prepare.bind(contenderDb);
+  let renewals=0;
+  t.mock.method(contenderDb,"prepare",(sql:string)=>{
+    if(sql.startsWith("INSERT INTO opik_export_jobs")){
+      renewals++;
+      incumbentDb.prepare("UPDATE opik_export_jobs SET expires=? WHERE destination=? AND run=? AND owner='incumbent'").run(renewed,dest,runId);
+    }
+    return prepare(sql);
+  });
+  await assert.rejects(contender.sync(runId),/another session/i);
+  assert.equal(renewals,1);
+  assert.equal(apiCalls,0);
+  const job=incumbentDb.prepare("SELECT owner,pid,expires,state FROM opik_export_jobs WHERE destination=? AND run=?").get(dest,runId);
+  assert.deepEqual({...job},{owner:"incumbent",pid:process.pid,expires:renewed,state:"syncing"});
+  assert.equal(incumbentDb.prepare("SELECT count(*) AS n FROM opik_export_steps").get()?.n,0);
+});
+
+test("exports retain actionable local failures, redact legacy tokenizer and case diagnostics, and preserve original records",()=>{
+  const saved=savedRun(),candidate=saved.manifest.candidates[0];
+  const privateText="synthetic private SDK error";
+  const known="LM Studio /api/v1/chat returned HTTP 400. ";
+  assert.equal(publicProviderError(known+privateText),known+httpGuidance(400));
+  assert.equal(publicProviderError(known+templateAdvice),known+templateAdvice);
+  const base="LM Studio could not count the complete input for "+candidate.model+". Check its connection and chat template, or remove the input cap.";
+  const blocked={...guardrail,candidateId:candidate.id,caseId:"lot",status:"blocked" as const,
+    source:"LM Studio local runtime",message:base+" "+privateText};
+  const manifest={...saved.manifest,error:candidate.model+" · lot — "+blocked.message,guardrailFailure:blocked};
+  const results=saved.results.map(result=>({...result,error:privateText,score:null}));
+  const report=buildReport({...saved,manifest,results,partial:null});
+  const projected=exportDiagnostics({manifest,results,report,assessments:[]});
+  assert.doesNotMatch(JSON.stringify(projected),new RegExp(privateText));
+  assert.equal(projected.manifest.guardrailFailure?.message,base);
+  assert.match(present(projected.manifest.error),/LM Studio could not count/);
+  assert.deepEqual(projected.results.map(r=>r.output),saved.results.map(r=>r.output));
+  assert.match(manifest.guardrailFailure.message,new RegExp(privateText));
+  assert.equal(results[0].error,privateText);
+});
+
+test("historical unscored judge exceptions are projected in shared JSON while scored rationales remain case evidence",()=>{
+  const run=savedRun(), raw="SYNTHETIC_INTERCEPTED_SDK_DETAIL";
+  const candidate=run.manifest.candidates[0];
+  assert.equal(candidate.provider,"lmstudio");
+  const judge={kind:"model" as const,id:"local/synthetic",provider:"lmstudio" as const,model:"synthetic",revision:"1"};
+  const g={type:"judge" as const,id:"grade-1",name:"QA",version:1,category:"Quality",industry:"Manufacturing",criteria:"Check the answer.",threshold:.8,judge};
+  const manifest={...run.manifest,graders:[g],datasetScorer:"selected-graders" as const};
+  const assessments=run.results.map((r,i)=>({id:"a"+i,created:manifest.created,candidate:r.candidateId,caseId:r.caseId,graderId:g.id,name:g.name,
+    version:1,category:g.category,engine:g.type,threshold:g.threshold,judge:judge.id,pass:i?true:null,value:i?1:null,reason:i?"Observed the required disposition.":raw}));
+  const report=present(buildReport({...run,manifest,assessments,partial:null}));
+  assert.ok(JSON.stringify(report).includes(raw));
+  const projected=exportDiagnostics({...run,manifest,assessments,report});
+  assert.doesNotMatch(JSON.stringify(projected),new RegExp(raw));
+  assert.equal(projected.assessments[1].reason,assessments[1].reason);
+  assert.equal(projected.assessments[0].value,null);
+  assert.equal(assessments[0].reason,raw);
+});
+
+test("a local case lacking a valid trace timestamp reports that evidence gap before dispatching an SDK request",async t=>{
+  let requests=0;
+  const server=http.createServer((_req,res)=>{requests++;res.writeHead(503);res.end();});
+  server.listen(0,"127.0.0.1");await once(server,"listening");
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const endpoint=server.address();assert.ok(endpoint && typeof endpoint!=="string");
+  const db=new DatabaseSync(":memory:"),run=savedRun();
+  t.after(()=>db.close());
+  run.results[1].trace.started="invalid";
+  const svc=new OpikExperiments(bench(db,run),{env:{DASH_OPIK_API_URL:"http://127.0.0.1:"+endpoint.port+"/api"}});
+  await assert.rejects(svc.sync(run.manifest.id),/recorded trace timestamp/);
+  assert.equal(requests,0);
+  assert.equal(svc.status(run.manifest.id).configured,true);
 });
 
 test("the real Opik DEBUG transport masks DASH keys and preserves logger configuration",async t=>{
@@ -416,14 +559,16 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   const remote:Candidate={provider:"compatible",kind:"model",id:"hosted-qa",model:"qa",section:"Hosted",
     keyRequired:true,endpoint:"https://model.example.invalid/v1"};
   const privateMessage="SYNTHETIC_HISTORICAL_PROVIDER_DIAGNOSTIC";
-  const oldHosted:TestRun={...failed,manifest:{...failed.manifest,id:"legacy-provider-error",candidates:[remote]},
-    results:[{...failed.results[0],candidateId:remote.id,error:privateMessage,dispatchedMessages:[{role:"user",content:"Synthetic input"}]}]};
-  await new OpikExperiments(bench(db,oldHosted),{env}).sync(oldHosted.manifest.id);
-  const exportedError=lastTrace().output.error;
-  assert.equal(exportedError,"Model endpoint did not return a confirmed successful response.");
-  const hostedSpan=present([...spans.values()].at(-1));
-  assert.doesNotMatch(JSON.stringify([lastTrace(),hostedSpan]),new RegExp(privateMessage));
-  assert.deepEqual(hostedSpan.output,lastTrace().output);
+  for(const candidate of [remote,...(["lmstudio","ollama"] as const).map(provider=>({
+    provider,id:provider+"/qa",kind:"model" as const,model:"local-qa",loaded:true}))]){
+    const old:TestRun={...failed,manifest:{...failed.manifest,id:"legacy-error-"+candidate.provider,candidates:[candidate]},
+      results:[{...failed.results[0],candidateId:candidate.id,error:privateMessage,dispatchedMessages:[{role:"user",content:"Synthetic input"}]}]};
+    await new OpikExperiments(bench(db,old),{env}).sync(old.manifest.id);
+    assert.equal(lastTrace().output.error,"Model endpoint did not return a confirmed successful response.");
+    const span=present([...spans.values()].at(-1));
+    assert.doesNotMatch(JSON.stringify([lastTrace(),span]),new RegExp(privateMessage));
+    assert.deepEqual(span.output,lastTrace().output);
+  }
   const interruptedCase: RunResult={...saved.results[0],caseId:"lot",dispatchState:"interrupted",output:"Partial reply",score:null,
     error:"DASH closed after dispatch.",telemetry:null,dispatchedMessages:[{role:"user",content:"Inspect lot 8"}],
     trace:{...saved.results[0].trace,finished:undefined}};

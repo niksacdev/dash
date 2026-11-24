@@ -19,7 +19,7 @@ Each listed model has its own status. Green **Loaded and ready** means the runti
 
 Start the LM Studio server and open **Workspace → Local runtimes**. **Load** uses the model already downloaded on this Mac. DASH checks the native inventory for a loaded instance and refreshes the roster. Runs and planning wait for the load to finish. If a run, planner, or local judge is busy, finish that work before requesting a load. If the load status is unconfirmed, check LM Studio and choose **Refresh models**. A server that exposes only the compatible model list can report an unknown load state. Use LM Studio itself to load the model in that case. [LM Studio model loading](https://lmstudio.ai/docs/developer/rest/load)
 
-For **Suggest Metrics** and prompt drafting, use a loaded LFM3 chat model. If Planning activity shows that LM Studio responded with an invalid plan, inspect the failed step and retry. A missing planner or a connection failure has a separate recovery message.
+For **Suggest Metrics** and prompt drafting, use a loaded LFM3 chat model. If Planning activity shows that LM Studio responded with an invalid plan, inspect the failed step and retry. A missing planner or a connection failure has a separate recovery message. If the service rejected the request, correct the stated cause. If a request timed out after dispatch, check the runtime before choosing whether to send another request.
 
 ## Try one objective in Quick compare
 

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert = require("node:assert/strict");
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -14,6 +15,17 @@ test("local setup accepts local Docker sockets and rejects remote engines", asyn
     "npipe:////some-pc/pipe/docker_engine", "unix://example.org/socket", ""]) {
     assert.equal(localEndpoint(endpoint), false, endpoint);
   }
+});
+
+test("the setup CLI explains a missing Docker executable before creating a local stack",t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"dash-cli-dependency-"));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const env={...process.env,PATH:root,HOME:root,USERPROFILE:root,DOCKER_HOST:"",DOCKER_CONTEXT:""};
+  const result=spawnSync(process.execPath,[path.resolve(__dirname,"../scripts/local-opik.mjs"),"start"],
+    {env,cwd:root,encoding:"utf8",timeout:10_000});
+  assert.equal(result.status,1);
+  assert.match(result.stderr,/Docker CLI was not found.*Compose/);
+  assert.deepEqual(fs.readdirSync(root),[]);
 });
 
 test("only the loopback frontend is exposed, images are pinned, and usage reporting is disabled", async () => {
@@ -44,6 +56,23 @@ test("the readiness check requires both the frontend and an Opik project page an
   assert.equal(await healthy(gateway('{"ok":true}',"application/json")), false);
   assert.equal(await healthy(gateway('{"total":0,"content":[]}',"application/json","hello")), false);
   assert.equal(await healthy(async () => {throw Error("offline");}), false);
+});
+
+test("readiness releases failed and oversized response streams",async()=>{
+  const {healthy}=await manager;
+  for(const failure of ["gateway","mime","oversize"]){
+    let released=false,requests=0;
+    const answer:typeof fetch=async()=>{
+      requests++;
+      if(requests===1 && failure==="mime") return new Response("healthy");
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller){controller.enqueue(new Uint8Array(2048));},
+        cancel(){released=true;},
+      }),{status:failure==="gateway"?503:200,headers:{"content-type":"text/html"}});
+    };
+    assert.equal(await healthy(answer),false);
+    assert.equal(released,true,failure+" response must release its reader");
+  }
 });
 
 test("verified public files are readable inside containers, repaired offline and kept on download failure", async t => {

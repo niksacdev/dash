@@ -362,7 +362,7 @@ document.addEventListener("submit", async e=>{
       await api.saveDomainRole({domain,role,instructions,expectedVersion:Number(version)});
       roleEdits.delete(domain+"/"+role);
       if (trail()[0]==="roles") {await render(); message("Agent version saved.");}
-    } catch(error) { message(errorText(error)); }
+    } catch(error) { inlineError(form,error); }
     finally { delete form.dataset.saving; button.disabled=false; instructionsField.disabled=false; }
     return;
   }
@@ -404,7 +404,7 @@ document.addEventListener("submit", async e=>{
         resetModelSelection(w.mode);
       }
     }
-  } catch(error) {w.error=String(errorText(error)).replace(/^Error invoking remote method .dash:[^ ]+ Error: /,"");}
+  } catch(error) {w.error=errorText(error);}
   finally {
     w.busy="";
     if (showCurrentWorkflow(w)) {
@@ -424,7 +424,7 @@ document.addEventListener("click", async e=>{
   if (cancel) {
     cancel.disabled = true;
     try { await api.cancelDesign(); }
-    catch (error) { message(errorText(error)); cancel.disabled = false; }
+    catch (error) { if(cancel.isConnected)inlineError(cancel.closest("form") || $("#screen"),error);cancel.disabled = false; }
     return;
   }
   const example=e.target.closest<HTMLButtonElement>("[data-wf-example]");
@@ -451,11 +451,11 @@ document.addEventListener("click", async e=>{
   const w=workflows[mode];
   if (!w || w.busy) return;
   if (button.id==="wf-fixture") {
-    button.disabled=true;
+    const stillHere=currentVisit();button.disabled=true;
     try {
       const id=await api.start({mode:"dataset",datasetId:w.datasetId,candidateIds:[state.fixtureId],graderIds:[],animation:!matchMedia("(prefers-reduced-motion: reduce)").matches});
-      if (showCurrentWorkflow(w)) location.hash="run/"+id;
-    } catch(error) { message(errorText(error)); }
+      if (stillHere() && showCurrentWorkflow(w)) location.hash="run/"+id;
+    } catch(error) {w.error=errorText(error);if(stillHere())await render();}
     finally { button.disabled=false; }
     return;
   }

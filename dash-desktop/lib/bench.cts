@@ -1,4 +1,4 @@
-import {exportDiagnostics} from "./export-diagnostics.cjs";
+import {exportDiagnostics,publicProviderError} from "./export-diagnostics.cjs";
 import {DatabaseSync} from "node:sqlite";
 import {randomUUID} from "node:crypto";
 import * as os from "node:os";
@@ -20,8 +20,9 @@ import {assessCase,lengthFailure,reasoningPolicy,autoOutputTarget,GuardrailError
 import {decodeManifest,decodeResult,decodeRunSummary,decodeDatasetSummary} from "./run-decode.cjs";
 import {errorMessage,isCaseRow,jsonText,stringValue,statusValue} from "./run-types.cjs";
 import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
-import {ConfirmedInputMismatch, ProviderRejectedError} from "./runtime-types.cjs";
+import {ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, ProviderRejectedError} from "./runtime-types.cjs";
 import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate,ModelLoadReceipt} from "./runtime-types.cjs";
+import {AssessmentStorageError} from "./grading-errors.cjs";
 class RunCheckpointError extends Error {}
 interface Job {id:string;mode:StartRun["mode"];revision:number;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
 export const replayCandidate:FixtureCandidate = {
@@ -57,6 +58,8 @@ export class Bench {
   designing=false;
   private modelLoad:{key:string;task:Promise<ModelLoadReceipt>}|null=null;
   private runtimeUsers=0;
+  // SQLite can remain readable after a terminal write fails. Startup reconciles the durable row.
+  private readonly unrecordedTerminals=new Set<string>();
   private latestRefresh?:Promise<RuntimeInventory[]>;
   get modelLoading():boolean {return this.modelLoad!==null;}
   servers:RuntimeInventory[]=[];
@@ -284,7 +287,10 @@ export class Bench {
     return {
       packs: this.packs.map((p) => p.pack),
       datasets: datasets.map(decodeDatasetSummary),
-      runs:runs.map(decodeRunSummary),
+      runs:runs.map(row=>{
+        const summary=decodeRunSummary(row);
+        return {...summary,status:this.visibleStatus(summary.id,summary.status)};
+      }),
       prompts: this.workflow.list(),
       domainRoles: this.workflow.roles(),
       plannerFallback: this.plannerSettings.status(),
@@ -518,8 +524,10 @@ export class Bench {
   }
   async execute(job:Job, m:CurrentManifest, rows:CaseRow[], replay:Record<string,unknown>) {
     const signal = job.controller.signal;
-    const status = (value:RunStatus) =>
-      this.db.prepare("UPDATE runs SET status=? WHERE id=?").run(value, m.id);
+    const status = (value:RunStatus) => {
+      try {this.db.prepare("UPDATE runs SET status=? WHERE id=?").run(value,m.id);}
+      catch (cause) {throw new RunCheckpointError("DASH could not save the run status. Check available storage and workspace access.",{cause});}
+    };
     let errors = 0;
     try {
       const writeResult=this.db.prepare(`INSERT INTO results VALUES(?,?,?,?)
@@ -580,13 +588,9 @@ export class Bench {
           job.partial = { candidateId: c.id, caseId: row.case_id, text: "" };
           let observedOutput = false;
           if (m.mode==="quick") job.revision++;
+          const candidateStep={at:now(),action:m.fixture ? "Read recorded fixture response" : "Invoke "+c.provider};
+          trace.steps.push(candidateStep);
           try {
-            trace.steps.push({
-              at: now(),
-              action: m.fixture
-                ? "Read recorded fixture response"
-                : "Invoke " + c.provider,
-            });
             if (m.fixture) {
               rec.output = JSON.stringify(replay[row.case_id]);
               observedOutput = typeof rec.output === "string";
@@ -600,7 +604,8 @@ export class Bench {
               trace.steps.unshift({ at: trace.started, action: "Check model capacity", guardrail });
               if (inputBudget) rec.inputBudget = { cap: m.tokenBudget.inputCap, tokens: inputBudget.tokens, source: inputBudget.source };
               const powerUnavailable=()=>trace.steps.push({ at:now(),action:"Device power measurement unavailable" });
-              const finishPower = await this.powerSampler().catch(() => { powerUnavailable(); return null; });
+              let finishPower:Awaited<ReturnType<typeof startPower>>|undefined;
+              try {finishPower=await this.powerSampler();} catch {powerUnavailable();}
               let observing=true;
               let lastCheckpoint=-Infinity;
               // The native SDK catches exceptions from fragment handlers. A request-local
@@ -661,15 +666,22 @@ export class Bench {
                 checkpointAbort.signal.throwIfAborted();
                 if (error instanceof RunCheckpointError) throw error;
                 if (rec.dispatchState === "pending") {
-                  if (error instanceof ProviderRejectedError && rec.output == null) {
+                  if ((error instanceof ProviderRejectedError || error instanceof ProviderPreflightError) && rec.output == null) {
                     trace.finished=now();
                     delete rec.dispatchState;
+                    if (error instanceof ProviderPreflightError) {
+                      candidateStep.action="Prepare candidate request";
+                      delete rec.dispatchedMessages;
+                      trace.steps.push({at:now(),action:"The runtime check ended before candidate inference was sent"});
+                    }
                     rec.error=error.message;
                   } else {
                     rec.dispatchState=signal.aborted ? "canceled" : "interrupted";
                     rec.error=signal.aborted ? "Observation canceled after dispatch. The final candidate response is unknown." :
                       "Observation interrupted after dispatch. The final candidate response is unknown.";
                     trace.steps.push({at:now(),action:"DASH stopped observing this request"});
+                    if (!signal.aborted && error instanceof ProviderFailure)
+                      trace.steps.push({at:now(),action:publicProviderError(error.message)});
                   }
                   saveResult(rec);
                 }
@@ -682,12 +694,14 @@ export class Bench {
               }
             }
             if (!signal.aborted && m.pack && m.datasetScorer !== "selected-graders") {
-              if (m.datasetScorer === "exact-reference") rec.score = await exactReference(row,rec.output);
-              else if(m.pack.kind !== "reference") rec.score = grade(m.pack,row,rec.output);
-              trace.steps.push({
-                at: now(),
-                action: "Grade with " + m.pack.scorer,
-              });
+              try {
+                if (m.datasetScorer === "exact-reference") rec.score = await exactReference(row,rec.output);
+                else if(m.pack.kind !== "reference") rec.score = grade(m.pack,row,rec.output);
+                trace.steps.push({at:now(),action:"Grade with " + m.pack.scorer});
+              } catch {
+                rec.gradingError="The pinned dataset scorer could not evaluate this case. Check the reference and scorer revision.";
+                trace.steps.push({at:now(),action:rec.gradingError});
+              }
             }
           } catch (e) {
             if (e instanceof RunCheckpointError) throw e;
@@ -717,10 +731,15 @@ export class Bench {
       }
       status(signal.aborted ? "canceled" : errors ? "failed" : "completed");
     } catch (e) {
-      if (signal.aborted && !(e instanceof RunCheckpointError)) status("canceled");
-      else {
-        m.error = errorMessage(e);
-        this.db.prepare("UPDATE runs SET status='failed', manifest=? WHERE id=?").run(JSON.stringify(m), m.id);
+      try {
+        if (signal.aborted && !(e instanceof RunCheckpointError) && !(e instanceof AssessmentStorageError)) status("canceled");
+        else {
+          m.error = errorMessage(e);
+          this.db.prepare("UPDATE runs SET status='failed', manifest=? WHERE id=?").run(JSON.stringify(m), m.id);
+        }
+      } catch {
+        this.unrecordedTerminals.add(m.id);
+        throw new RunCheckpointError("DASH could not persist the terminal run status.");
       }
     }
     // Save the terminal report even if the user never opens the run. If this cache write fails,
@@ -741,16 +760,22 @@ export class Bench {
     if (id !== this.active?.id) throw Error("This run is no longer active.");
     this.active.controller.abort();
   }
+  private visibleStatus(id:string,saved:RunStatus):RunStatus {
+    return (saved==="queued" || saved==="running") && this.unrecordedTerminals.has(id) ? "interrupted" : saved;
+  }
   detail(id:string):RunDetail {
     const run = this.db
       .prepare("SELECT status,manifest FROM runs WHERE id=?")
       .get(id);
     if (!run) throw Error("Run not found");
-    const status=statusValue(run.status);
+    const savedStatus=statusValue(run.status);
+    const status=this.visibleStatus(id,savedStatus);
+    const manifest=decodeManifest(run.manifest);
+    if (status!==savedStatus) manifest.error="DASH stopped the job but could not save its final status. Check storage and workspace access. The last saved case records are available.";
     const terminal=status!=="queued" && status!=="running";
     const detail:RunData = {
       status,
-      manifest: decodeManifest(run.manifest),
+      manifest,
       results: this.db
         .prepare("SELECT record FROM results WHERE run=? AND (? OR json_extract(record,'$.dispatchState') IS NOT 'pending') ORDER BY rowid")
         .all(id,Number(terminal))
@@ -770,8 +795,8 @@ export class Bench {
   }
   exportRun(id:string) {
     const detail=this.detail(id);
-    const {status,manifest,assessments}=detail;
-    const {results,report}=exportDiagnostics(detail);
+    const {status}=detail;
+    const {results,report,manifest,assessments}=exportDiagnostics(detail);
     return {
       format: "dash-run/1",
       report,

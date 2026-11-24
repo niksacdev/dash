@@ -1,3 +1,4 @@
+import {GradingIssue} from "./grading-errors.cjs";
 import { AnswerRelevance, Hallucination, Moderation, OpikBaseModel, Usefulness, z, type EvaluationScoreResult } from "opik";
 import type { GraderEvidence } from "./grader-types.cjs";
 
@@ -52,7 +53,7 @@ export const opikLibraryTemplates: readonly OpikMetricTemplate[] = [
 
 export function getOpikTemplate(key: OpikMetricKey) {
   const template = opikLibraryTemplates.find(item => item.key === key);
-  if (!template) throw Error("Unknown Opik metric.");
+  if (!template) throw new GradingIssue("Unknown Opik metric.");
   return template;
 }
 
@@ -65,7 +66,7 @@ export function hasEvidence(value: unknown): boolean {
 }
 
 function evidenceText(value: unknown, name: string): string {
-  if (!hasEvidence(value)) throw Error("Missing " + name + " for the Opik metric.");
+  if (!hasEvidence(value)) throw new GradingIssue("Missing " + name + " for the Opik metric.");
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
@@ -78,7 +79,7 @@ function qualityFromRisk(risk: number): number {
 
 export async function scoreOpikMetric(key: OpikMetricKey, evidence: GraderEvidence, model: OpikBaseModel) {
   const template = getOpikTemplate(key);
-  if (!(model instanceof OpikBaseModel)) throw Error("Select a local judge for the Opik metric.");
+  if (!(model instanceof OpikBaseModel)) throw new GradingIssue("Select a local judge for the Opik metric.");
   const settings = { model, trackMetric: false, temperature: 0 };
   const output = evidenceText(evidence.output, "candidate output");
   let score: EvaluationScoreResult;
@@ -95,7 +96,7 @@ export async function scoreOpikMetric(key: OpikMetricKey, evidence: GraderEviden
         break;
       case "hallucination": {
         const reference = evidence.reference;
-        if (!hasEvidence(reference)) throw Error("Hallucination requires a nonempty case reference for grounding.");
+        if (!hasEvidence(reference)) throw new GradingIssue("Hallucination requires a nonempty case reference for grounding.");
         const context = Array.isArray(reference)
           ? reference.filter(hasEvidence).map(item => evidenceText(item, "case reference"))
           : [evidenceText(reference, "case reference")];
@@ -105,7 +106,7 @@ export async function scoreOpikMetric(key: OpikMetricKey, evidence: GraderEviden
     }
   }
   const opikMetric = opikMetricResult.parse({ metricKey: key, nativeScore: score.value, direction: template.direction });
-  if (!score.reason?.trim()) throw Error("The Opik judge returned no rationale.");
+  if (!score.reason?.trim()) throw new GradingIssue("The Opik judge returned no rationale.");
   return {
     value: template.direction === "higher-is-risk" ? qualityFromRisk(opikMetric.nativeScore) : opikMetric.nativeScore,
     reason: score.reason,
