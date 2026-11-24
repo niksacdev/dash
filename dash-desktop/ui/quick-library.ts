@@ -113,8 +113,8 @@ function quickLibraryBanner() {
   });
   return '<nav class="panel" aria-label="Quick comparison setup">'+link("← Back to Quick compare","compare","link")+
     '<h2>'+esc(prompt.title || prompt.objective)+' · v'+esc(prompt.version)+'</h2><p>'+esc(prompt.domain)+
-    (names?' · '+esc(names.join(" / ")):'')+'</p><small role="status">'+attached.size+' saved grader '+(attached.size===1?'version':'versions')+' attached</small>'+
-    (plan?.error?readFailure("Grader options unavailable",plan.error,"Retry"): "")+'</nav>';
+    (names?' · '+esc(names.join(" / ")):'')+'</p>'+
+    (plan?.error?quickGraderFailure(plan):plan?.options?'<small role="status">'+attached.size+' saved grader '+(attached.size===1?'version':'versions')+' attached</small>':'')+'</nav>';
 }
 function quickLibraryUnavailable(g:UiGrader,options:UiQuickOptions) {
   if (needsGraderReference(g)) return "Requires a labeled dataset with a reference answer.";
@@ -130,16 +130,17 @@ function quickLibraryUnavailable(g:UiGrader,options:UiQuickOptions) {
 function quickChooserPage() {
   const prompt=quickLibraryPrompt(),plan=prompt && quickGradingPlans.get(prompt.id);
   const banner=quickLibraryBanner();
-  if(!prompt || !plan?.options || plan.error) return banner+link("Browse the full grader library","graders","link");
+  if(!prompt || !plan?.options || plan.error) return banner;
   const eligible:UiGrader[]=[],unavailable:UiGrader[]=[];
   for(const g of state.graders) (quickLibraryUnavailable(g,plan.options)?unavailable:eligible).push(g);
   const design='<a href="#compare" data-quick-focus="design">Design a grader for this prompt</a>';
+  const hasRubric=quickGradingRows(plan.options).some(row=>row.generated);
   const rubric='<a href="#compare" data-quick-focus="grading">Review proposed rubrics</a>';
   return banner+'<section class="qc-chooser"><h1>Graders for this comparison</h1>'+
     (eligible.length?formField("Search graders",'<input type="search" id="grade-filter" placeholder="Name, criterion or industry" value="'+esc(quickChooserFilter)+'">')+
       '<div class="panel gc-section" data-quick-eligible>'+familyRevisionList(eligible)+'</div>':
-      '<p>No saved grader is eligible for these answers.</p>')+
-    '<p>'+design+' · '+rubric+'</p>'+
+      '<p>No saved grader matches this comparison.</p>')+
+    (hasRubric?'<p>'+rubric+' for this run.</p>':'')+'<p>'+design+' to save a reusable version.</p>'+
     (unavailable.length?'<details data-own-open class="panel gc-section"><summary>Unavailable for this comparison · '+unavailable.length+'</summary>'+
       familyRevisionList(unavailable)+'</details>':'')+
     '<p id="gc-no-matches" hidden role="status">No matching graders.</p></section>';
