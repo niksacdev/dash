@@ -14,7 +14,7 @@ import {RunReports} from "./run-report.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
 import {getOpikTemplate,opikLibraryTemplates,hasEvidence} from "./opik-library.cjs";
 import type {GraderSpec} from "./graders.cjs";
-import {Graders,sdkEnabled} from "./graders.cjs";
+import {Graders,generalDefaultKey,sdkEnabled} from "./graders.cjs";
 import {Endpoints} from "./endpoints.cjs";
 import {PlannerSettings} from "./planner-settings.cjs";
 import {startPower} from "./power.cjs";
@@ -191,15 +191,17 @@ export class Bench {
     return { id, status: saved.status, candidates, graders, ...(constraint && {tokenConstraint:constraint}), ...(stopped.length && {truncatedOutputs:stopped}) };
   }
   private configuredGeneralGraders():GraderSpec[] {
-    return this.db.prepare("SELECT grader_id FROM general_grader_defaults ORDER BY metric").all()
-      .map(row => this.graders.get(stringValue(row.grader_id)));
+    return this.db.prepare("SELECT metric,grader_id FROM general_grader_defaults ORDER BY metric").all().flatMap(row => {
+      const grader = this.graders.get(stringValue(row.grader_id));
+      return generalDefaultKey(grader) === row.metric ? [grader] : [];
+    });
   }
   setGeneralGraderDefault(id:string, enabled:boolean):void {
     const grader = this.graders.get(id);
-    if (grader.type !== "opik-metric" || !["General","Cross-industry"].includes(grader.industry) || grader.library?.scenario)
-      throw Error("Choose a cross-industry Opik metric with a pinned local judge.");
+    const key = generalDefaultKey(grader);
+    if (!key) throw Error("Choose a cross-industry Opik metric or a local decision grader that can evaluate a prompt and response without a reference or agent trace.");
     if (enabled) this.db.prepare("INSERT INTO general_grader_defaults(metric,grader_id) VALUES(?,?) ON CONFLICT(metric) DO UPDATE SET grader_id=excluded.grader_id")
-      .run(grader.metricKey,id);
+      .run(key,id);
     else this.db.prepare("DELETE FROM general_grader_defaults WHERE grader_id=?").run(id);
   }
   private automaticGraders(structured:boolean) {
@@ -329,7 +331,7 @@ export class Bench {
       plannerFallback: this.plannerSettings.status(),
       servers: this.servers,
       endpoints: this.endpoints.list(),
-      graders: this.graders.list(),
+      graders: this.graders.list().map(grader=>({...grader,generalDefaultKey:generalDefaultKey(grader)})),
       generalGraderDefaults:this.configuredGeneralGraders().map(g=>g.id),
       opikLibraryTemplates,
       opikReady: sdkEnabled(),
@@ -475,6 +477,7 @@ export class Bench {
       mode,
       fixture,
       graders: pinnedGraders,
+      ...(original?.taskAnswerDecisionGraderIds && {taskAnswerDecisionGraderIds:original.taskAnswerDecisionGraderIds}),
       title: pack?.kind==="reference" ? dataset?.metadata.family ?? pack.title : pack?.title || approved?.title || "Quick compare",
       approvedPromptId: approved?.id ?? null,
       approvedPrompt: approved,
@@ -526,11 +529,15 @@ export class Bench {
     const insertRun = () => {
       if (!original) {
         const selected = new Set(manifest.graders.map(g=>g.id));
-        manifest.graders = [...manifest.graders, ...defaults.filter(g=>!selected.has(g.id))];
+        const addedDefaults = defaults.filter(g=>!selected.has(g.id));
+        manifest.graders = [...manifest.graders, ...addedDefaults];
+        const taskAnswerIds = addedDefaults.filter(g=>g.type==="decision").map(g=>g.id);
+        if (taskAnswerIds.length) manifest.taskAnswerDecisionGraderIds = taskAnswerIds;
         // Structural diagnostics are pinned and exported, but do not change the business scoring policy.
-        if (pack && defaults.some(g=>g.type==="opik-metric")) {
+        if (pack && defaults.some(g=>g.type==="opik-metric" || g.type==="decision")) {
           const quality = manifest.graders.filter(g=>!g.library?.automatic);
-          manifest.policyHash = hash([pack, scorerDigest, datasetScorer, quality.map(g=>g.id)]);
+          const policy = [pack, scorerDigest, datasetScorer, quality.map(g=>g.id)];
+          manifest.policyHash = hash(taskAnswerIds.length ? [...policy,{taskAnswerDecisionGraderIds:taskAnswerIds}] : policy);
         }
       }
       this.db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(id, manifest.created, "queued", JSON.stringify(manifest));

@@ -38,15 +38,16 @@ function referenceScoringIssue() {
   if(method==="exact-reference")return d.casesWithoutReference || d.casesWithRubric ? "Exact matching needs a reference answer on every case and no case rubrics." : "";
   if(method==="case-judge")return d.casesWithoutReference ? "Some cases have no reference or rubric. Use saved graders with their own criteria." : "";
   const selected=datasetGradeSelection(activeDatasetGraderScope());
-  const graders=[...(datasetGradingChoices?.automatic || []),...(datasetGradingChoices?.available || []).filter(g=>selected.has(g.id))];
+  const explicitlySelected=(datasetGradingChoices?.available || []).filter(g=>selected.has(g.id));
+  const graders=[...(datasetGradingChoices?.automatic || []),...explicitlySelected];
   const meaningful=graders.filter(g=>!(g.type==="catalog" && ["response-present","completion","json-valid"].includes(g.ruleKey || "")));
-  if(d.casesWithRubric && !meaningful.some(g=>["judge","opik","decision"].includes(g.type)))
+  if(d.casesWithRubric && !explicitlySelected.some(g=>["judge","opik","decision"].includes(g.type)))
     return "Choose a rubric-aware judge to score the case-specific instructions.";
   if(d.casesWithoutReference && !meaningful.some(g=>g.type==="opik" && g.requiredEvidence?.length ?
     !g.requiredEvidence.includes("trajectory") && datasetGradingChoices?.hasReferences :
     g.type!=="field" && g.type!=="trajectory" && g.metricKey!=="hallucination" && !g.requiredEvidence?.length))
     return "Choose a grader that can score the input and response without a reference, such as Opik Usefulness.";
-  return meaningful.length ? "" : "Choose a saved grader or enable an automatic Opik metric to evaluate these responses.";
+  return meaningful.length ? "" : "Choose a saved grader or enable a compatible cross-industry grader in the library.";
 }
 function updateDatasetGradingControls() {
   const note=document.getElementById("dataset-scoring-issue");

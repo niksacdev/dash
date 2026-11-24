@@ -365,8 +365,8 @@ function catalogRevision(g:UiGrader,latest:boolean) {
   const parent=state.graders.find(p=>p.id===g.library?.parentRevisionId);
   const enabled=state.generalGraderDefaults.includes(g.id);
   const use=g.library?.automatic || enabled ? "Automatic on eligible new runs":"Optional";
-  const canSetDefault=g.type==="opik-metric" && ["General","Cross-industry"].includes(g.industry) && !g.library?.scenario;
-  const replaced=canSetDefault && !enabled && state.graders.find(other=>other.metricKey===g.metricKey && state.generalGraderDefaults.includes(other.id));
+  const canSetDefault=!!g.generalDefaultKey;
+  const replaced=canSetDefault && !enabled && state.graders.find(other=>other.generalDefaultKey===g.generalDefaultKey && state.generalGraderDefaults.includes(other.id));
   const defaultToggle=canSetDefault?'<button type="button" data-grade-default="'+esc(g.id)+'" aria-pressed="'+enabled+'">'+
     (enabled?'Disable automatic grading':'Use on new runs')+'</button>':"";
   const ancestry=parent ? (parent.library?.familyId && parent.library.familyId===g.library?.familyId?"Previous revision":"Based on")+" · "+parent.name+" v"+parent.version : "";
@@ -386,7 +386,8 @@ function catalogRevision(g:UiGrader,latest:boolean) {
     (industry?'<div class="gc-detail-body" id="'+esc(detailsId)+'" hidden>'+more+'</div>':'')+
     '<details class="gc-manage"><summary>'+(industry?'Run history':'Manage version')+'</summary><div class="gc-actions">'+
     '<button type="button" data-grade-history="'+esc(g.id)+'" aria-expanded="false">Runs using v'+esc(g.version)+'</button>'+defaultToggle+'</div>'+
-    (replaced?'<small>Using this version on new runs replaces '+esc(replaced.name+' v'+replaced.version)+' as the automatic metric.</small>':'')+
+    (canSetDefault && g.type==="decision"?'<small>Automatic grading sends the candidate’s task and answer to this local judge. Explicitly selecting the grader can include case evidence.</small>':'')+
+    (replaced?'<small>Using this version on new runs replaces '+esc(replaced.name+' v'+replaced.version)+' as the automatic grader.</small>':'')+
     '<div class="gc-uses" data-grade-uses hidden role="status"></div></details></article>';
 }
 function nativeMetricTemplates() {

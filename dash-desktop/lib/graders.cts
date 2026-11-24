@@ -169,6 +169,14 @@ function legacyFamilyId(g:{name:string;industry:string;origin?:RubricOrigin}) {
   return g.origin ? "outcome/"+g.origin.promptFamilyId : "customer/legacy/"+hash([g.industry,g.name.toLowerCase()]);
 }
 function familyIdOf(g:GraderSpec) { return g.library?.familyId ?? legacyFamilyId(g); }
+/** Existing Opik defaults share a slot by metric. Each local decision criterion has its own family. */
+export function generalDefaultKey(grader:GraderSpec):string | null {
+  if (!["General","Cross-industry"].includes(grader.industry) || grader.library?.scenario) return null;
+  if (grader.type === "opik-metric") return grader.metricKey;
+  if (grader.type === "decision" && grader.decision.provider === "local" && !grader.requiredEvidence?.length)
+    return "decision/" + familyIdOf(grader);
+  return null;
+}
 function scoringDefinition(g:GraderSpec) {
   const {id,version,library,producer,...definition}=g;
   return definition;

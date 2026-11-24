@@ -41,3 +41,7 @@ On the development Mac, a live LM Studio LFM3 1.7B designed a Manufacturing rubr
 | Inspection note available. | Fail | 0.0 |
 
 In the earlier calibration, the task itself gave the next action. The judge incorrectly credited the second note for it. The released rubric pins its evidence view to **Answer only** for this presence check. Reference-based correctness checks can use the case evidence. Three synthetic examples verify this wiring and boundary. Broader judge calibration needs representative cases for each rubric.
+
+## Cross-industry local decisions
+
+An operator comparing two responses can enable a saved, general-purpose yes/no criterion that is meaningful across domains and can be evaluated with the input and response. Both candidates use the same grader version, judge configuration and thresholds. An automatically added decision receives the candidate-visible task and answer. Explicit selection retains the grader's normal case evidence. Each run pins that scope for regrading and case reruns. A measured probability in the review interval or an unavailable judge produces an unscored assessment. Deterministic domain acceptance rules still run. Hosted decision graders and criteria requiring a reference or observed trajectory remain explicit selections. A generic default cannot stand in for a case-specific SME rubric. [Decision record](../adr/0030-local-decision-defaults.md)

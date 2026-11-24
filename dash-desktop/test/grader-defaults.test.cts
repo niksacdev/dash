@@ -1,3 +1,5 @@
+import {graderEvidence} from "../lib/evaluation-cases.cjs";
+import {z} from "zod";
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {Bench,replayCandidate} from "../lib/bench.cjs";
@@ -82,4 +84,50 @@ test("a reference-free default can score input-only cases while rubric and refer
   const id=run(plain);
   await present(b.active).done;
   assert.equal(b.detail(id).assessments.find(g=>g.graderId===relevance)?.pass,true);
+});
+
+test("an automatic local decision receives only the candidate task and answer on a labeled case, including regrades",async t=>{
+  const model:LocalCandidate={kind:"model",provider:"ollama",model:"qa",id:"ollama/qa",loaded:true};
+  const b=new Bench(":memory:",{discover:async()=>[inventory([model])],invoke:async()=>reply("Hold the lot.")},withoutPower);
+  t.after(()=>b.db.close());
+  await b.refresh();
+  const row={case_id:"inspection",dataset_version:"1",split:"development",prompt:"The part exceeds the stated limit. What should receiving do?",
+    reference:"HELD-OUT REFERENCE",sme_rationale:"PRIVATE SME NOTE",rubric:"HELD-OUT CASE RULE"};
+  const datasetId=b.import("reference","Synthetic inspection",JSON.stringify(row));
+  const config={type:"decision",category:"Quality",industry:"Cross-industry",threshold:0.8,decision:{provider:"local",model:"local/decision",failAt:0.2}};
+  const auto=b.graders.save({...config,name:"Clear disposition",criteria:"Does the answer specify an action?"},[]);
+  const manual=b.graders.save({...config,name:"Uses the case rule",criteria:"Does the disposition satisfy the case-specific rule?",requiredEvidence:["reference"]},[]);
+  b.setGeneralGraderDefault(auto,true);
+  const wire:{criterion:string;state:Record<string,unknown>}[]=[];
+  t.mock.method(globalThis,"fetch",async(url:RequestInfo|URL,options?:RequestInit)=>{
+    if(String(url)==="http://127.0.0.1:8080/v1/models")
+      return Response.json({data:[{id:"local/decision",output_modalities:["decisions"]}]});
+    assert.equal(String(url),"http://127.0.0.1:8080/v1/systemone");
+    assert.ok(typeof options?.body==="string");
+    const request=z.object({state:z.string(),questions:z.object({criterion:z.object({instructions:z.string()})})}).parse(JSON.parse(options.body));
+    wire.push({criterion:request.questions.criterion.instructions,state:z.record(z.string(),z.unknown()).parse(JSON.parse(request.state))});
+    return Response.json({model:"local/decision",answers:{criterion:{type:"noul",noul:0.95}}});
+  });
+  const start=(ids:string[],parentId?:string)=>b.start({mode:"dataset",datasetId,caseId:row.case_id,candidateIds:[model.id],graderIds:ids,parentId});
+  assert.throws(()=>start([]),/case-level rubrics/);
+  const id=start([manual]);await present(b.active).done;
+  const run=b.detail(id), grader=b.graders.get(auto);
+  const task={input:run.results[0].dispatchedMessages,output:"Hold the lot."};
+  assert.equal(wire.length,2);
+  assert.deepEqual(wire.find(v=>v.criterion.endsWith(grader.criteria))?.state,task);
+  assert.deepEqual(wire.find(v=>v.criterion.endsWith(b.graders.get(manual).criteria))?.state,
+    {...task,reference:row.reference,sme_rationale:row.sme_rationale,rubric:row.rubric});
+  assert.deepEqual(run.manifest.taskAnswerDecisionGraderIds,[auto]);
+  b.setGeneralGraderDefault(auto,false);
+  const savedRow=b.dataset(datasetId).rows[0];
+  const evidence=graderEvidence(run.manifest,savedRow,run.results[0],false,auto);
+  await b.graders.assess(grader,evidence,b.adapters,AbortSignal.timeout(1000));
+  assert.deepEqual(wire.at(-1)?.state,task);
+  const repeat=start([],id);await present(b.active).done;
+  assert.deepEqual(b.detail(repeat).manifest.taskAnswerDecisionGraderIds,[auto]);
+  assert.deepEqual(wire.at(-1)?.state,task);
+  const explicit=start([manual,auto]);await present(b.active).done;
+  assert.equal(b.detail(explicit).manifest.taskAnswerDecisionGraderIds,undefined);
+  assert.notEqual(run.manifest.policyHash,b.detail(explicit).manifest.policyHash);
+  assert.equal(wire.at(-1)?.state.sme_rationale,row.sme_rationale);
 });

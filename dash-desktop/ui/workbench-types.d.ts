@@ -65,7 +65,7 @@ interface UiGraderLibrary {scope:UiGraderScope;familyId:string;parentRevisionId?
 type UiGraderSave = UiGraderDefinition & ({intent:"create"}|{intent:"derive"|"revise";sourceGraderId:string});
 interface UiGraderRun {id:string;title:string;created:string}
 interface UiGraderOptions {hasReferences?:boolean;automatic:UiGrader[];available:UiGrader[]}
-interface UiGrader extends UiGraderDefinition {library?:UiGraderLibrary;ruleKey?:string;ruleVersion?:number;id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
+interface UiGrader extends UiGraderDefinition {generalDefaultKey?:string|null;library?:UiGraderLibrary;ruleKey?:string;ruleVersion?:number;id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
 interface UiQuickMeasure {metric:string;criterion:string|null;generated:UiGraderDefinition|null;reason:string|null}
 type UiMeasureAssignment = {metric:string;kind:"skip"} | {metric:string;kind:"saved";graderId:string} |
   {metric:string;kind:"rubric";judgeId:string;threshold:number;criteria:string;evidence:"task-answer"|"reference"};

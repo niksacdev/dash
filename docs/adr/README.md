@@ -54,6 +54,7 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0028 · Map measures to graders](0028-measure-grader-mapping.md) | Accepted | Nik requested an explicit link from an approved measure and its success condition to the grader used for both models and their reported scores. | [Operator guide](../reader/src/results.md) |
 | 2026-11-24 | [0029 · Approve a JSON contract](0029-approved-json-contract.md) | Proposed | Review one task input and candidate response schema, pin them for both lanes and score conformance separately from content. | [Operator walkthrough](../reader/src/models.md#request-structured-json) |
 | 2026-11-24 | [0029 · Approve a JSON contract](0029-approved-json-contract.md) | Accepted | Nik requested opt-in, reviewable JSON input and output contracts for Quick compare. | [Implementation](../../dash-desktop/lib/quick-structure.cts) |
+| 2026-11-24 | [0030 · Local decision defaults](0030-local-decision-defaults.md) | Proposed | Allow a cross-industry local decision revision to score both candidates on new runs and preserve earlier pins. | [Grader workflow](../reviews/grader-library.md) |
 
 ## Maintaining the history
 

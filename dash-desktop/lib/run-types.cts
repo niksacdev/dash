@@ -46,6 +46,8 @@ export interface RunManifest {
   format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string; hostedDecisionApproved?:boolean;
   candidates:Candidate[]; caseIds:string[]; pack:ScenarioPack|null; graders:GraderSpec[];
   measureGraders?:PinnedMeasure[];
+  /** Automatic local decisions see only the candidate-visible task and answer. */
+  taskAnswerDecisionGraderIds?:string[];
   datasetScorer?:DatasetScorer|null; approvedPromptId?:string|null; approvedPrompt?:ApprovedPrompt|null;
   prompt:string|null; objective?:string|null; effectiveSystem?:string|null; promptSource?:string;
   tokenBudget?:{inputCap:number|null;outputCap:number|null}; datasetId:string|null; datasetMetadata?:StoredMetadata|null;
