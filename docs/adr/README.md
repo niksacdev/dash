@@ -25,6 +25,8 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0013 · Project license](0013-project-license.md) | Accepted | Under Nik’s delegated licensing decision, adopt Apache 2.0 and include the project and third-party notices in the desktop build. | [#13](https://github.com/niksacdev/dash/pull/13) |
 | 2026-11-24 | [0014 · Published operator guide](0014-published-operator-guide.md) | Proposed | Extend 0009 with a task-based reader built and checked from reviewed Markdown. | [Publishing workflow](../../.github/workflows/reader.yml) |
 | 2026-11-24 | [0014 · Published operator guide](0014-published-operator-guide.md) | Accepted | Nik requested publication with each change. Deploy the curated guide from main and verify the public chapter after merge. | [Operator guide maintenance](../reader/README.md) |
+| 2026-11-24 | [0015 · Industry carousel](0015-industry-carousel.md) | Proposed | Extend 0001 with a combined slide pairing each domain with representative artwork. | [Issue #11](https://github.com/niksacdev/dash/issues/11) |
+| 2026-11-24 | [0015 · Industry carousel](0015-industry-carousel.md) | Accepted | Nik confirmed industry-specific images with a vehicle for Automotive. Show the planned status beside its image. | [Issue #11](https://github.com/niksacdev/dash/issues/11) |
 
 ## Maintaining the history
 

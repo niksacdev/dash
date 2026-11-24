@@ -4,12 +4,19 @@ const modelGrid = ["Open Source", "Frontier Labs", "FineTuned"];
 const domainAgentGrid = ["Financial expert", "Financial implementer", "Output analyzer"];
 const inspectionGrid = ["Manufacturing expert", "Manufacturing implementer", "Report agent"];
 
+const industryTitle = "Run domain-specific use cases";
+const industryExamples = [
+  { domain: "Financial Services", decision: "Verify reported EPS", image: "financial" },
+  { domain: "Manufacturing", decision: "Check part tolerances", image: "manufacturing" },
+  { domain: "Automotive", decision: "Planned · vehicle testing", image: "automotive" },
+];
+
 const scenes = [
   { context: "Business outcome", title: "Start with the decision",
-    detail: "Describe the job in one sentence. A domain expert suggests success criteria you can edit.", lanes: modelGrid },
+    detail: "Describe the job in one sentence. A domain expert suggests success criteria you can edit.", lanes: domainAgentGrid },
   { context: "Quick compare", title: "Give two models the same task",
     detail: "Send one approved prompt to local or hosted models. Compare their answers against the same rubric.", lanes: modelGrid },
-  { context: "Financial Services · Manufacturing", title: "Run domain-specific use cases",
+  { context: "Domain scenarios", title: industryTitle, visual: "industries",
     detail: "Check whether earnings per share are reported or adjusted. Flag parts that fall outside the drawing’s tolerances.", lanes: domainAgentGrid },
   { context: "Grading · Opik experiments", title: "Score a whole set of cases",
     detail: "Grade a versioned dataset against expert references or your rubric. Compare candidates in Opik.", lanes: modelGrid },
@@ -48,16 +55,20 @@ function bannerCapabilities() {
   const button = (action: string, label: string, icon: string) => '<button type="button" data-carousel="' + action +
     '" aria-label="' + label + '" title="' + label + '" aria-controls="dash-capability-slide"><span aria-hidden="true">' +
     icon + '</span></button>';
+  const gallery = '<div class="industry-view"><h2>' + esc(industryTitle) +
+    '</h2><div class="industry-examples">' + industryExamples.map(({domain, decision, image}) =>
+      '<figure><img src="assets/industry-' + image + '.jpg" alt=""><figcaption><strong>' + esc(domain) +
+      '</strong><small>' + esc(decision) + '</small></figcaption></figure>').join("") + '</div></div>';
   const position = (currentScene + 1) + " / " + scenes.length;
   return '<section class="capability-reel" aria-roledescription="carousel" aria-label="DASH overview" data-scene="' +
-    currentScene + '" data-playing="' + playing + '"><div class="capability-toolbar"><p class="capability-context">' +
+    currentScene + '" data-visual="' + (scene.visual ?? "race") + '" data-playing="' + playing + '"><div class="capability-toolbar"><p class="capability-context">' +
     esc(scene.context) + '</p><div class="capability-controls">' +
     button("previous", "Previous slide", "←") + '<span class="capability-position" aria-hidden="true">' + position + '</span>' +
     button("next", "Next slide", "→") + button("playback", playing ? "Pause slideshow" : "Play slideshow", "") +
     '</div></div><div class="capability-slide" id="dash-capability-slide" role="group" aria-roledescription="slide" aria-label="' +
-    (currentScene + 1) + ' of ' + scenes.length + '"><div class="capability-frame">' +
+    (currentScene + 1) + ' of ' + scenes.length + '"><div class="capability-standard"><div class="capability-copy"><div class="capability-frame">' +
     capabilityCopy(scene) + '</div>' + sizers + '</div><div class="banner-track" aria-hidden="true">' +
-    lanes + '</div><span class="capability-announcement" role="status" aria-atomic="true"></span></section>';
+    lanes + '</div></div>' + gallery + '</div><span class="capability-announcement" role="status" aria-atomic="true"></span></section>';
 }
 
 function setPlaying(reel: HTMLElement, value: boolean) {
@@ -76,6 +87,7 @@ function moveScene(reel: HTMLElement, direction: number, manual: boolean) {
   const scene = scenes[currentScene];
   const number = currentScene + 1;
   reel.dataset.scene = String(currentScene);
+  reel.dataset.visual = scene.visual ?? "race";
   const context = reel.querySelector(".capability-context");
   const frame = reel.querySelector(".capability-frame");
   const position = reel.querySelector(".capability-position");
