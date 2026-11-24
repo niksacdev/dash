@@ -1,6 +1,6 @@
 // A guardrail decision is per candidate and case. Only the local adapter can
 // establish the exact count of a templated request before generation.
-import { isPositiveInteger as positive, errorText, isRecord, finite, type Candidate, type ChatTurn, type CheckInputBudget, type OutputSchema, type TokenReceipt } from "./runtime-types.cjs";
+import { isPositiveInteger as positive, ProviderPreflightError, isRecord, finite, type Candidate, type ChatTurn, type CheckInputBudget, type OutputSchema, type TokenReceipt } from "./runtime-types.cjs";
 
 export const autoOutputTarget = 8192;
 interface ReasoningOptions {
@@ -121,7 +121,7 @@ export async function assessCase({ candidate, messages, serializedCaseInput = fa
     guardrail.inputTokens = isRecord(error) ? finite(error.inputTokens) : null;
     if (isRecord(error) && positive(error.contextTokens)) guardrail.contextTokens = error.contextTokens;
     guardrail.source = "LM Studio local runtime";
-    block(errorText(error));
+    block(error instanceof ProviderPreflightError ? error.message : "The local runtime could not verify the input token count. Check its connection and model template.");
   }
   if (!receipt || !Number.isSafeInteger(receipt.tokens) || receipt.tokens < 0)
     block("The runtime could not verify the token count. Refresh the model connection and retry.");

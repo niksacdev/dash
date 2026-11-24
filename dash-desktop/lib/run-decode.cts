@@ -44,7 +44,7 @@ const telemetry=z.object({
   device_power:power.nullable().optional(),
 }).passthrough();
 export type StoredPower=z.infer<typeof power>;
-const result=z.object({candidateId:str,caseId:str,output:nullable,error:nullable,
+const result=z.object({candidateId:str,caseId:str,output:nullable,error:nullable,gradingError:str.optional(),
   trace:z.object({id:str,runId:str,candidateId:str,caseId:str,started:str,finished:str.optional(),
     steps:z.array(z.object({at:str,action:str,guardrail:guardrail.optional()}).passthrough())}).passthrough(),
   score:z.object({pass:z.boolean(),reasons:z.array(str),ready:z.boolean().optional(),falseAccept:z.boolean().optional(),review:z.boolean().optional(),evaluator:str.optional()}).passthrough().nullable(),

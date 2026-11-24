@@ -68,7 +68,7 @@ interface UiQuickPlan {options:UiQuickOptions|null; saved:Set<string>; enabled:b
 interface UiAssessment {opikMetric?:{metricKey:UiOpikMetricKey;nativeScore:number;direction:"higher-is-better"|"higher-is-risk"};decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
 interface UiScore {pass:boolean;ready?:boolean;falseAccept?:boolean;review?:boolean;reasons:string[]}
 interface UiTelemetry {latency_ms?:number|null;first_token_ms?:number|null;input_tokens?:number|null;output_tokens?:number|null;device_power?:{average_w?:number|null}|null}
-interface UiResult {candidateId:string;caseId:string;dispatchState?:"pending"|"canceled"|"interrupted";error?:string|null;output?:string|null;score?:UiScore|null;telemetry?:UiTelemetry|null;
+interface UiResult {gradingError?:string;candidateId:string;caseId:string;dispatchState?:"pending"|"canceled"|"interrupted";error?:string|null;output?:string|null;score?:UiScore|null;telemetry?:UiTelemetry|null;
   trace?:unknown;guardrail?:UiGuardrail|null;inputBudget?:{tokens:number;cap:number|null;source:string}|null}
 interface UiRunSummary {id:string;mode:UiMode;status:string;title:string;created:string;fixture:boolean|number;industry?:string|null;datasetId?:string|null}
 interface UiManifest {

@@ -110,3 +110,12 @@ test("short-answer thinking control is specific to verified Quick calls with an 
   } });
   assert.equal(disabled, true);
 });
+
+test("an unexpected tokenizer exception cannot disclose a rendered case through the saved guardrail",async()=>{
+  await assert.rejects(assess({checkInputBudget:async()=>{throw Error("SYNTHETIC_PRIVATE_CASE");}}),(error:unknown)=>{
+    assert.ok(error instanceof GuardrailError);
+    assert.match(error.message,/could not verify the input token count/);
+    assert.doesNotMatch(JSON.stringify(error.guardrail),/SYNTHETIC_PRIVATE_CASE/);
+    return true;
+  });
+});

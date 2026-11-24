@@ -47,6 +47,7 @@ interface UiReportStage {
 }
 
 interface UiReport {
+  cacheIssue?: string;
   verdict: "winner" | "tie" | "mixed" | "ungraded" | "incomplete" | "single" | "unsafe";
   winnerId: string | null;
   summary: string;

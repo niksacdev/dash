@@ -1,5 +1,9 @@
+/** Carries only an operator-facing diagnostic constructed by DASH. */
+export class ProviderFailure extends Error {}
+/** No prediction was submitted. An explicitly configured alternative may be used. */
+export class ProviderPreflightError extends ProviderFailure {}
 /** An explicit provider rejection with a known outcome. Other dispatch errors may follow an accepted request. */
-export class ProviderRejectedError extends Error {}
+export class ProviderRejectedError extends ProviderFailure {}
 
 export type LocalProvider = "lmstudio" | "ollama";
 export type EndpointSection = "Frontier Labs" | "Fine-tuned" | "Hosted";

@@ -4,8 +4,18 @@ type Command = Exclude<keyof DashBridge, "onPlanningStage">;
 type Reply<K extends Command> = Awaited<ReturnType<DashBridge[K]>>;
 
 // Only explicit methods below can invoke the main process. IPC handlers enforce the same reply contract.
-function invoke<K extends Command>(command:K, ...args:Parameters<DashBridge[K]>):Promise<Reply<K>> {
-  return ipcRenderer.invoke("dash:"+command,...args);
+async function invoke<K extends Command>(command:K, ...args:Parameters<DashBridge[K]>):Promise<Reply<K>> {
+  const channel="dash:"+command;
+  try { return await ipcRenderer.invoke(channel,...args); }
+  catch (error) {
+    const prefix="Error invoking remote method '"+channel+"': ";
+    const raw=error instanceof Error ? error.message : "";
+    const reason=(raw.startsWith(prefix) ? raw.slice(prefix.length) : raw).replace(/^Error: /,"");
+    if (reason==="No handler registered for '"+channel+"'") {
+      throw Error("This action is unavailable in the running version of DASH. Save or copy your edits, quit DASH completely, then reopen it.");
+    }
+    throw Error(reason || "DASH could not confirm this action. Check the workspace before repeating it.");
+  }
 }
 
 function isUsage(value:unknown):value is PlanningUsage {

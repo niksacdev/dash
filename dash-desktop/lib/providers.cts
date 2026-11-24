@@ -1,6 +1,7 @@
 import { checkInputBudget, invokeBudgeted, invokeJudge, invokePlanner } from "./token-budget.cjs";
-import { readProviderJson, parseProviderObject } from "./provider-response.cjs";
-import { ProviderRejectedError, isRecord, finite, errorText, isPositiveInteger, type LocalProvider, type LocalCandidate, type RuntimeInstance,
+import { readProviderJson, parseProviderObject, providerChunks } from "./provider-response.cjs";
+import {httpGuidance, reportsTemplateFailure, templateAdvice} from "./provider-errors.cjs";
+import { ProviderFailure, ProviderPreflightError, ProviderRejectedError, isRecord, finite, errorText, isPositiveInteger, type LocalProvider, type LocalCandidate, type RuntimeInstance,
   type RuntimeInventory, type ModelLoadReceipt, type ModelCandidate, type InvokeOptions, type ChatTurn, type InferenceResult, type InferenceTelemetry } from "./runtime-types.cjs";
 export { checkInputBudget };
 
@@ -24,20 +25,31 @@ function modelId(value: unknown): string {
 }
 function httpFailure(status:number, message:string):Error {
   // A timeout or server error does not confirm that generation was rejected.
-  return [400,401,403,404,405,413,415,422,429].includes(status) ? new ProviderRejectedError(message) : Error(message);
+  return [400,401,403,404,405,413,415,422,429].includes(status) ? new ProviderRejectedError(message) : new ProviderFailure(message);
 }
-async function providerErrorMessage(response: Response): Promise<string> {
+async function hasTemplateError(response: Response): Promise<boolean> {
   try {
     const data = await readProviderJson(response, 16384);
     const msg = (isRecord(data.error) ? data.error.message : undefined) ?? data.message ?? data.error;
-    return typeof msg === "string" ? msg.replace(/[\u0000-\u001f]+/g, " ").trim().slice(0,800) : "";
-  } catch { return ""; }
+    return reportsTemplateFailure(msg);
+  } catch { return false; }
 }
 async function request(provider: LocalProvider, route: string, options: RequestInit = {}): Promise<Response> {
-  const response = await fetch(servers[provider] + route, { ...options, redirect:"error" });
+  let response:Response;
+  try {
+    response=await fetch(servers[provider] + route, { ...options, redirect:"error" });
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    if (isRecord(error) && isRecord(error.cause) && error.cause.code==="ECONNREFUSED")
+      throw new ProviderPreflightError(titles[provider]+" refused the local connection. Start the local server and refresh Local runtimes.");
+    throw new ProviderFailure(titles[provider]+" connection failed. Check Local runtimes and the server activity.");
+  }
   if (!response.ok) {
-    const detail = await providerErrorMessage(response);
-    throw httpFailure(response.status, titles[provider] + " " + route + " returned HTTP " + response.status + (detail ? " · " + detail : ""));
+    let advice=httpGuidance(response.status);
+    if (options.method==="POST" && [400,422].includes(response.status) && route.includes("chat")) {
+      if (await hasTemplateError(response)) advice=templateAdvice;
+    } else await response.body?.cancel().catch(()=>{});
+    throw httpFailure(response.status, titles[provider] + " " + route + " returned HTTP " + response.status + ". " + advice);
   }
   return response;
 }
@@ -81,7 +93,10 @@ function nativeSelection(catalog:NativeModel[],key:string):NativeModel {
 async function loadVerified(key:string):Promise<ModelLoadReceipt> {
   let catalog:NativeModel[];
   try { catalog=await nativeInventory(); }
-  catch { throw Error("DASH could not verify the native LM Studio inventory. Check the local server on port 1234 or load the model in LM Studio, then refresh Local runtimes."); }
+  catch (error) {
+    if (error instanceof ProviderFailure) throw error;
+    throw Error("DASH could not verify the native LM Studio inventory. Check the local server on port 1234 or load the model in LM Studio, then refresh Local runtimes.");
+  }
   const current=nativeSelection(catalog,key);
   if (current.instances.length) return {status:"already-loaded",instanceId:current.instances[0].id};
   let acknowledged:string|undefined;
@@ -91,7 +106,7 @@ async function loadVerified(key:string):Promise<ModelLoadReceipt> {
     const body=await readProviderJson(response,64_000);
     if (body.status==="loaded" && body.type==="llm") acknowledged=modelId(body.instance_id);
   } catch(error) {
-    if (error instanceof ProviderRejectedError) throw Error("LM Studio rejected the load request. Check the model and server in LM Studio, then refresh Local runtimes.");
+    if (error instanceof ProviderRejectedError) throw error;
     // A lost acknowledgement can follow a successful load. Only read inventory from here.
   }
   try {
@@ -177,7 +192,7 @@ export function discover(): Promise<RuntimeInventory[]> {
   return Promise.all(localProviders.map(inventory));
 }
 async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], signal: AbortSignal, maxTokens: number): Promise<InferenceResult> {
-  if (messages.length !== 2 || messages[0].role !== "system" || messages[1].role !== "user") throw Error("LM Studio native chat requires a system turn followed by a user turn.");
+  if (messages.length !== 2 || messages[0].role !== "system" || messages[1].role !== "user") throw new ProviderPreflightError("LM Studio native chat requires a system turn followed by a user turn.");
   const start = performance.now();
   const options = {
     model: candidate.model,
@@ -189,13 +204,14 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
     system_prompt: messages[0].content,
     input: messages[1].content,
   };
+  const deadline=AbortSignal.any([signal,AbortSignal.timeout(180000)]);
   const response = await request("lmstudio", "/api/v1/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(options),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]),
+    signal: deadline,
   });
-  const payload = await readProviderJson(response, 4_000_000);
+  const payload = await readProviderJson(response, 4_000_000,deadline);
   const output = entries(payload.output).map(item => item.type === "message" ? string(item.content) ?? "" : "").join("");
   const stats = isRecord(payload.stats) ? payload.stats : {};
   const ttft = finite(stats.time_to_first_token_seconds);
@@ -266,9 +282,14 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
     body: JSON.stringify(body),
     signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]),
   };
-  const r = candidate.provider === "compatible"
-    ? await fetch(candidate.endpoint + "/chat/completions", { ...options, redirect: "error" })
-    : await request(candidate.provider, native ? "/api/chat" : "/v1/chat/completions", options);
+  let r:Response;
+  if(candidate.provider==="compatible") {
+    try { r=await fetch(candidate.endpoint+"/chat/completions",{...options,redirect:"error"}); }
+    catch {
+      options.signal.throwIfAborted();
+      throw new ProviderFailure("Model endpoint connection failed. Check its configuration and activity before starting another request.");
+    }
+  } else r=await request(candidate.provider,native?"/api/chat":"/v1/chat/completions",options);
   if (!r.ok) {
     await r.body?.cancel().catch(()=>{});
     throw httpFailure(r.status,"Model endpoint returned HTTP " + r.status);
@@ -295,7 +316,7 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
     const d = parseProviderObject(text);
     if (d.error) {
       // Streaming errors may echo authorization headers, model inputs or provider internals.
-      throw Error("Model provider reported an error during generation.");
+      throw new ProviderFailure(reportsTemplateFailure(d.error) ? templateAdvice : "Model provider reported an error during generation. Check the server activity before starting another request.");
     }
     if (native && d.done === true) {
       ended = true;
@@ -326,7 +347,7 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
   const decoder = new TextDecoder();
   const fragments:string[] = [];
   if (!r.body) throw Error("Provider returned an empty streaming response.");
-  for await (const chunk of r.body) {
+  for await (const chunk of providerChunks(r.body,options.signal)) {
     bytes += chunk.byteLength;
     if (bytes > 4_000_000) throw Error("Provider response exceeds 4 MB");
     const lines = decoder.decode(chunk, {stream:true}).split("\n");

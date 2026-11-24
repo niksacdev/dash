@@ -139,16 +139,35 @@ function batches<T>(items:T[], limit=50):T[][] {
 }
 function date(value:string|undefined) {
   const d = new Date(value ?? "");
-  if (!value || !Number.isFinite(d.getTime())) throw Error("A saved case is missing its recorded trace timestamp.");
+  if (!value || !Number.isFinite(d.getTime())) throw problem("A saved case lacks a valid recorded trace timestamp. Inspect the original case in DASH.");
   return d;
 }
 function safeFailure(e:unknown) {
-  if (statusCode(e)) return "Opik returned HTTP " + statusCode(e) + ". Check the destination, workspace and its access settings, then retry.";
+  const status=statusCode(e);
+  if (status) {
+    const recovery:Record<number,string>={
+      401:"Check the credentials for the configured destination and reopen DASH after updating them.",
+      403:"Check write permission for the configured workspace and project.",
+      404:"Check the configured API address and whether the saved Opik resource still exists.",
+      413:"The request exceeds the destination’s size limit. Check its request limit before resuming.",
+      429:"The destination applied a rate limit. Wait before resuming this sync.",
+    };
+    return "Opik returned HTTP "+status+". "+(recovery[status] || (status>=500 ?
+      "The service may be temporarily unavailable. Check its status, then resume this sync." :
+      "Check the request and destination settings before resuming this sync."));
+  }
   if (e instanceof SyncFailure) return e.message;
   return "Opik did not confirm this step. Check the destination and retry to resume.";
 }
 class SyncFailure extends Error {}
 function problem(message:string) { return new SyncFailure(message); }
+
+function activeLease(row:Record<string,unknown>|undefined):boolean {
+  if(typeof row?.owner!=="string" || typeof row.expires!=="number" || row.expires<=Date.now() ||
+    typeof row.pid!=="number" || !Number.isInteger(row.pid) || row.pid<=0) return false;
+  try {process.kill(row.pid,0);return true;}
+  catch(e) {return !isRecord(e) || e.code!=="ESRCH";}
+}
 
 export class OpikExperiments {
   readonly config:OpikConfiguration;
@@ -176,8 +195,8 @@ export class OpikExperiments {
   status(run:string):PublishState {
     if (!this.config.configured) return {configured:false,error:this.config.error};
     const {apiUrl,workspace,project,dashboard,key}=this.config;
-    const row=this.db.prepare("SELECT state,receipt FROM opik_export_jobs WHERE destination=? AND run=?").get(key,run);
-    const base={configured:true as const,apiUrl,workspace,project,hasDashboard:!!dashboard,active:this.pending.has(run)};
+    const row=this.db.prepare("SELECT state,receipt,owner,pid,expires FROM opik_export_jobs WHERE destination=? AND run=?").get(key,run);
+    const base={configured:true as const,apiUrl,workspace,project,hasDashboard:!!dashboard,active:this.pending.has(run) || (row?.state==="syncing" && activeLease(row))};
     if (!row || row.state==="syncing") return {...base,state:row?"syncing":"ready",receipt:null};
     const persisted:unknown=JSON.parse(z.string().parse(row.receipt));
     if(row.state==="synced")return {...base,state:"synced",receipt:syncReceipt.parse(persisted)};
@@ -185,7 +204,7 @@ export class OpikExperiments {
     throw Error("Unrecognized Opik sync state.");
   }
   sync(runId:string):Promise<SyncReceipt> {
-    if (!this.config.configured) throw Error("Set DASH_OPIK_API_URL before syncing a saved run.");
+    if (!this.config.configured) throw Error(this.config.error || "Set DASH_OPIK_API_URL before syncing a saved run.");
     const pending=this.pending.get(runId);
     if (pending)return pending;
     const task=this.publish(runId).finally(()=>this.pending.delete(runId));
@@ -198,15 +217,13 @@ export class OpikExperiments {
     const dest=this.destination.key, owner=randomUUID();
     const existing=this.status(runId);
     if (existing.configured && existing.state==="synced") return existing.receipt;
-    const job=this.db.prepare("SELECT owner,pid,expires FROM opik_export_jobs WHERE destination=? AND run=?").get(dest,runId);
-    if (typeof job?.owner==="string" && Number(job.expires)>Date.now()) {
-      let alive=true;
-      try { process.kill(Number(job.pid),0); } catch (e) { alive=!isRecord(e) || e.code!=="ESRCH"; }
-      if (alive) throw Error("This run is already syncing in another DASH session.");
-    }
+    const job=this.db.prepare("SELECT state,owner,pid,expires FROM opik_export_jobs WHERE destination=? AND run=?").get(dest,runId);
+    if (activeLease(job)) throw Error("This run is already syncing in another DASH session.");
     const claim=this.db.prepare(`INSERT INTO opik_export_jobs VALUES(?,?,'syncing',NULL,?,?,?)
       ON CONFLICT(destination,run) DO UPDATE SET state='syncing',receipt=NULL,owner=excluded.owner,pid=excluded.pid,expires=excluded.expires
-      WHERE opik_export_jobs.state!='synced' AND opik_export_jobs.owner IS ?`).run(dest,runId,owner,process.pid,Date.now()+300000,job?.owner ?? null);
+      WHERE opik_export_jobs.state!='synced' AND opik_export_jobs.owner IS ?
+        AND opik_export_jobs.pid IS ? AND opik_export_jobs.expires IS ? AND opik_export_jobs.state IS ?`).run(dest,runId,owner,process.pid,Date.now()+300000,
+          job?.owner ?? null,job?.pid ?? null,job?.expires ?? null,job?.state ?? null);
     if (!claim.changes) throw Error("Another session claimed this run. Refresh its sync status.");
     const checkpoint:Checkpoint=async (key,decode,action)=>{
       const lease=this.db.prepare("UPDATE opik_export_jobs SET expires=? WHERE destination=? AND run=? AND owner=?").run(Date.now()+300000,dest,runId,owner);
@@ -214,15 +231,22 @@ export class OpikExperiments {
       const hit=this.db.prepare("SELECT receipt FROM opik_export_steps WHERE destination=? AND key=?").get(dest,key);
       if (hit) return decode.parse(JSON.parse(z.string().parse(hit.receipt)));
       const value=decode.parse(await action());
-      this.db.prepare("INSERT OR IGNORE INTO opik_export_steps VALUES(?,?,?)").run(dest,key,JSON.stringify(value));
-      return value;
+      const stored=this.db.prepare(`INSERT OR IGNORE INTO opik_export_steps(destination,key,receipt)
+        SELECT destination,?,? FROM opik_export_jobs WHERE destination=? AND run=? AND owner=?`)
+        .run(key,JSON.stringify(value),dest,runId,owner);
+      if (stored.changes) return value;
+      // Another run can confirm a shared dataset step. Only the current owner can adopt it.
+      const shared=this.db.prepare(`SELECT s.receipt FROM opik_export_steps s JOIN opik_export_jobs j USING(destination)
+        WHERE s.destination=? AND s.key=? AND j.run=? AND j.owner=?`).get(dest,key,runId,owner);
+      if (!shared) throw problem("Another session resumed this export. Refresh its sync status.");
+      return decode.parse(JSON.parse(z.string().parse(shared.receipt)));
     };
     const finish=(state:"synced"|"partial",data:SyncReceipt|{error:string})=>this.db.prepare("UPDATE opik_export_jobs SET state=?,receipt=?,owner=NULL,pid=NULL,expires=NULL WHERE destination=? AND run=? AND owner=?")
       .run(state,JSON.stringify(data),dest,runId,owner);
     try {
       const api=this.api ??= this.makeApi(this.destination);
       const receipt=await this.send(api,saved,checkpoint);
-      finish("synced",receipt);
+      if (!finish("synced",receipt).changes) throw problem("Another session resumed this export. Refresh its sync status.");
       return receipt;
     } catch (e) {
       const message=safeFailure(e);
@@ -274,6 +298,12 @@ export class OpikExperiments {
     const pinnedGraders=new Map(pins.map(g=>[g.id,g]));
     const privacy=decisionPrivacy(saved);
     const source=m.datasetId ? this.bench.dataset(m.datasetId) : null;
+    // Validate immutable timestamps before creating any remote resources.
+    const timedResults=saved.results.map(result=>{
+      const unconfirmed=result.dispatchState==="canceled" || result.dispatchState==="interrupted";
+      return {result,unconfirmed,startTime:date(result.trace.started),
+        endTime:unconfirmed && !result.trace.finished ? undefined : date(result.trace.finished)};
+    });
     const rows:CaseRow[]=source?.rows ?? [{case_id:"prompt",prompt:m.prompt ?? ""}];
     const byId=new Set(rows.map(r=>r.case_id));
     if(!rows.length || byId.size!==rows.length || m.caseIds.some(id=>!byId.has(id)))
@@ -321,13 +351,11 @@ export class OpikExperiments {
         return null;
       });
       const traces:NativeTrace[]=[],spans:NativeSpan[]=[],links:NativeItem[]=[],scores:NativeScore[]=[];
-      for(const result of saved.results.filter(r=>r.candidateId===candidate.id)){
+      for(const {result,unconfirmed,startTime,endTime} of timedResults.filter(r=>r.result.candidateId===candidate.id)){
         const data=byCase.get(result.caseId);
         if(!data)throw problem("A saved response has no matching source case.");
         const key=prefix+"/case/"+result.caseId, traceId=this.stableId(key+"/trace");
-        const startTime=date(result.trace.started), tel=result.telemetry || {};
-        const unconfirmed=result.dispatchState==="canceled" || result.dispatchState==="interrupted";
-        const endTime=unconfirmed && !result.trace.finished ? undefined : date(result.trace.finished);
+        const tel=result.telemetry || {};
         let messages, provenance;
         if(!m.fixture && Array.isArray(result.dispatchedMessages)) {
           messages=result.dispatchedMessages;
@@ -342,7 +370,7 @@ export class OpikExperiments {
             "Reconstructed legacy input; dispatch may have failed" : "Reconstructed from the saved run, case and input optimization";
         }
         const input={messages};
-        const output={response:result.output ?? null,...(unconfirmed && {partial:true}),...(result.error && {error:privacy.label(candidate.provider==="compatible" ? publicProviderError(result.error) : result.error)})};
+        const output={response:result.output ?? null,...(unconfirmed && {partial:true}),...(result.error && {error:privacy.label(candidate.provider==="fixture" ? result.error : publicProviderError(result.error))})};
         const caseEvidence=metrics.flatMap(metric=>{
           const grade=metric.caseScores.find(row=>row.caseId===result.caseId)?.values.find(value=>value.candidateId===candidate.id);
           return grade ? [{metric,grade}] : [];

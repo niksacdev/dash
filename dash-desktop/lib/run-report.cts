@@ -40,7 +40,7 @@ const assistanceSchema = z.object({analyzer:stage,reporter:stage,reason:z.string
 export type Assistance = z.infer<typeof assistanceSchema>;
 export const reportSchema = z.object({version:z.literal(1),analyzer:attribution,reporter:attribution,decisionRule:z.string(),
   caseCount:z.number(),candidates:z.array(reportCandidate),metrics:z.array(reportMetric),targets:z.array(z.string()),summary:z.string(),
-  winnerId:z.string().nullable(),verdict,assistance:assistanceSchema.optional(),
+  winnerId:z.string().nullable(),verdict,assistance:assistanceSchema.optional(),cacheIssue:z.string().optional(),
   observedOutcomes:z.array(z.object({label:z.string(),field:z.enum(["ready","falseAccept","review"]).optional(),
     values:z.array(z.object({candidateId:z.string(),count:z.number(),total:z.number(),caseIds:z.array(z.string()).optional()}))})),
 }).passthrough();
@@ -130,7 +130,7 @@ function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undef
   }
   if (builtIn) {
     const score = result.score;
-    if (typeof score?.pass !== "boolean") return missing("The scenario check has no score.");
+    if (typeof score?.pass !== "boolean") return missing(result.gradingError ?? "The scenario check has no score.");
     return { score: Number(score.pass), pass: score.pass, reason: score.pass
       ? "The response passed the pinned scenario check."
       : score.reasons?.join(" · ") || "The response failed the pinned scenario check." };
@@ -277,23 +277,37 @@ export class RunReports {
     return createHash("sha256").update(JSON.stringify([2, run.status, run.results.length, [...ids.values()]])).digest("hex");
   }
   save(run:RunData, report:RunReport|null, signature = this.signature(run)) {
-    this.db.prepare("INSERT INTO run_reports VALUES(?,?,?) ON CONFLICT(run) DO UPDATE SET signature=excluded.signature,report=excluded.report")
-      .run(run.manifest.id, signature, JSON.stringify(report));
-    return report;
+    try {
+      this.db.prepare("INSERT INTO run_reports VALUES(?,?,?) ON CONFLICT(run) DO UPDATE SET signature=excluded.signature,report=excluded.report")
+        .run(run.manifest.id,signature,JSON.stringify(report));
+      return report;
+    } catch {
+      return report && {...report,cacheIssue:"DASH could not cache the report. It can be rebuilt from the saved case results and assessments."};
+    }
   }
   get(run:RunData):RunReport|null {
     if (pendingStatuses.has(run.status)) return null;
     const signature = this.signature(run);
-    const existing = this.db.prepare("SELECT signature, report FROM run_reports WHERE run=?").get(run.manifest.id);
-    if (existing?.signature === signature) return reportSchema.parse(jsonText(existing.report));
+    try {
+      const existing=this.db.prepare("SELECT signature,report FROM run_reports WHERE run=?").get(run.manifest.id);
+      if (existing?.signature===signature) return reportSchema.parse(jsonText(existing.report));
+    } catch { /* A missing or damaged cache must leave the primary evidence accessible. */ }
     return this.save(run, buildReport(run), signature);
   }
   async finalize(run:RunData, adapters:RuntimeAdapters, signal:AbortSignal, progress:(stage:string)=>void) {
     const report = buildReport(run);
     if (!report) throw Error("Only terminal runs have reports.");
-    const enriched = await assistReport(report, adapters, signal, progress);
+    let enriched:RunReport;
+    try {enriched=await assistReport(report,adapters,signal,progress);}
+    catch {
+      signal.throwIfAborted();
+      enriched={...report,assistance:{
+        analyzer:{name:"Output Analyzer",status:"fallback"},reporter:{name:"Report agent",status:"fallback"},citations:[],
+        reason:"Report assistance was unavailable. The comparison uses the saved case results and grader assessments.",
+      }};
+    }
     signal.throwIfAborted();
-    return this.save(run, enriched);
+    return this.save(run,enriched);
   }
 }
 

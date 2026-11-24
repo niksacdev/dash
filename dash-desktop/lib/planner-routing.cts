@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {hostedPlanningUsage,localPlanningUsage} from "./planning-usage.cjs";
 import {isRecord} from "../agents/registry.cjs";
+import {ProviderFailure,ProviderPreflightError,ProviderRejectedError} from "./runtime-types.cjs";
 import type {RuntimeAdapters, RuntimeInventory, LocalCandidate, ChatTurn, OutputSchema} from "./runtime-types.cjs";
 import {readProviderJson} from "./provider-response.cjs";
 import type {FallbackConfig} from "./planner-settings.cjs";
@@ -60,7 +61,12 @@ function parseOutput<T>(response:PlannerOutput, validate:Validator<T>, advisoryM
   if (repetitive(content) || (!advisoryMetrics && repetitive(metrics))) throw new InvalidOutput("the model repeated a field or phrase");
   let value;
   try { value = validate(parsed); }
-  catch (error) { throw new InvalidOutput((error instanceof Error ? error.message : String(error)).replace(/[.!?\s]+$/, "")); }
+  catch (error) {
+    // A schema error can quote arbitrary values or property names from a model reply.
+    if (!(error instanceof Error) || error.name==="ZodError" || error instanceof SyntaxError)
+      throw new InvalidOutput("the returned fields did not match this step's required format");
+    throw new InvalidOutput(error.message.replace(/[.!?\s]+$/, ""));
+  }
   return value;
 }
 async function directOpenAI(fetcher:typeof fetch, model:string, apiKey:string, messages:ChatTurn[], maxTokens:number, signal:AbortSignal):Promise<PlannerOutput> {
@@ -76,7 +82,7 @@ async function directOpenAI(fetcher:typeof fetch, model:string, apiKey:string, m
     throw new EndpointFailure(problem[response.status] || "OpenAI returned HTTP " + response.status);
   }
   // parseOutput permits 24,000 characters of model text. Bound the JSON envelope before decoding it.
-  const body = await readProviderJson(response,256_000);
+  const body = await readProviderJson(response,256_000,signal);
   const usage = hostedPlanningUsage(body);
   const choice:unknown = Array.isArray(body.choices) ? body.choices[0] : null;
   const message = isRecord(choice) && isRecord(choice.message) ? choice.message : null;
@@ -92,22 +98,25 @@ export class PlanningRoute {
   readonly attempts:PlanningAttempt[] = [];
   designer:PlannerIdentity|null = null;
   constructor(private readonly adapters:PlannerAdapters, private readonly local:LocalCandidate|undefined,
-    private readonly options:PlannerOptions, private readonly signal:AbortSignal, private readonly progress:Progress, private readonly requestId:string) {}
+    private readonly options:PlannerOptions, private readonly signal:AbortSignal, private readonly progress:Progress, private readonly requestId:string, private readonly discoveryUnavailable=false) {}
   private notify(event:PlanningAttempt) {
     // A window may close mid-call. Presentation failures must never redispatch inference.
     try { this.progress(event); } catch { /* The attempt still belongs to the preparation. */ }
   }
   static async start(adapters:PlannerAdapters, options:PlannerOptions, signal:AbortSignal, progress:Progress, requestId:string=randomUUID()) {
     let inventory:RuntimeInventory[];
-    try { inventory = await adapters.discover(); }
-    catch { inventory = []; }
+    let discoveryUnavailable=false;
+    try {
+      inventory=await adapters.discover();
+      discoveryUnavailable=inventory.length>0 && inventory.every(server=>!server.online);
+    } catch { inventory=[]; discoveryUnavailable=true; }
     signal.throwIfAborted();
-    return new PlanningRoute(adapters, selectLocalPlanner(inventory), options, signal, progress, requestId);
+    return new PlanningRoute(adapters, selectLocalPlanner(inventory), options, signal, progress, requestId, discoveryUnavailable);
   }
   async ask<T>(stage:string, instructions:string, payload:unknown, schema:OutputSchema, maxTokens:number, validate:Validator<T>,
     hosted?:{payload:unknown;schema:OutputSchema;validate:Validator<T>}, output?:{advisoryMetrics:true}):Promise<T> {
     const before = this.attempts.length;
-    let invalidLocalReply=false;
+    let invalidLocalReply=false, unconfirmedLocalDispatch=false;
     const tryModel = async (candidate:LocalCandidate|{provider:'openai';model:string;revision:null}, apiKey:string|null, fallbackReason:string|null):Promise<T|null> => {
       const { provider, model, revision } = candidate;
       const input=provider==="openai" && hosted ? hosted : {payload,schema,validate};
@@ -140,15 +149,22 @@ export class PlanningRoute {
           this.notify(success);
           return result;
         } catch (error) {
-          const canceled = this.signal.aborted;
-          if (provider!=="openai") invalidLocalReply=error instanceof InvalidOutput;
-          const reason = canceled ? "Prompt preparation was canceled." : timeout.aborted ? "the planning request timed out" :
-            error instanceof InvalidOutput || error instanceof EndpointFailure ? error.message : "the planning provider could not complete the request";
+          const timedOut=timeout.aborted || (this.signal.aborted && this.signal.reason?.name==="TimeoutError") ||
+            (error instanceof Error && error.name==="TimeoutError");
+          const canceled=this.signal.aborted && !timedOut;
+          if (provider!=="openai") {
+            invalidLocalReply=error instanceof InvalidOutput;
+            unconfirmedLocalDispatch=!invalidLocalReply && !(error instanceof ProviderPreflightError || error instanceof ProviderRejectedError);
+          }
+          const reason=canceled ? "Prompt preparation was canceled." : timedOut ? "the planning request timed out" :
+            error instanceof InvalidOutput || error instanceof EndpointFailure || error instanceof ProviderFailure ? error.message :
+              "the planning provider could not complete the request";
           const failure:PlanningAttempt = { ...current, status:canceled ? "canceled" : "failed", reason,
             ...(response && {usage:response.usage,revision:response.revision ?? revision}) };
           this.attempts.push(failure);
           this.notify(failure);
-          if (canceled) throw Error(reason);
+          if (canceled) throw new DOMException(reason,"AbortError");
+          if (this.signal.aborted) throw new ProviderFailure(stage+" timed out. Check the provider activity before retrying.");
           if (!(error instanceof InvalidOutput) || attempt === 2) break;
           correction = "\nCorrect the previous generation error: " + reason +
             ". Write one fresh, short answer in plain language for each required field. Avoid repeating field names or phrases.";
@@ -161,7 +177,7 @@ export class PlanningRoute {
       if (result !== null) return result;
     }
     this.signal.throwIfAborted();
-    const fallback = await this.options.openaiFallback?.();
+    const fallback = unconfirmedLocalDispatch ? null : await this.options.openaiFallback?.();
     if (typeof fallback?.apiKey === "string" && fallback.apiKey.trim() && typeof fallback.model === "string" && fallback.model.trim()) {
       const reason = this.local ? this.attempts.at(-1)?.reason || "Local planning was unavailable" : "No loaded LFM3 chat model";
       const result = await tryModel({provider:"openai",model:fallback.model.trim(),revision:null}, fallback.apiKey, reason);
@@ -174,8 +190,9 @@ export class PlanningRoute {
       : this.local
         ? (invalidLocalReply ? (this.local.provider==="lmstudio" ? "LM Studio" : "Ollama")+" responded, but its planning output failed validation." :
           "The local model was loaded when preparation started. Check its connection in Local runtimes.")+
-          " Review the failed step in Planning activity and retry, or configure the direct OpenAI fallback."
-        : noPlanner;
+          (unconfirmedLocalDispatch ? " Completion was unconfirmed. Check the server activity before starting another request." :
+            " Review the failed step in Planning activity and retry, or configure the direct OpenAI fallback.")
+        : (this.discoveryUnavailable ? "DASH could not verify the local runtimes. Check their server connections, then refresh Local runtimes." : noPlanner);
     throw Error(stage + " could not finish. " + (summary ? summary + ". " : "") + recovery);
   }
 }

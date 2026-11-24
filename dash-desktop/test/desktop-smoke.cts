@@ -6,6 +6,8 @@ import * as path from "node:path";
 import assert from "node:assert/strict";
 import {mock} from "node:test";
 import {z} from "zod";
+import {Bench} from "../lib/bench.cjs";
+import {OpikExperiments} from "../lib/opik-experiments.cjs";
 import power = require("../lib/power.cjs");
 import deviceStats = require("../lib/device-stats.cjs");
 
@@ -104,6 +106,54 @@ async function checkLocalRuntime(window:BrowserWindow, js:RendererEval, wait:(so
     globalThis.fetch=original;
     await js("window.dash.refresh()");
   }
+}
+
+async function checkReadRecovery(js:RendererEval,wait:(source:string)=>Promise<void>) {
+  const id=z.string().parse(await js("window.dash.list().then(s=>s.runs[0].id)"));
+  let readFails=true,live=true,polls=0,terminalWriteFailed=true;
+  const status=OpikExperiments.prototype.status;
+  const opik=mock.method(OpikExperiments.prototype,"status",function(this:OpikExperiments,key:string) {
+    if(readFails)throw Error("The saved experiment receipt could not be read.");
+    return status.call(this,key);
+  });
+  const detail=Bench.prototype.detail;
+  const run=mock.method(Bench.prototype,"detail",function(this:Bench,key:string) {
+    const data=detail.call(this,key);
+    if(key===id && terminalWriteFailed) return {...data,status:"interrupted" as const,
+      results:data.results.map((row,index)=>index===0 ? {...row,dispatchState:"interrupted" as const,output:null,error:"Unknown after dispatch"} : row)};
+    return key===id && live?{...data,status:"running" as const,liveRevision:4}:data;
+  });
+  const progress=mock.method(Bench.prototype,"runProgress",()=>{
+    polls++;if(polls===1)throw Error("The progress connection was interrupted.");
+    live=false;return {kind:"refresh" as const};
+  });
+  try{
+    await js("location.hash="+JSON.stringify("history/"+id));
+    await wait("document.querySelector('[data-read-error]')?.textContent.includes('saved experiment receipt')");
+    assert.equal(await js("!!document.querySelector('#history-run') && document.querySelectorAll('.metric-chart').length>0"),true);
+    assert.doesNotMatch(z.string().parse(await js("document.querySelector('[data-read-error]').textContent")),/Error invoking remote method/);
+    assert.equal(await js("!!document.querySelector('#screen [data-status=interrupted]')"),true);
+    assert.equal(await js("document.querySelector('#screen').innerText.includes('1 without a confirmed final response')"),true);
+    terminalWriteFailed=false;
+    readFails=false;
+    await js("document.querySelector('[data-read-error] button').click()");
+    await wait("!document.querySelector('[data-read-error]') && !!document.querySelector('#history-run')");
+    await js("location.hash="+JSON.stringify("run/"+id));
+    await wait("document.querySelector('#live-read-status [role=alert]')?.textContent.includes('progress connection')");
+    assert.equal(await js("!!document.querySelector('[data-act=stop]')"),true);
+    await wait("document.querySelector('[data-act=export]') && !document.querySelector('#live-read-status')");
+    assert.equal(polls,2);
+    assert.equal(await js("window.dash.list().then(s=>s.runs.length)"),2);
+    await js("location.hash='roles'");
+    await wait("!!document.querySelector('#planner-fallback')");
+    await js("(() => {const f=document.querySelector('#planner-fallback');f.closest('details').open=true;f.elements.model.value='invalid model name';f.requestSubmit()})()");
+    await wait("document.querySelector('#planner-fallback [role=alert]')?.textContent.includes('valid OpenAI model ID')");
+    assert.equal(await js("document.querySelector('#planner-fallback [name=model]').value"),"invalid model name");
+    assert.doesNotMatch(z.string().parse(await js("document.querySelector('#planner-fallback [role=alert]').textContent")),/Error invoking remote method/);
+    await js("location.hash='run/nonexistent-test-run'");
+    await wait("document.querySelector('[data-act=retry-read]')?.textContent==='Try again'");
+    assert.equal(await js("!!document.querySelector('[data-act=export]')"),false);
+  } finally {opik.mock.restore();run.mock.restore();progress.mock.restore();}
 }
 
 async function waitForSamples(minimum:number) {
@@ -293,6 +343,7 @@ app
       await js("document.querySelectorAll('#developer-run option').length"),
       2,
     );
+    await checkReadRecovery(js,wait);
     await checkLocalRuntime(window,js,wait);
     await checkOverview(window, js, wait);
     console.log("Light/dark Overview previews: "+temporary);

@@ -4,8 +4,8 @@ import { Bench } from "../lib/bench.cjs";
 import { configuration } from "../lib/opik-experiments.cjs";
 import { PlanningRoute } from "../lib/planner-routing.cjs";
 import { invoke } from "../lib/providers.cjs";
-import { ProviderRejectedError, type CompatibleCandidate, type LocalCandidate } from "../lib/runtime-types.cjs";
-import { present, reply, withoutPower } from "./runtime-fixtures.cjs";
+import { ProviderPreflightError, ProviderRejectedError, type CompatibleCandidate, type LocalCandidate } from "../lib/runtime-types.cjs";
+import { inventory, present, reply, withoutPower } from "./runtime-fixtures.cjs";
 
 const hosted:CompatibleCandidate={provider:"compatible",kind:"model",id:"compatible/example",model:"example",
   endpoint:"https://model.example.invalid/v1",section:"Hosted",keyRequired:true};
@@ -121,4 +121,68 @@ test("a recorded hosted-provider error stays private in exported results and sco
   assert.doesNotMatch(JSON.stringify(exported),new RegExp(marker));
   assert.equal(exported.results[0].output,"ready");
   assert.equal(exported.cases[0].reference,"ready");
+});
+
+test("an uncertain planning dispatch never repeats locally or switches to a hosted model",async()=>{
+  const candidate:LocalCandidate={...ollama,model:"lfm3-1.7b",loaded:true};
+  for (const failure of [new Error(marker),new DOMException(marker,"TimeoutError")]) {
+    let posts=0;
+    const route=await PlanningRoute.start({discover:async()=>[inventory([candidate])],
+      invoke:async()=>{ posts++; throw failure; }},{openaiFallback:()=>assert.fail("Unknown dispatch must stop before checking the hosted route")},
+      new AbortController().signal,()=>{});
+    await assert.rejects(route.ask("Financial expert","Return JSON",{}, {},64,v=>v),(error:unknown)=>{
+      assert.ok(error instanceof Error);
+      assert.match(error.message,/Completion was unconfirmed/);
+      if(failure.name==="TimeoutError") assert.match(error.message,/timed out/);
+      assert.doesNotMatch(error.message,new RegExp(marker));
+      return true;
+    });
+    assert.equal(posts,1);
+    assert.equal(route.attempts.length,1);
+    assert.equal(route.attempts[0].status,"failed");
+  }
+});
+
+test("a known local preflight failure or rejection can use the explicitly configured fallback once",async()=>{
+  const candidate:LocalCandidate={...ollama,model:"lfm3-1.7b",loaded:true};
+  for(const error of [new ProviderPreflightError("The model is unloaded."),new ProviderRejectedError("Ollama returned HTTP 429.")]){
+    let local=0,hosted=0;
+    const route=await PlanningRoute.start({discover:async()=>[inventory([candidate])],
+      invoke:async()=>{local++;throw error;}},{openaiFallback:()=>({apiKey:"synthetic",model:"example"}),
+      fetch:async()=>{hosted++;return Response.json({choices:[{message:{content:'{"ready": true}'},finish_reason:"stop"}]});}},
+      new AbortController().signal,()=>{});
+    assert.equal(await route.ask("grader design","Return JSON",{}, {},64,v=>v.ready),true);
+    assert.equal(local,1);assert.equal(hosted,1);
+    assert.equal(route.attempts[1].fallbackReason,error.message);
+  }
+});
+
+test("an overall planning time limit reports timeout even when the shared signal aborts",async()=>{
+  const candidate:LocalCandidate={...ollama,model:"lfm3-1.7b",loaded:true};
+  const controller=new AbortController();
+  const route=await PlanningRoute.start({discover:async()=>[inventory([candidate])],invoke:async()=>{
+    controller.abort(new DOMException(marker,"TimeoutError"));controller.signal.throwIfAborted();
+    return reply("");
+  }},{openaiFallback:()=>assert.fail("Time limit must stop fallback")},controller.signal,()=>{});
+  await assert.rejects(route.ask("Metric audit","Return JSON",{}, {},64,v=>v),/Metric audit timed out/);
+  assert.equal(route.attempts[0].status,"failed");
+  assert.match(route.attempts[0].reason??"",/timed out/);
+});
+
+test("connection and interrupted-body errors retain the dispatch count and keep private diagnostics out of history",async t=>{
+  for (const started of [false,true]) {
+    const stub=t.mock.method(globalThis,"fetch",async()=>{
+      if(!started) throw Error(marker);
+      return new Response(new ReadableStream<Uint8Array>({start(controller){controller.error(Error(marker));}}));
+    });
+    await assert.rejects(invoke(hosted,[...prompt],options()),(error:unknown)=>{
+      assert.ok(error instanceof Error);
+      assert.match(error.message,started?/disconnected/:/connection failed/);
+      assert.doesNotMatch(error.message,new RegExp(marker));
+      assert.equal(error instanceof ProviderRejectedError,false);
+      return true;
+    });
+    assert.equal(stub.mock.callCount(),1);
+    stub.mock.restore();
+  }
 });

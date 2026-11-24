@@ -12,6 +12,16 @@ The **Traceability and Observability** slide uses a GAAP-versus-adjusted EPS mis
 
 A winner requires complete scores on the same cases, a lead on at least one rubric and no losses on the others. Read the coverage and missing evidence when the report shows a tie, mixed results or an inconclusive comparison.
 
+## Recover from a failed step
+
+| What happened | What to do |
+| --- | --- |
+| DASH lost contact with a candidate after sending a case. | Open the case and inspect its last saved output. The model may have executed. Choose a linked rerun only if you want a second request. |
+| The candidate answered but a grader could not complete. | Open the case to see its saved answer and the grader’s reason. Review the required evidence, judge and output budget before testing the grader again. Missing grades remain unscored. |
+| The run screen could not read progress. | Refresh the run status to check the existing job. A failed status read alone says nothing about whether the model completed. |
+| The local result is available but the Opik service failed. | Inspect the case scores in DASH. Follow the sync message for the selected destination and resume the saved sync when available. |
+| DASH reports a workspace write failure. | Check drive space and folder access. Inspect the last durable case in Run history before deciding which work to repeat. |
+
 ## Find measured performance
 
 | Question | Where to look |

@@ -1,16 +1,17 @@
 "use strict";
-async function runPerformance(id: string, loadedRun?: UiRunDetail): Promise<UiPerformance> {
+async function runPerformance(id: string, loadedRun?: UiRunDetail): Promise<UiPerformance & {readError?:string}> {
+  let readError:string|undefined;
   if (typeof api.performance === "function") {
     try { return await api.performance(id); }
     catch (error) {
-      if (!/No handler registered/.test(errorText(error))) throw error;
+      readError=errorText(error);
     }
-  }
+  } else readError="Reopen DASH to load performance history for this session.";
   const run = loadedRun || await api.detail(id), m = run.manifest;
   const records = run.results.map(r => ({candidate:r.candidateId, error:r.dispatchState ? null : r.error, pass:r.score?.pass,
     review:r.score?.review, latency:r.telemetry?.latency_ms, input:r.telemetry?.input_tokens,
     output:r.telemetry?.output_tokens, watts:r.telemetry?.device_power?.average_w}));
-  return {id, title:m.title,created:m.created,status:run.status,fixture:m.fixture,mode:m.mode,
+  return {id,readError,packKind:m.pack?.kind, title:m.title,created:m.created,status:run.status,fixture:m.fixture,mode:m.mode,
     datasetId:m.datasetId,version:m.datasetVersion,split:m.split,perCandidate:m.caseIds.length,
     candidates:candidateMetrics(m.candidates,records),history:[]};
 }
@@ -30,7 +31,7 @@ function chartPanel(title: string, notes: string, rows: HistoryChartRow[], maxim
       (Number.isFinite(r.value) ? '<progress aria-label="'+esc(r.label+' · '+title)+'" value="'+r.value+'" max="'+scale+'"></progress>' : '')+
       '<small>'+esc(r.note)+'</small></div>').join("")+'</section>';
 }
-function performanceCharts(s: UiPerformance) {
+function performanceCharts(s: UiPerformance & {readError?:string}) {
   const scored = s.mode === "dataset" && s.packKind !== "reference";
   const cards = [];
   if (scored) {
@@ -58,7 +59,7 @@ function performanceCharts(s: UiPerformance) {
       note:(c.powerCount || 0)+" measured responses"
     }))));
   }
-  return '<div class="metric-grid">'+cards.join("")+'</div>';
+  return (s.readError?readFailure('Showing metrics from the saved run. Historical comparisons are unavailable.',s.readError,'Refresh performance'):'')+'<div class="metric-grid">'+cards.join("")+'</div>';
 }
 function historyTrend(s: UiPerformance) {
   const plots = s.candidates.map(c=>{
@@ -82,18 +83,24 @@ async function historyPage(key?: string) {
   const runs=state.runs.filter(r=>historyIndustry==="All industries" || runIndustry(r)===historyIndustry);
   if(!runs.length)return heading("Workbench","Run history")+selector+'<div class="panel">'+historyList(runs)+'</div>';
   const selectedRun=runs.find(r=>r.id===key) || runs.find(r=>!r.fixture && r.mode==="dataset") || runs[0];
-  const saved=await api.detail(selectedRun.id);
+  let saved:UiRunDetail;
+  try {saved=await api.detail(selectedRun.id);}
+  catch(error){return heading("Workbench","Run history")+selector+readFailure("Couldn’t open the selected run",error,"Retry run details")+bar("Saved runs")+'<div class="panel">'+historyList(runs)+'</div>';}
   const s=await runPerformance(selectedRun.id,saved);
   const report = saved.report;
   s.packKind=saved.manifest.pack?.kind;
   const ds=state.datasets.find(d=>d.id===s.datasetId);
-  const completed=s.candidates.reduce((n,c)=>n+c.recorded,0), errors=s.candidates.reduce((n,c)=>n+c.errors,0);
+  const records=saved.results.length;
+  const unconfirmed=saved.results.filter(row=>row.dispatchState).length;
+  const errors=saved.results.filter(row=>row.error && !row.dispatchState).length;
   return heading("Workbench","Run history")+selector+
     '<section class="panel"><label class="field"><span>Run to inspect</span><select id="history-run">'+runs.map(r=>
       opt(r.id,r.title+" · "+runKind(r)+" · "+displayTime(r.created)+" · "+r.id.slice(0,6),s.id)).join("")+'</select></label>'+
-    '<div class="bar"><div class="row">'+tag(runKind(s))+(s.mode==="quick" && !selectedRun.industry ? "" : tag(runIndustry(selectedRun)))+tag(s.status, true)+(ds?tag((ds.metadata?.family || ds.name)+" · "+s.version+" · "+s.split):"")+'</div>'+
+    '<div class="bar"><div class="row">'+tag(runKind(s))+(s.mode==="quick" && !selectedRun.industry ? "" : tag(runIndustry(selectedRun)))+tag(saved.status, true)+(ds?tag((ds.metadata?.family || ds.name)+" · "+s.version+" · "+s.split):"")+'</div>'+
     link("Open run details →","run/"+s.id,"link")+'</div>'+
-    '<p>'+completed+' of '+(s.perCandidate*s.candidates.length)+' case responses recorded · '+errors+' runtime '+(errors===1?"error":"errors")+'</p>'+
+    '<p>'+records+' of '+(s.perCandidate*s.candidates.length)+' cases recorded'+
+      (unconfirmed?' · '+unconfirmed+' without a confirmed final response':'')+
+      ' · '+errors+' runtime '+(errors===1?"error":"errors")+'</p>'+
     (s.fixture?'<small>Saved answers exercise the grader. Timing and token usage apply to live model runs.</small>':'')+'</section>'+
     (report && !s.fixture ? '<section class="panel"><h3>Evaluation result</h3><p>'+esc(report.summary)+'</p>'+
       report.metrics.map(m=>'<div class="listrow"><strong>'+esc(m.label)+'</strong><span>'+m.values.map(v=>{

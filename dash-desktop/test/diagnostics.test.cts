@@ -83,10 +83,10 @@ test("session inventory differentiates available models, loaded instances and un
   assert.equal(legacy.instances, null);
   assert.equal(legacy.models[0].loaded, null);
 });
-test("provider error shows endpoint, HTTP status and the provider's short explanation", async (t) => {
+test("a local template rejection identifies the endpoint and a recovery without echoing private runtime text", async (t) => {
   t.mock.method(globalThis, "fetch", async () =>
     Response.json(
-      { error: { message: "Template could not render role" } },
+      { error: { message: "Template could not render role: SYNTHETIC_CASE_TEXT api_key=secret" } },
       { status: 400 },
     ),
   );
@@ -94,6 +94,11 @@ test("provider error shows endpoint, HTTP status and the provider's short explan
     invoke({ id:"lmstudio/test", kind:"model", provider: "lmstudio", model: "test" }, [], {
       signal: new AbortController().signal,
     }),
-    /chat\/completions returned HTTP 400 .*Template could not render role/,
+    (error:unknown)=>{
+      assert.ok(error instanceof Error);
+      assert.match(error.message,/chat\/completions returned HTTP 400.*chat template/);
+      assert.doesNotMatch(error.message,/SYNTHETIC_CASE_TEXT|api_key|secret/);
+      return true;
+    },
   );
 });

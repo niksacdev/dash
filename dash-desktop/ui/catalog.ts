@@ -104,7 +104,9 @@ document.addEventListener("submit", async e => {
   const form = e.target;
   const draft = importDraft;
   const submit = form.querySelector<HTMLButtonElement>("[type=submit]");
-  if (!submit || !draft) return;
+  if (!submit || submit.disabled || !draft) return;
+  const stillHere=currentVisit();
+  form.querySelector(":scope > [data-action-error]")?.remove();
   const values: UiCommitImport = {
     industry: formText(form, "industry"),
     family: formText(form, "family"),
@@ -117,8 +119,10 @@ document.addEventListener("submit", async e => {
   submit.disabled=true;
   try {
     const id=await api.commitImport(draft.token,values);
-    packId=draft.pack;importDraft=null;catalogSearch="";datasetId=id;
+    if(importDraft===draft)importDraft=null;
+    if(!stillHere())return;
+    packId=draft.pack;catalogSearch="";datasetId=id;
     if(location.hash==="#datasets/"+id)await render();else location.hash="datasets/"+id;
     message("Dataset version saved.");
-  } catch(error) {message(errorText(error));} finally {submit.disabled=false;}
+  } catch(error) {inlineError(form,error);} finally {submit.disabled=false;}
 });

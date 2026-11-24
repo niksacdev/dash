@@ -362,13 +362,14 @@ document.addEventListener("click",async e=>{
   if(discover?.form){void discoverDecisionModels(discover.form,discover);return;}
   const toggle=e.target.closest<HTMLButtonElement>("[data-grade-default]");
   if(toggle?.dataset.gradeDefault){
-    const id=toggle.dataset.gradeDefault,enabled=!state.generalGraderDefaults.includes(id);
+    const id=toggle.dataset.gradeDefault,enabled=!state.generalGraderDefaults.includes(id),stillHere=currentVisit();
     toggle.disabled=true;
     try {
       await api.setGeneralGraderDefault(id,enabled);
+      if(!stillHere())return;
       await render();
       message(enabled?"This judge revision will score eligible new runs.":"Automatic grading disabled for this revision.");
-    } catch(error){message(errorText(error));}finally{toggle.disabled=false;}
+    } catch(error){if(toggle.isConnected)inlineError(toggle.closest<HTMLElement>(".grader-row") || $("#screen"),error);}finally{toggle.disabled=false;}
     return;
   }
   const template=e.target.closest<HTMLButtonElement>("[data-grade-template]");
@@ -389,7 +390,7 @@ document.addEventListener("click",async e=>{
     api.graderRuns(history.dataset.gradeHistory).then(runs=>{
       if(!uses.isConnected)return;
       uses.innerHTML=runs.length?'<ul>'+runs.map(r=>'<li>'+link(esc(r.title+" · "+displayTime(r.created)),"run/"+encodeURIComponent(r.id),"link")+'</li>').join("")+'</ul>':"No saved runs use this version.";
-    }).catch(error=>{uses.textContent=errorText(error);});
+    }).catch(error=>{if(uses.isConnected){uses.setAttribute("role","alert");uses.textContent=errorText(error);}});
     return;
   }
   const edit=e.target.closest<HTMLButtonElement>("[data-revise],[data-customize],[data-new-grader]");
@@ -404,7 +405,9 @@ document.addEventListener("submit",async e=>{
 
   if(!["grade-case","grade-sample","grade-create"].includes(e.target.id))return;
   e.preventDefault();const f=e.target,b=requireElement("button:not([type=button])",HTMLButtonElement,f);
-  const field=(name:string)=>formText(f,name);
+  const field=(name:string)=>formText(f,name),stillHere=currentVisit();
+  if(b.disabled)return;
+  f.querySelector(":scope > [data-action-error]")?.remove();
   b.disabled=true;
   const title=b.textContent;
   try{
@@ -433,6 +436,7 @@ document.addEventListener("submit",async e=>{
       }
       await api.saveGrader(graderEditIntent==="create" || !graderDraft ? {...definition,intent:"create"} :
         {...definition,intent:graderEditIntent,sourceGraderId:graderDraft.id});
+      if(!stillHere() || !f.isConnected)return;
       graderEditIntent="create";graderTemplate=null;
       graderDraft=null; message("Grader version saved.");
     }
@@ -446,14 +450,15 @@ document.addEventListener("submit",async e=>{
         let reference:unknown=raw || null;
         try{reference=JSON.parse(raw);}catch{}
         const supplied=field("trajectory").trim();
-        const trajectory:unknown=supplied ? JSON.parse(supplied) : undefined;
+        let trajectory:unknown;
+        if(supplied){try{trajectory=JSON.parse(supplied);}catch{throw Error("Enter observed agent steps as a valid JSON array.");}}
         if (supplied && !Array.isArray(trajectory)) throw Error("Agent steps must be a JSON array.");
         request={grader,evidence:{input:field("input"),output:field("output"),reference,...(Array.isArray(trajectory) && {trajectory})}};
       }
       const consent=graderConsentById([grader],f.id==="grade-case"?"this saved case":"this provided output");
       if(!consent)return;
-      const result=await api.assess({...request,...consent});message(result.pass==null?"Unscored · "+result.reason:"Evaluation saved.");
+      const result=await api.assess({...request,...consent});if(!stillHere())return;message(result.pass==null?"Unscored · "+result.reason:"Evaluation saved.");
     }
     await render();
-  }catch(error){message(errorText(error));}finally{b.disabled=false;b.textContent=title;}
+  }catch(error){inlineError(f,error);}finally{b.disabled=false;b.textContent=title;}
 });
