@@ -324,20 +324,38 @@ test("planning emits bounded numeric progress, measured timings and one terminal
   const run:PlannerAdapters["invoke"]=async(_candidate,_messages,options)=>{
     const reading={phase:"processing-prompt" as const,percent:20,content:"private source text"};
     options.onPlanningProgress?.(reading);
+    options.onPlanningProgress?.({...reading,inputTokens:37});
     for(let n=0;n<30;n++)options.onPlanningProgress?.({phase:"generating",approximateOutputTokens:n});
     return inferenceReply('{"domain":"Manufacturing"}',{input_tokens:9,output_tokens:3,first_token_ms:41,provider_first_token_ms:32,tokens_per_second:22});
   };
   t.mock.method(adapters,"invoke",run);
   const route=await PlanningRoute.start(adapters,{},new AbortController().signal,event=>{events.push(event);});
   assert.equal(await route.ask("Domain routing","role",{}, {},32,r=>r.domain),"Manufacturing");
-  assert.deepEqual(events.filter(e=>e.progress).map(e=>e.progress),[{phase:"processing-prompt",percent:20},{phase:"generating",approximateOutputTokens:0}]);
+  assert.deepEqual(events.filter(e=>e.progress).map(e=>[e.progress,e.usage?.inputTokens]),[
+    [{phase:"processing-prompt",percent:20},undefined],[{phase:"processing-prompt",percent:20},37],
+    [{phase:"generating",approximateOutputTokens:0},37],
+  ]);
   assert.equal(route.attempts.length,1);
   const [final]=route.attempts;
   assert.equal(final.firstTokenMs,32);assert.equal(final.tokensPerSecond,22);
   assert.ok(typeof final.elapsedMs==="number" && final.elapsedMs>=0);
   assert.ok(typeof final.discoveryMs==="number" && final.discoveryMs>=0);
   assert.equal(final.progress,undefined);
+  assert.equal(final.usage?.inputTokens,9);
   assert.equal(final.usage?.outputTokens,3);
+});
+
+test("each query owns its prompt total when a final input count is missing", async t=>{
+  const {adapters}=fixture(t);
+  let input=21;
+  const run:PlannerAdapters["invoke"]=async(_candidate,_messages,options)=>{
+    options.onPlanningProgress?.({phase:"processing-prompt",percent:75,inputTokens:input});
+    return inferenceReply('{"domain":"Manufacturing"}',{input_tokens:null,output_tokens:1});
+  };
+  t.mock.method(adapters,"invoke",run);
+  const route=await PlanningRoute.start(adapters,{},new AbortController().signal,()=>{});
+  for (input of [21,0,NaN]) await route.ask("Domain routing","role",{}, {},32,r=>r.domain);
+  assert.deepEqual(route.attempts.map(r=>r.usage?.inputTokens),[21,null,null]);
 });
 
 test("a canceled planning call keeps returned usage and never invokes a fallback", async t => {

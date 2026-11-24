@@ -640,9 +640,11 @@ export class Bench {
             error: null,
             telemetry: null,
           };
-          job.partial = { candidateId: c.id, caseId: row.case_id, text: "" };
+          const decision=decisions.get(c.id)?.get(row.case_id);
+          const checkedInputTokens=decision?.receipt?.tokens;
+          job.partial = {candidateId:c.id,caseId:row.case_id,text:"",...(checkedInputTokens!=null && {checkedInputTokens})};
           let observedOutput = false;
-          if (m.mode==="quick") job.revision++;
+          if (m.mode==="quick" || checkedInputTokens!=null) job.revision++;
           const candidateStep={at:now(),action:m.fixture ? "Read recorded fixture response" : "Invoke "+c.provider};
           trace.steps.push(candidateStep);
           try {
@@ -651,7 +653,6 @@ export class Bench {
               observedOutput = typeof rec.output === "string";
             }
             else {
-              const decision=decisions.get(c.id)?.get(row.case_id);
               if(!decision || c.provider==="fixture")throw Error("Missing dispatch plan");
               const { receipt: inputBudget, guardrail, preparedMessages } = decision;
               const messages = preparedMessages ?? candidateMessages(m, row);

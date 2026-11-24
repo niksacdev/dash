@@ -404,7 +404,8 @@ function workflowCaseSummary(m:UiManifest, r:UiResult) {
   const input=r.inputBudget;
   return '<div class="wf-panel wf-run-plan"><h3>Inference settings</h3><dl class="catalog-facts"><dt>Model adapter</dt><dd>'+
     esc([spec?.adapter,spec?.template].filter(Boolean).join(" · ") || "Unrecorded")+'</dd><dt>Input tokens</dt><dd>'+
-    esc(input ? input.tokens+" of "+input.cap+" · "+input.source : actual.input_tokens ?? "Unreported")+'</dd><dt>Output tokens</dt><dd>'+
+    esc(actual.input_tokens ?? "Unreported")+'</dd>'+
+    (input?'<dt>Checked input</dt><dd>'+esc(input.tokens+(input.cap!=null?" of "+input.cap:"")+" · "+input.source)+'</dd>':'')+'<dt>Output tokens</dt><dd>'+
     esc(actual.output_tokens ?? "Unreported")+(m.tokenBudget?.outputCap ? ' · limit '+esc(m.tokenBudget.outputCap) : '')+
     '</dd></dl></div>';
 }

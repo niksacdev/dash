@@ -622,6 +622,14 @@ function observationLabel(result:UiResult):string|null {
   if (result.dispatchState==="interrupted") return "Observation interrupted";
   return null;
 }
+function responseTokenUsage(row:UiResult|undefined,checked:number|undefined,running:boolean) {
+  const actual=row?.telemetry?.input_tokens, output=row?.telemetry?.output_tokens;
+  const verified=row?.inputBudget?.tokens ?? checked;
+  const waiting=running?"Pending":"Unreported";
+  const input=actual!=null?actual.toLocaleString():verified!=null?verified.toLocaleString()+" checked":waiting;
+  return '<p class="muted response-token-usage">Input tokens <strong>'+esc(input)+'</strong> · Output tokens <strong>'+
+    esc(output!=null?output.toLocaleString():waiting)+'</strong></p>';
+}
 function quickExecutionProgress(run:UiRunDetail) {
   const {manifest,partial}=run;
   const candidate=manifest.candidates.find(c=>c.id===partial?.candidateId);
@@ -701,6 +709,13 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     "</div>";
   if (live) out+='<div id="live-read-status"></div>'+(m.mode==="quick" ? quickExecutionProgress(run) : "");
   if (m.error) out += '<div class="wf-error spacer" role="alert">' + esc(m.error) + "</div>";
+  if (live && m.mode==="dataset" && run.partial?.checkedInputTokens!=null) {
+    const {candidateId,caseId,checkedInputTokens}=run.partial;
+    const candidate=m.candidates.find(c=>c.id===candidateId);
+    const saved=run.results.find(r=>r.candidateId===candidateId && r.caseId===caseId);
+    if (candidate && (!saved || saved.dispatchState==="pending")) out+='<p class="muted">'+esc(displayModel(candidate.model))+
+      ' · '+esc(caseId)+' · Input tokens <strong>'+esc(checkedInputTokens.toLocaleString())+' checked</strong></p>';
+  }
   if (live && m.mode!=="quick" && run.partial?.stage) out += '<p role="status">'+esc(run.partial.stage)+' is reviewing the recorded scores…</p>';
   if (m.guardrailFailure) out += guardrailDetails(m.guardrailFailure);
   if (!live) out += evaluationReport(run);
@@ -733,6 +748,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
                 (live ? "Waiting…" : "No response"),
             ) +
             "</pre>" +
+            (r || part ? responseTokenUsage(r,part?.checkedInputTokens,live && (!r || r.dispatchState==="pending")) : "")+
             (r && observationLabel(r) ? tag(observationLabel(r) ?? "") : "") +
             (r ? link("Inspect trace", "run/" + id + "/" + i, "link") : "") +
             "</article>"

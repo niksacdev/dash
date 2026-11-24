@@ -506,7 +506,7 @@ async function smoke() {
   try {
     await wait(()=>exists('#wf-activity [data-status="running"] .ai-pulse'), "Live planning query");
     assert.match(await text("document.querySelector('#wf-query .ai-model').textContent"), /Local.*lfm3/i);
-    assert.equal(await text("document.querySelector('#wf-query dd').textContent"), "Pending");
+    assert.equal(await text("document.querySelector('#wf-query dd').textContent"), "Awaiting final usage");
     assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "Planning activity fits the phone viewport");
     assert.ok(await js("getComputedStyle(document.querySelector('.ai-model')).color !== getComputedStyle(document.querySelector('.ai-query-head strong')).color"));
     win.webContents.debugger.attach("1.3");

@@ -153,13 +153,17 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     checkPreparationSignal(limit);
     const start = performance.now();
     let output = "", firstTokenMs: number | null = null;
-    let approximateOutputTokens = 0;
+    let approximateOutputTokens:number|null = null;
     const options: LLMRespondOpts = {
       signal: limit, temperature: 0, maxTokens, contextOverflowPolicy: "stopAtLimit",
-      onPromptProcessingProgress(value) {
+      onPromptProcessingProgress(value, details) {
         progress?.();
-        if (onPlanningProgress && Number.isFinite(value) && value >= 0 && value <= 1)
-          onPlanningProgress({phase:"processing-prompt",percent:Math.round(value*100)});
+        if (onPlanningProgress && Number.isFinite(value) && value >= 0 && value <= 1) {
+          // SDK 2.1 supplies all-zero details on older servers that send only a percentage.
+          const total=details?.totalPromptTokenCount;
+          onPlanningProgress({phase:"processing-prompt",percent:Math.round(value*100),
+            ...(Number.isSafeInteger(total) && total>0 && {inputTokens:total})});
+        }
       },
       onPredictionFragment(fragment) {
         progress?.();
@@ -167,7 +171,7 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
         if (!fragment.content) return;
         firstTokenMs ??= Math.round(performance.now() - start);
         if (onPlanningProgress) {
-          if (Number.isSafeInteger(fragment.tokensCount) && fragment.tokensCount >= 0) approximateOutputTokens += fragment.tokensCount;
+          if (Number.isSafeInteger(fragment.tokensCount) && fragment.tokensCount >= 0) approximateOutputTokens = (approximateOutputTokens ?? 0) + fragment.tokensCount;
           onPlanningProgress({phase:"generating",approximateOutputTokens});
         }
         if (onText) {

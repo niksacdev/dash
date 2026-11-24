@@ -124,7 +124,7 @@ test("refining from a run gives the agents measured counts and preserves its ori
 });
 
 test("live polling sends only new Quick text or a changed run revision", async t=>{
-  const {bench,ids}=harness(t);
+  const {bench,ids}=harness(t,async()=>({tokens:43,contextTokens:4096,source:"fixture tokenizer"}));
   await bench.refresh();
   const draft=await bench.designPrompt({mode:"quick",domain:"Manufacturing",objective:"Review this lot."});
   const approved=bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
@@ -141,7 +141,9 @@ test("live polling sends only new Quick text or a changed run revision", async t
   const done=completion(bench);
   try {
     const options=await dispatch;
-    const revision=present(bench.detail(id).liveRevision);
+    const live=bench.detail(id),revision=present(live.liveRevision);
+    assert.ok(live.partial && "candidateId" in live.partial);
+    assert.equal(live.partial.checkedInputTokens,43);
     assert.deepEqual(bench.runProgress(id,revision,0),{kind:"unchanged"});
     options.onText?.("partial");
     assert.deepEqual(bench.runProgress(id,revision,0),{kind:"append",candidateId:ids[0],text:"partial"});

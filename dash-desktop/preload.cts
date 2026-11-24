@@ -29,8 +29,8 @@ function validPlanningProgress(value:unknown):boolean {
   if (!value || typeof value!=="object" || !("phase" in value)) return false;
   if (value.phase==="processing-prompt" && "percent" in value)
     return typeof value.percent==="number" && Number.isInteger(value.percent) && value.percent>=0 && value.percent<=100;
-  return value.phase==="generating" && "approximateOutputTokens" in value && typeof value.approximateOutputTokens==="number" &&
-    Number.isSafeInteger(value.approximateOutputTokens) && value.approximateOutputTokens>=0;
+  return value.phase==="generating" && "approximateOutputTokens" in value && (value.approximateOutputTokens===null ||
+    typeof value.approximateOutputTokens==="number" && Number.isSafeInteger(value.approximateOutputTokens) && value.approximateOutputTokens>=0);
 }
 function isPlanningEvent(value:unknown):value is UiPlanningEvent {
   return typeof value==="object" && value!==null &&
