@@ -91,3 +91,26 @@ body:has(.wf-page) #screen {margin:0;max-width:none;padding:clamp(16px,2.2vw,32p
 aside {overflow-y:auto}
 .wf-approved .wf-version-actions {display:inline-flex}
 .wf-page .wf-new {margin-left:8px}
+
+#wf-activity {border:1px solid var(--border);border-inline-start:3px solid var(--accent);border-radius:8px;background:var(--surface-soft);padding:14px 18px;margin:12px 0;min-width:0}
+#wf-cancel-design {margin-top:12px}
+.ai-query {min-width:0;color:var(--ink)}
+.ai-query-head,.ai-usage,.ai-usage div,.ai-pulse {display:flex;align-items:center}
+.ai-query-head,.ai-usage {flex-wrap:wrap;gap:6px 12px}
+.ai-query-head strong,.ai-model {overflow-wrap:anywhere}
+.ai-model {max-width:100%;background:var(--selected);color:var(--accent-strong);border-radius:6px;padding:3px 8px;font:600 12px/1.5 var(--mono)}
+.ai-query small,.ai-usage dt {color:var(--muted)}
+.ai-usage {margin:7px 0 0;font-size:12px}
+.ai-usage div {gap:5px}
+.ai-usage dd {margin:0;font-variant-numeric:tabular-nums;font-weight:650}
+.ai-earlier {margin-top:10px;font-size:13px}
+.ai-earlier summary {cursor:pointer;color:var(--accent-strong)}
+.ai-earlier .ai-query,.ai-query + .ai-query {margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.ai-pulse {gap:3px;color:var(--accent)}
+.ai-pulse i {width:5px;height:5px;border-radius:50%;background:currentColor}
+@media (prefers-reduced-motion:no-preference) {
+  .ai-pulse i {animation:planning-pulse 1.35s ease-in-out infinite}
+  .ai-pulse i:nth-child(2) {animation-delay:150ms}
+  .ai-pulse i:nth-child(3) {animation-delay:300ms}
+}
+@keyframes planning-pulse {0%,70%,100% {opacity:.45} 35% {opacity:1;transform:translateY(-2px)}}

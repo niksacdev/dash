@@ -34,6 +34,7 @@ const request = z.looseObject({
   max_tokens: z.number().optional(),
 });
 type Stage = "native-relevance" | "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
+let holdRouting: (()=>Promise<void>) | undefined;
 interface TransportCall {stage:Stage; body:z.infer<typeof request>; brief:unknown}
 const calls:TransportCall[] = [];
 const expertBrief = z.object({requirements:z.array(z.string())});
@@ -136,6 +137,7 @@ globalThis.fetch = async (url, options = {}) => {
     props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
   const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" || stage === "native-relevance" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
   calls.push({ stage, body, brief });
+  if (stage==="route" && holdRouting) await holdRouting();
   const content = stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
   if (target.pathname === "/api/chat") {
     if (streamedQuick.armed && stage==="candidate") {
@@ -349,8 +351,29 @@ async function smoke() {
   await fill("#wf-metrics", metric);
   await fill("#wf-output-cap", "180");
   assert.equal(await js("document.querySelector('#wf-measures #wf-suggest').textContent"), "Suggest Metrics");
+  let releaseRouting:()=>void = ()=>{};
+  const gate=new Promise<void>(resolve=>{releaseRouting=resolve;});
+  holdRouting=()=>gate;
   await click("#wf-suggest");
+  try {
+    await wait(()=>exists('#wf-activity [data-status="running"] .ai-pulse'), "Live planning query");
+    assert.match(await text("document.querySelector('#wf-query .ai-model').textContent"), /Local.*lfm3/i);
+    assert.equal(await text("document.querySelector('#wf-query dd').textContent"), "Pending");
+    assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "Planning activity fits the phone viewport");
+    assert.ok(await js("getComputedStyle(document.querySelector('.ai-model')).color !== getComputedStyle(document.querySelector('.ai-query-head strong')).color"));
+    win.webContents.debugger.attach("1.3");
+    try {
+      await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia",{features:[{name:"prefers-reduced-motion",value:"reduce"}]});
+      assert.equal(await text("getComputedStyle(document.querySelector('.ai-pulse i')).animationName"), "none");
+      await win.webContents.debugger.sendCommand("Emulation.setEmulatedMedia",{features:[{name:"prefers-reduced-motion",value:"no-preference"}]});
+      assert.equal(await text("getComputedStyle(document.querySelector('.ai-pulse i')).animationName"), "planning-pulse");
+    } finally {win.webContents.debugger.detach();}
+  } finally {releaseRouting();holdRouting=undefined;}
   await wait(() => exists("#wf-criteria"), "Editable success criteria");
+  assert.match(await text("document.querySelector('#wf-measure-fields').textContent"), /AI expert.*AI suggestions can be wrong/);
+  assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),2);
+  assert.deepEqual(await js("Array.from(document.querySelector('#wf-query .ai-query').querySelectorAll('dd'),n=>n.textContent)"),["21","12","No API charge"]);
+  assert.equal(await exists("#wf-activity .ai-pulse"),false);
   assert.deepEqual(calls.map(c => c.stage), ["route", "expert"]);
   assert.equal(records().length, 0);
   const criterion = "Route any part with a missing drawing revision to inspection.";
@@ -360,6 +383,7 @@ async function smoke() {
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Quick prompt review");
   assert.deepEqual(calls.map(c => c.stage), ["route", "expert", "implementer"]);
+  assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),1,"Drafting reuses prior expert work without counting it again");
   assert.equal(z.object({objective:z.string()}).parse(calls[1].brief).objective, quickGoal);
   assert.deepEqual(z.object({expertBrief}).parse(calls[2].brief).expertBrief.requirements, [criterion]);
   assert.deepEqual(z.object({metrics:z.array(z.string())}).parse(calls[2].brief).metrics, [metric]);
@@ -531,7 +555,7 @@ async function smoke() {
   const start = calls.length;
   await click("#wf-suggest");
   await wait(() => exists("#wf-criteria"), "Dataset suggestions");
-  assert.match(await text("document.querySelector('#wf-measure-fields').textContent"), /Financial Services expert/);
+  assert.match(await text("document.querySelector('#wf-measure-fields').textContent"), /AI expert.*Review and edit them before drafting/);
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Dataset prompt review");
   const proposalCalls = calls.slice(start);

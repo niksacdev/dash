@@ -80,9 +80,11 @@ function measuresSection(w:UiWorkflow) {
     (w.suggestion ? 'Suggested metrics' : 'Your metrics') + '</span><textarea id="wf-chosen-metrics" rows="3">' +
     esc(w.chosenMetrics) + '</textarea></label><label class="field"><span>Success criteria</span><textarea id="wf-criteria" rows="3">' +
     esc(w.criteria) + '</textarea></label></div>' : manual;
-  const source = w.suggestion ? esc(w.suggestion.criteriaReview?.supplementSource || w.suggestion.domain+" expert") + ' · ' : '';
+  const supplement = w.suggestion?.criteriaReview?.supplementSource;
+  const attribution = w.suggestion ? '<strong>AI expert</strong> · AI suggestions can be wrong. Review and edit them before drafting.' +
+    (supplement ? ' Supplementary criteria from '+esc(supplement)+'.' : '') : 'Edit or remove any line before drafting.';
   return head + '<div id="wf-measure-fields">' + fields +
-    (selected ? '<small class="wf-hint">' + source + 'Edit or remove any line before drafting.</small>' : '') + '</div>';
+    (selected ? '<small class="wf-hint">' + attribution + '</small>' : '') + '</div>';
 }
 function mergeSuggestions(text:string, previous:string[] = [], suggested:string[] = []) {
   const current = metricLines(text);
@@ -114,8 +116,7 @@ function workflowCompose(w:UiWorkflow) {
     esc(w.outputCap) + '" placeholder="Runtime default"></label></div><p class="muted">A hard input limit requires exact token counting for the selected runtime. DASH stops before inference if it cannot verify every case against the limit.</p></div></details>' +
     '<div class="wf-actions"><span class="wf-hint">' + (w.sourceRunId?'The agents will use measured results from run '+esc(w.sourceRunId.slice(0,8))+' to revise the prompt.':w.parentId?'Revising a saved prompt version.':'The domain agents draft a prompt for your review.') +
     '</span><button class="yellow" id="wf-design" type="submit">' + (w.busy === 'design' ? 'Drafting prompt…' : 'Draft evaluation prompt →') + '</button></div></fieldset></form>' +
-    (busy ? '<div class="wf-actions wf-progress"><span id="wf-progress" role="status">' +
-      esc(w.stage || "Finding a loaded local planning model…") + '</span><button id="wf-cancel-design" type="button">Cancel preparation</button></div>' : '') +
+    planningActivity(w) +
     (w.mode === "dataset" ? fixtureControl(w) : '');
 }
 function fixtureControl(w:UiWorkflow) {
@@ -136,7 +137,7 @@ function scenarioContract(p:{mode:UiMode;datasetId?:string|null;dataset?:UiPack|
 function workflowReview(w:UiWorkflow) {
   const d = w.draft;
   if (!d) return "";
-  return '<form id="wf-approval-form" class="wf-panel"><fieldset class="wf-fields"' + (w.busy ? ' disabled' : '') +
+  return planningActivity(w) + '<form id="wf-approval-form" class="wf-panel"><fieldset class="wf-fields"' + (w.busy ? ' disabled' : '') +
     '><div class="wf-section-head"><h2>Review the evaluation prompt</h2>' + tag(d.domain) + '</div>' +
     '<label class="field"><span>Prompt for evaluation</span><textarea id="wf-prompt" required maxlength="24000" rows="10">' +
     esc(w.reviewPrompt) + '</textarea></label>' +
@@ -237,7 +238,7 @@ function workflowCaseSummary(m:UiManifest, r:UiResult) {
 }
 function workflowDesignInput(w:UiWorkflow) {
   return {
-    mode: w.mode, objective: w.objective.trim(), metrics: w.metrics.trim(),
+    mode: w.mode, requestId:w.activity?.requestId, objective: w.objective.trim(), metrics: w.metrics.trim(),
     ...(w.chosenMetrics !== null && {measures:{metrics:metricLines(w.chosenMetrics),criteria:metricLines(w.criteria)}}),
     ...(w.suggestion && {suggestionId:w.suggestion.id}),
     ...(w.domain && {domain:w.domain}), ...(w.inputCap && {inputCap:Number(w.inputCap)}),
@@ -248,14 +249,26 @@ function workflowDesignInput(w:UiWorkflow) {
 function showCurrentWorkflow(w:UiWorkflow) {
   return workflows[w.mode]===w && trail()[0]===modeRoute(w.mode);
 }
-window.dash?.onPlanningStage?.(({mode,stage,model}) => {
-  const w = workflows[mode];
-  if (!["design","suggest"].includes(w?.busy)) return;
-  w.stage = stage + " · " + model;
-  if (showCurrentWorkflow(w)) {
-    const label = document.querySelector("#wf-progress");
-    if (label) label.textContent = w.stage;
+window.dash?.onPlanningStage?.(event => {
+  const w = workflows[event.mode];
+  const activity = w.activity;
+  if (!activity || activity.requestId !== event.requestId || (w.busy !== "design" && w.busy !== "suggest")) return;
+  const index = activity.calls.findIndex(call => call.queryId === event.queryId);
+  if (index < 0) activity.calls.push(event);
+  else if (activity.calls[index].status === "running") activity.calls[index] = event;
+  else return;
+  if (!showCurrentWorkflow(w)) return;
+  const body = document.getElementById("wf-query");
+  if (body) {
+    const expanded = body.querySelector("details")?.open;
+    const focusedSummary = document.activeElement === body.querySelector(".ai-earlier summary");
+    body.innerHTML = planningActivityBody(w);
+    const earlier = body.querySelector("details");
+    if (earlier && expanded) earlier.open = true;
+    if (focusedSummary) earlier?.querySelector("summary")?.focus({preventScroll:true});
   }
+  const status = document.getElementById("wf-progress");
+  if (status) status.textContent = [event.stage,event.model,planningOutcome[event.status]].join(" · ");
 });
 type WorkflowTextField = "objective"|"metrics"|"chosenMetrics"|"criteria"|"inputCap"|"outputCap"|"reviewPrompt"|"reviewMetrics";
 const workflowFields:Record<string,WorkflowTextField|undefined> = {
@@ -321,21 +334,28 @@ document.addEventListener("submit", async e=>{
   if (design && !w.objective.trim()) {$("#wf-objective",form).focus();return;}
   if (!design && !w.reviewPrompt.trim()) {$("#wf-prompt",form).focus();return;}
   const suggest = design && (e.submitter instanceof HTMLButtonElement && e.submitter.value) === "suggest";
-  w.error=""; w.stage=""; w.busy=suggest ? "suggest" : design ? "design" : "approve";
+  w.error="";
+  if (design) w.activity={requestId:crypto.randomUUID(),calls:[]};
+  w.busy=suggest ? "suggest" : design ? "design" : "approve";
   requireElement("fieldset",HTMLFieldSetElement,form).disabled=true;
-  void render();
+  void render().then(() => {
+    if (design && showCurrentWorkflow(w) && (w.busy === "suggest" || w.busy === "design"))
+      document.getElementById("wf-activity")?.scrollIntoView({block:"nearest"});
+  });
   try {
     if (suggest) {
       if (!api.suggestMetrics) throw Error("Reopen DASH to use Suggest Metrics.");
       const task=workflowDesignInput(w);
       delete task.suggestionId;
       const result = await api.suggestMetrics(task);
+      if (w.activity && result.planningAttempts) w.activity.calls=result.planningAttempts.filter(a=>a.requestId===w.activity?.requestId);
       w.chosenMetrics = mergeSuggestions(w.chosenMetrics ?? w.metrics, w.suggestion?.metrics, result.metrics);
       w.criteria = mergeSuggestions(w.criteria, w.suggestion?.criteria, result.criteria);
       w.suggestion = result;
     } else if (design) {
       if (!api.designPrompt) throw Error("The planning service is unavailable in this session. Reopen DASH to load the domain agents.");
       const draft=await api.designPrompt(workflowDesignInput(w));
+      if (w.activity && draft.planningAttempts) w.activity.calls=draft.planningAttempts.filter(a=>a.requestId===w.activity?.requestId);
       w.draft=draft; w.reviewPrompt=draft.prompt; w.reviewMetrics=draft.metrics.join("\n");
     } else {
       if (!w.draft) throw Error("No draft is available to approve.");

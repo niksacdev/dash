@@ -16,6 +16,10 @@ The Overview track reads **Business outcome → Success metrics → Evaluation r
 | Evaluate | Quick compare runs two selected models on the same approved text. Dataset runs evaluate one or two candidates on the chosen snapshot. Runtimes apply their own chat templates. | Prompt revision, inputs, scenario and grader versions, replies, scores, available telemetry and errors |
 | Refine | On a finished run, the operator can start the next revision. The agents receive aggregate observed counts for the previous candidates and graders. The operator reviews the resulting revision again. | Source run, measured counts and prompt lineage. Historical prompts can also be reused exactly. |
 
+## Inspect a planning query
+
+In Quick compare or a dataset prompt variant, **Suggest Metrics** and **Draft evaluation prompt** show the active stage and the local or hosted model. A small animated indicator stops when the call settles and becomes static when reduced motion is enabled. The latest call stays visible after completion. Each retry or hosted fallback gets its own entry with the input and output tokens reported for that attempt, even when DASH rejects the generated text. Local inference has no API charge. A supported hosted model can show a labeled estimate from reported usage and standard pricing. Missing counts and prices stay unavailable. Suggested metrics are attributed to the AI expert with a review notice, and built-in supplementary criteria retain their source.
+
 ## Decisions from specification and critique
 
 - **Keep suggested measures distinct from evidence.** “Reduce false accepts” is an objective. The inspection grader can count incorrect proposed accepts on a labeled case set. Broader operational effects require their own measurements.

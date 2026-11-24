@@ -8,12 +8,25 @@ function invoke<K extends Command>(command:K, ...args:Parameters<DashBridge[K]>)
   return ipcRenderer.invoke("dash:"+command,...args);
 }
 
+function isUsage(value:unknown):value is PlanningUsage {
+  if (!value || typeof value !== "object") return false;
+  const count = (n:unknown) => n === null || (typeof n === "number" && Number.isSafeInteger(n) && n >= 0);
+  return "inputTokens" in value && count(value.inputTokens) && "outputTokens" in value && count(value.outputTokens) &&
+    "estimatedCostUsd" in value && (value.estimatedCostUsd === null || (typeof value.estimatedCostUsd === "number" &&
+    Number.isFinite(value.estimatedCostUsd) && value.estimatedCostUsd >= 0));
+}
 function isPlanningEvent(value:unknown):value is UiPlanningEvent {
   return typeof value==="object" && value!==null &&
     "mode" in value && (value.mode==="quick" || value.mode==="dataset") &&
+    "requestId" in value && typeof value.requestId==="string" &&
+    "queryId" in value && typeof value.queryId==="string" &&
+    "provider" in value && ["openai","lmstudio","ollama"].some(p=>p===value.provider) &&
+    (!("usage" in value) || isUsage(value.usage)) &&
+    (!("revision" in value) || value.revision === null || typeof value.revision === "string") &&
+    (!("reason" in value) || typeof value.reason === "string") &&
     "stage" in value && typeof value.stage==="string" &&
     "model" in value && typeof value.model==="string" &&
-    "status" in value && (value.status==="running" || value.status==="failed" || value.status==="succeeded") &&
+    "status" in value && (value.status==="running" || value.status==="failed" || value.status==="succeeded" || value.status==="canceled") &&
     "attempt" in value && typeof value.attempt==="number" && Number.isSafeInteger(value.attempt);
 }
 

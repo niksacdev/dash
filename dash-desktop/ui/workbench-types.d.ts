@@ -21,19 +21,19 @@ interface UiPrompt extends UiTokenCaps {
   mode:UiMode; objective:string; domain:string; requestedMetrics?:string; title:string; prompt:string; metrics:string[]; requirements:string[];
   datasetId?:string|null; dataset?:UiPack|null; domainSource?:string; agents?:Pick<UiRole,"domain"|"role"|"version"|"sources">[]; designer?:UiModelIdentity|null;
   priorRun?:UiPriorRun|null; guidanceReview?:UiPlanningReview; criteriaReview?:UiPlanningReview;
-  planningAttempts?:{stage:string;model:string;status:string;reason?:string}[];
+  planningAttempts?:UiPlanningAttempt[];
 }
 interface UiDraft extends UiPrompt {draftId:string}
 interface UiApproved extends UiPrompt {id:string; version:number; familyId:string}
-interface UiSuggestion {id:string; domain:string; metrics:string[]; criteria:string[]; criteriaReview?:UiPlanningReview}
+interface UiSuggestion {id:string; planningAttempts?:UiPlanningAttempt[]; domain:string; metrics:string[]; criteria:string[]; criteriaReview?:UiPlanningReview}
 interface UiWorkflow {
   mode:UiMode; objective:string; metrics:string; domain:string; inputCap:string; outputCap:string;
   datasetId:string; parentId:string|null; sourceRunId:string|null; draft:UiDraft|null; approved:UiApproved|null;
   reviewPrompt:string; reviewMetrics:string; suggestion:UiSuggestion|null; chosenMetrics:string|null; criteria:string;
-  busy:string; error:string; stage?:string; variant?:boolean; caseJudgeId?:string;
+  busy:string; error:string; activity?:{requestId:string; calls:UiPlanningAttempt[]}; variant?:boolean; caseJudgeId?:string;
 }
 interface UiDesignInput extends UiTokenCaps {
-  mode:UiMode; objective:string; metrics:string; domain?:string; datasetId?:string; parentId?:string; sourceRunId?:string;
+  mode:UiMode; requestId?:string; objective:string; metrics:string; domain?:string; datasetId?:string; parentId?:string; sourceRunId?:string;
   measures?:{metrics:string[];criteria:string[]}; suggestionId?:string;
 }
 interface UiApproval {draftId:string; prompt:string; metrics:string[]}
@@ -86,7 +86,16 @@ interface UiStartRun extends UiTokenCaps {
 }
 type UiGradeRequest = {grader:string;allowHostedDecision?:true} & ({run:string;index:number} | {evidence:{input:string;output:string;reference:unknown;trajectory?:unknown[]}});
 type UiDesignGraderRequest = {promptId:string} | {objective:string;metrics:string;domainId?:string;target:"response"|"agent";datasetId?:string};
-interface UiPlanningEvent {mode:UiMode;stage:string;model:string;status:string;attempt:number}
+interface PlanningUsage {
+  inputTokens:number|null; outputTokens:number|null; estimatedCostUsd:number|null;
+}
+interface UiPlanningAttempt {
+  stage:string; model:string; provider?:string; revision?:string|null; attempt?:number;
+  status:"running"|"succeeded"|"failed"|"canceled"; reason?:string; requestId?:string; queryId?:string; usage?:PlanningUsage;
+}
+interface UiPlanningEvent extends UiPlanningAttempt {
+  mode:UiMode; requestId:string; queryId:string; provider:string; attempt:number;
+}
 interface DashBridge {
  list():Promise<UiState>;refresh():Promise<UiServer[]>;dataset(id:string):Promise<UiDatasetDetail>;detail(id:string):Promise<UiRunDetail>;
  runProgress(id:string,revision:number,offset:number):Promise<UiRunProgress>;
