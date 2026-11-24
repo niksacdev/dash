@@ -33,11 +33,10 @@ const request = z.looseObject({
   options: z.looseObject({num_predict:z.number().optional()}).optional(),
   max_tokens: z.number().optional(),
 });
-type Stage = "native-relevance" | "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
+type Stage = "grader-plan" | "audit" | "native-relevance" | "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
 let holdRouting: (()=>Promise<void>) | undefined;
 interface TransportCall {stage:Stage; body:z.infer<typeof request>; brief:unknown}
 const calls:TransportCall[] = [];
-const expertBrief = z.object({requirements:z.array(z.string())});
 const datasetBrief = z.looseObject({dataset:z.looseObject({outputSchema:z.unknown()})});
 const priorRunBrief = z.looseObject({priorRun:z.looseObject({id:z.string(),candidates:z.array(z.looseObject({scored:z.number()}))})});
 const stageStatus = z.object({status:z.string()});
@@ -54,6 +53,13 @@ const guidance = "Cite the inspection record and identify the next review step."
 const roleEdit = "Trace the inspection record to the incoming lot.";
 
 function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
+  if(stage==="grader-plan") {
+    const {goals}=z.object({goals:z.array(z.object({key:z.string()}))}).parse(raw);
+    return Object.fromEntries(goals.map(({key},i)=>[key,{choice:"NEW:judge",name:i?"Evidence citation":"Inspection disposition reasoning",
+      criteria:i?"Check whether the answer cites the current inspection record.":"Assess the proposed disposition against the supplied inspection details.",
+      anchors:{full:"Cites the record and connects it to the decision.",partial:"Names a record without connecting the decision.",zero:"Omits the record.",evidence:"response"},
+      threshold:i ? .8 : .9,reason:"A local judge can evaluate the supplied answer."}]));
+  }
   if(stage==="native-relevance")return {answer_relevance_score:.9,reason:"The synthetic response addresses the supplied task."};
   if (stage === "route") return { domain: "Manufacturing" };
   if (stage === "expert") return {
@@ -61,10 +67,18 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
     metrics: ["Share of cases with cited evidence"],
     requirements: ["Cite the evidence used for each decision"],
   };
+  if (stage === "audit") {
+    const check=z.object({metric:z.string(),criterion:z.string()});
+    const {proposals}=z.object({proposals:z.array(check)}).parse(raw);
+    return {audit:proposals.map(pair=>({...pair,status:"needs-evidence",
+      evidence:"A labeled case with the expected decision and the candidate response.",
+      method:"Compare the decision and supporting citation with the source case.",
+      reason:"The cited record allows a grader to check the requested inspection decision."}))};
+  }
   if (stage === "implementer") {
-    const brief = z.object({expertBrief}).parse(raw);
-    assert.ok(brief.expertBrief.requirements.length, "Expert output must reach the implementer");
-    return { prompt: guidance };
+    const brief=z.looseObject({objective:z.string().min(1)}).parse(raw);
+    assert.equal(brief.expertBrief,undefined,"Held-out grader criteria stay with the evaluators");
+    return { prompt: guidance, reason:"Asking for a citation lets the grader locate the inspection evidence." };
   }
   if (stage === "analyzer") {
     const brief = z.object({evidence:z.array(z.object({id:z.string()})).min(1)}).parse(raw);
@@ -133,8 +147,8 @@ globalThis.fetch = async (url, options = {}) => {
   const schema = body.format ?? body.response_format?.json_schema?.schema;
   const props = schema?.properties ?? {};
   const evaluation = opikJudgeRequest(body.messages);
-  const stage = evaluation?.stage ?? (props.answer_relevance_score ? "native-relevance" : props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
-    props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
+  const stage = evaluation?.stage ?? (props.M1 ? "grader-plan" : props.answer_relevance_score ? "native-relevance" : props.highlights ? "reporter" : props.evidence?.type === "array" ? "analyzer" :
+    props.audit ? "audit" : props.domain ? "route" : props.requirements ? "expert" : props.prompt ? "implementer" : "candidate");
   const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" || stage === "native-relevance" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
   calls.push({ stage, body, brief });
   if (stage==="route" && holdRouting) await holdRouting();
@@ -371,25 +385,33 @@ async function smoke() {
   } finally {releaseRouting();holdRouting=undefined;}
   await wait(() => exists("#wf-criteria"), "Editable success criteria");
   assert.match(await text("document.querySelector('#wf-measure-fields').textContent"), /AI expert.*AI suggestions can be wrong/);
-  assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),2);
+  assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),3);
   assert.deepEqual(await js("Array.from(document.querySelector('#wf-query .ai-query').querySelectorAll('dd'),n=>n.textContent)"),["21","12","No API charge"]);
   assert.equal(await exists("#wf-activity .ai-pulse"),false);
-  assert.deepEqual(calls.map(c => c.stage), ["route", "expert"]);
+  assert.deepEqual(calls.map(c => c.stage), ["route", "expert", "audit"]);
+  assert.equal(await js("document.querySelector('#wf-measures .wf-explanation').open"),false);
+  await click("#wf-measures .wf-explanation summary");
+  assert.match(await text("document.querySelector('#wf-measures .wf-explanation').innerText"),/Evidence needed/);
   assert.equal(records().length, 0);
   const criterion = "Route any part with a missing drawing revision to inspection.";
   await fill("#wf-criteria", criterion);
   await fill("#wf-chosen-metrics", metric);
+  assert.equal(await js("document.querySelector('[data-metric-edit-note]').hidden"),false);
   assert.equal(await exists("[data-model]"), false, "Models follow approval");
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Quick prompt review");
-  assert.deepEqual(calls.map(c => c.stage), ["route", "expert", "implementer"]);
-  assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),1,"Drafting reuses prior expert work without counting it again");
+  assert.deepEqual(calls.map(c => c.stage), ["route", "expert", "audit", "audit", "implementer"]);
+  assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),2,"Editing a criterion triggers a new audit without repeating the domain proposal");
   assert.equal(z.object({objective:z.string()}).parse(calls[1].brief).objective, quickGoal);
-  assert.deepEqual(z.object({expertBrief}).parse(calls[2].brief).expertBrief.requirements, [criterion]);
-  assert.deepEqual(z.object({metrics:z.array(z.string())}).parse(calls[2].brief).metrics, [metric]);
+  const auditInput=z.object({proposals:z.array(z.object({metric:z.string(),criterion:z.string()}))}).parse(calls[3].brief);
+  assert.deepEqual(auditInput.proposals,[{metric,criterion}],"The auditor sees the exact edited pair");
+  assert.equal(z.object({objective:z.string()}).parse(calls[4].brief).objective,quickGoal);
+  assert.ok(!JSON.stringify(calls[4].brief).includes(criterion),"Grader-only criteria stay out of candidate prompt drafting");
   assert.equal(records().length, 0, "Unapproved drafts stay out of the catalogue");
   const approvedText = quickGoal + "\n\n" + guidance + "\nShow the lot identifier.";
+  assert.match(await text("document.querySelector('#wf-approval-form').textContent"),/Why this prompt\?/);
   await fill("#wf-prompt", approvedText);
+  assert.equal(await js("document.querySelector('[data-prompt-edit-note]').hidden"),false);
   await click("#wf-approve");
   await wait(() => records().length === 1 && exists("[data-model]"), "Saved Quick prompt and model roster");
   assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "The starting grid should fit a phone viewport");
@@ -559,8 +581,12 @@ async function smoke() {
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Dataset prompt review");
   const proposalCalls = calls.slice(start);
-  assert.deepEqual(proposalCalls.map(c => c.stage), ["expert", "implementer"]);
+  assert.deepEqual(proposalCalls.map(c => c.stage), ["expert", "audit", "implementer"]);
   for (const call of proposalCalls) {
+    if (call.stage==="audit") {
+      assert.doesNotMatch(JSON.stringify(call.brief),/"(case_id|rows|gold|sme_rationale)":/);
+      continue;
+    }
     const brief = datasetBrief.parse(call.brief);
     assert.equal(brief.dataset.datasetId, undefined, "Catalogue IDs are not task evidence");
     assert.ok(brief.dataset.outputSchema);
@@ -595,7 +621,13 @@ async function smoke() {
   const beforeRefinement = calls.length;
   await click("#wf-design");
   await wait(() => exists("#wf-prompt"), "Run-informed prompt review");
-  for (const call of calls.slice(beforeRefinement)) {
+  const stages=calls.slice(beforeRefinement);
+  assert.ok(stages.some(call=>call.stage==="expert"));
+  for (const call of stages) {
+    if (call.stage!=="expert") {
+      assert.doesNotMatch(JSON.stringify(call.brief),/"scored"|"gold"|"case_id"|QA response/);
+      continue;
+    }
     const brief = priorRunBrief.parse(call.brief);
     assert.equal(brief.priorRun.id, dataset.id);
     assert.equal(brief.priorRun.candidates[0].scored, dataset.caseIds.length);
@@ -651,7 +683,41 @@ async function smoke() {
     assert.ok(await js("document.documentElement.scrollWidth<=innerWidth+1"),"Catalog fits a phone viewport");
     assert.ok(await js("document.querySelector('[data-customize]').getBoundingClientRect().height>=44"),"Touch-size catalog action");
     win.setContentSize(1280,850);
-    await js("document.querySelector('#grade-create').closest('details').open=true");
+    // Workspace creation reviews several checks without attaching them to a run.
+    const designer="#grader-authoring [data-gd-workspace]";
+    const source=designer+" [data-gd-source]";
+    const goal="Review the active drawing before accepting a synthetic inspection lot.";
+    const proposedCount=()=>Number(db.prepare("SELECT COUNT(*) AS n FROM graders").get()?.n);
+    await fill(designer+" [data-gd-brief=objective]",goal);
+    const snapshot=await text("document.querySelector('[data-gd-source] option[value^=\"dataset:\"]').value");
+    await fill(source,snapshot);
+    assert.equal(await text("document.querySelector('[data-gd-brief=objective]').value"),goal);
+    assert.equal(await text("document.querySelector('[data-gd-brief=metrics]').value"),"");
+    const attachmentBefore=await js("localStorage.getItem('dash.attachedGraders.v1.'+"+q(snapshot)+")");
+    const initial=proposedCount();
+    await click(designer+" [data-gd-action=design]");
+    await wait(()=>exists(designer+" [data-gd-check]"),"Objective-only proposal inside Create a grader");
+    assert.equal(proposedCount(),initial);
+    await fill(designer+" [data-gd-brief=metrics]","Disposition rationale\nInspection record citation");
+    await click(designer+" [data-gd-action=design]");
+    await wait(()=>exists(designer+" [data-gd-check='1']"),"Two editable proposals");
+    const proposal=designer+" [data-gd-check='0']";
+    assert.equal(await text("document.querySelector("+q(proposal+" [data-gd-field=name]")+").value"),"Inspection disposition reasoning");
+    assert.equal(await text("document.querySelector("+q(proposal+" [data-gd-field=threshold]")+").value"),"0.9");
+    assert.ok(await text("document.querySelector("+q(proposal+" [data-gd-field=judgeId]")+").value"));
+    const name="Reviewed workspace inspection checks";
+    await fill(proposal+" [data-gd-field=name]",name);
+    await fill(proposal+" [data-gd-field=threshold]","0.75");
+    await click(designer+" [data-gd-check='1'] [data-gd-field=included]");
+    assert.equal(proposedCount(),initial);
+    await click(designer+" [data-gd-action=confirm]");
+    await wait(()=>exists(designer+" .gd-saved"),"Confirmed workspace grader");
+    assert.equal(proposedCount(),initial+1);
+    assert.equal(await js("localStorage.getItem('dash.attachedGraders.v1.'+"+q(snapshot)+")"),attachmentBefore);
+    const saved=await js("window.dash.list().then(s=>s.graders.find(g=>g.name==="+q(name)+"))");
+    assert.equal(z.object({threshold:z.literal(.75),type:z.literal("opik"),version:z.literal(1)}).safeParse(saved).success,true);
+    await click('#grader-authoring [name="grader-authoring-mode"][value="manual"]');
+    assert.equal(await js("document.querySelector('#grade-create').checkVisibility()"),true);
     await fill("#grade-type","decision");
     await click("[data-decision-starter=earnings]");
     assert.equal(await text("document.querySelector('#grade-create [name=industry]').value"),"Financial Services");

@@ -1,3 +1,5 @@
+import {isExternalOutcomeMetric} from "../lib/metric-audit.cjs";
+import {auditReply} from "./audit-fixture.cjs";
 import {test,type TestContext} from "node:test";
 import assert = require("node:assert/strict");
 import { DatabaseSync } from "node:sqlite";
@@ -7,12 +9,14 @@ import {PlanningRoute,type PlannerAdapters,type PlanningAttempt} from "../lib/pl
 import type {LocalCandidate,ModelCandidate,ChatTurn} from "../lib/runtime-types.cjs";
 import {z} from "zod";
 const planSchema=z.object({properties:z.record(z.string(),z.unknown()),required:z.array(z.string())});
-const expertBrief=z.object({title:z.string(),metrics:z.array(z.string()),requirements:z.array(z.string())});
+const candidateTask=z.object({objective:z.string(),inputCap:z.number().nullable(),outputCap:z.number().nullable(),
+  mode:z.string(),dataset:z.unknown(),assignment:z.string(),refinement:z.unknown().optional()}).strict();
 const review=z.object({omitted:z.number(),supplementSource:z.string().optional()});
 const attempts=z.array(z.object({status:z.string(),provider:z.string(),revision:z.string().nullable().optional(),reason:z.string().optional(),fallbackReason:z.string().optional()}));
 interface PlannerCall {candidate:ModelCandidate; messages:ChatTurn[]; structured:z.infer<typeof planSchema>; signal:AbortSignal}
 interface ReplyFields {title?:string;domain?:string;metrics?:string[];requirements?:string[];prompt?:string}
 interface FixtureOptions {
+  audit?:(messages:ChatTurn[])=>unknown;
   inventory?:(Omit<LocalCandidate,"provider"> & {provider:string;endpoint?:string})[];
   reply?:(result:ReplyFields)=>string|null;
 }
@@ -37,6 +41,7 @@ function fixture(t:TestContext, options:FixtureOptions = {}) {
       const decoded=planSchema.parse(structured);
       calls.push({candidate,messages,structured:decoded,signal});
       const schema=decoded.properties;
+      if(schema.audit) return inferenceReply(JSON.stringify(options.audit?.(messages) ?? auditReply(messages)),{input_tokens:19,output_tokens:7});
       const result = schema.domain ? { domain:"Manufacturing" } :
         schema.requirements ? expert : { prompt:"Check the source drawing, record units, and explain any inspection referral." };
       return inferenceReply(options.reply?.(result) ?? JSON.stringify(result),{input_tokens:19,output_tokens:7});
@@ -53,17 +58,16 @@ test("the router selects the domain and the two local domain roles prepare a reu
   const { work, calls } = fixture(t, { inventory:[{ ...model, provider:"remote", parameterSize:"1T" }, { ...model, model:"small", parameterSize:"1B" }, model] });
   const request = { ...quick, metrics:"Catch every out-of-tolerance reading.", inputCap:600, outputCap:80 };
   const draft = await work.design(request);
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   assert.ok(calls.every(c => c.candidate === model));
-  assert.deepEqual(calls.map(c => Object.keys(c.structured.properties)), [["domain"], ["title","metrics","requirements"], ["prompt"]]);
+  assert.deepEqual(calls.map(c => Object.keys(c.structured.properties)), [["domain"], ["title","metrics","requirements"], ["audit"], ["prompt","reason"]]);
   const expertMessage = calls[1].messages[0].content;
   assert.match(expertMessage, /[Mm]anufacturing/);
   assert.match(expertMessage, /nist\.gov/);
-  const implementationBrief=z.object({expertBrief,outputCap:z.number(),inputCap:z.number(),metrics:z.array(z.string())}).parse(JSON.parse(calls[2].messages[1].content));
-  assert.deepEqual(implementationBrief.expertBrief, expert);
+  const implementationBrief=candidateTask.parse(JSON.parse(calls[3].messages[1].content));
   assert.equal(implementationBrief.outputCap, 80);
   assert.equal(implementationBrief.inputCap, 600);
-  assert.equal(implementationBrief.metrics[0], request.metrics);
+  assert.equal(implementationBrief.objective, request.objective);
   assert.match(draft.prompt, /Flag out-of-tolerance parts/);
   assert.equal(draft.domainSource, "inferred");
   assert.equal(draft.domain, "Manufacturing");
@@ -83,10 +87,10 @@ test("the router selects the domain and the two local domain roles prepare a reu
   assert.deepEqual(work.get(saved.id), saved);
 });
 
-test("suggestions use the domain expert and edited measures reach the implementer and approval", async t => {
+test("edited measures are audited and saved independently of candidate preparation", async t => {
   const { work, calls } = fixture(t);
   const s = await work.design(quick, {}, "suggest");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.deepEqual(s.criteria, expert.requirements);
   assert.deepEqual(work.list(), []);
   const drafts:unknown=Object.getOwnPropertyDescriptor(work,"drafts")?.value;
@@ -94,13 +98,15 @@ test("suggestions use the domain expert and edited measures reach the implemente
   assert.equal(drafts.size, 0);
   const measures = {metrics:["Incorrect releases per 100 inspected lots"],criteria:["Route missing revisions to quality review."]};
   const draft = await work.design({...quick,suggestionId:s.id,measures});
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 5);
   const last=calls.at(-1);
   assert.ok(last);
   const rawBrief:unknown=JSON.parse(last.messages[1].content);
-  const brief=z.object({metrics:z.array(z.string()),expertBrief}).parse(rawBrief);
-  assert.deepEqual(brief.metrics, measures.metrics);
-  assert.deepEqual(brief.expertBrief.requirements, measures.criteria);
+  const brief=candidateTask.parse(rawBrief);
+  assert.equal(brief.objective,quick.objective);
+  assert.deepEqual(draft.metrics,measures.metrics);
+  assert.deepEqual(draft.requirements,measures.criteria);
+  assert.doesNotMatch(JSON.stringify(rawBrief),/missing revisions|100 inspected lots/);
   assert.doesNotMatch(JSON.stringify(rawBrief), /Cite the drawing revision/);
   const p = work.approve({draftId:draft.draftId,prompt:draft.prompt});
   assert.deepEqual(p.metrics, measures.metrics);
@@ -110,12 +116,12 @@ test("suggestions use the domain expert and edited measures reach the implemente
   await assert.rejects(work.design({...dataset,suggestionId:s.id,measures},context), /Suggest Metrics again/);
 });
 
-test("dataset drafting uses two real stages and only the public task contract", async t => {
+test("dataset drafting uses three real stages and only the public task contract", async t => {
   const { work, calls } = fixture(t);
   const dirty = { ...context, rows:[{gold:"SECRET_LABEL", input:"SECRET_ROW"}], pack:{...pack, challenge:"SECRET_SCENARIO_EXTRA"} };
   const draft = await work.design(dataset, dirty);
-  assert.equal(calls.length, 2);
-  for (const call of calls) {
+  assert.equal(calls.length, 3);
+  for (const call of calls.filter(c=>!c.structured.properties.audit)) {
     const {dataset:publicTask}=z.object({dataset:z.record(z.string(),z.unknown())}).parse(JSON.parse(call.messages[1].content));
     assert.equal(publicTask.system, pack.system);
     assert.equal(publicTask.version, undefined);
@@ -168,7 +174,7 @@ test("admin edits are versioned, checked for conflicts, and take effect on later
   assert.throws(() => work.saveRole(edit), /changed/);
   const after = await work.design(dataset, context);
   assert.equal(after.agents?.find(a => a.role === "expert")?.hash, next.hash);
-  assert.match(calls[2].messages[0].content, /custom inspection guide/);
+  assert.match(calls[3].messages[0].content, /custom inspection guide/);
   const savedBefore = work.approve({draftId:before.draftId,prompt:before.prompt});
   assert.equal(savedBefore.agents?.find(a => a.role === "expert")?.hash, original.hash);
 });
@@ -194,7 +200,7 @@ test("Financial Services suggestions need no title and reuse the objective for a
     assert.deepEqual(suggested.criteria, ["Each accepted claim cites its filing."]);
     const draft = await work.design({...request,suggestionId:suggested.id});
     assert.equal(draft.title, request.objective);
-    assert.deepEqual(attempts.parse(draft.planningAttempts).map(a=>a.status), ["succeeded","succeeded"]);
+    assert.deepEqual(attempts.parse(draft.planningAttempts).map(a=>a.status), ["succeeded","succeeded","succeeded"]);
   }
 });
 
@@ -206,18 +212,18 @@ test("a repetitive implementer retries locally with changed instructions and exc
     result.prompt && ++attempt === 1 ? JSON.stringify({prompt:"part_id, ".repeat(35)}) : null});
   const draft = await work.design({...quick, domain:"Manufacturing"});
   assert.ok(calls.every(c=>c.candidate === model));
-  assert.equal(calls.length, 3);
-  assert.match(calls[2].messages[0].content, /Correct the previous generation/);
-  assert.doesNotMatch(calls[2].messages[0].content, /part_id, part_id/);
+  assert.equal(calls.length, 4);
+  assert.match(calls[3].messages[0].content, /Correct the previous generation/);
+  assert.doesNotMatch(calls[3].messages[0].content, /part_id, part_id/);
   assert.doesNotMatch(draft.prompt, /part_id/);
-  assert.match(attempts.parse(draft.planningAttempts)[1].reason || "", /repeated/);
-  assert.deepEqual(attempts.parse(draft.planningAttempts).map(a=>a.status), ["succeeded","failed","succeeded"]);
+  assert.match(attempts.parse(draft.planningAttempts)[2].reason || "", /repeated/);
+  assert.deepEqual(attempts.parse(draft.planningAttempts).map(a=>a.status), ["succeeded","succeeded","failed","succeeded"]);
 });
 
 test("failure of either role falls back directly to the configured OpenAI endpoint with accurate provenance", async t => {
   for (const failingRole of ["expert","implementer"]) {
     const {db,adapters,calls} = fixture(t, {reply: result => {
-      if (failingRole === "expert" && result.metrics) return JSON.stringify({...result,metrics:["part_id, ".repeat(10)]});
+      if (failingRole === "expert" && result.metrics) return JSON.stringify({...result,requirements:["part_id, ".repeat(10)]});
       if (failingRole === "implementer" && result.prompt) return "invalid output";
       return null;
     }});
@@ -239,7 +245,7 @@ test("failure of either role falls back directly to the configured OpenAI endpoi
     const privateContext:DesignContext & {gold:string}={...context,gold:"PRIVATE_DATASET_GOLD",onStage:e=>events.push(e)};
     const draft = await work.design(dataset,privateContext);
     assert.deepEqual(urls, ["https://api.openai.com/v1/chat/completions"]);
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 4);
     assert.equal(z.object({provider:z.string()}).parse(draft[failingRole === "expert" ? "expertDesigner" : "designer"]).provider, "openai");
     assert.equal(z.object({provider:z.string()}).parse(draft[failingRole === "expert" ? "designer" : "expertDesigner"]).provider, "lmstudio");
     const hosted=attempts.parse(draft.planningAttempts).find(a=>a.provider==="openai");
@@ -274,7 +280,7 @@ test("invalid metrics and incomplete instructions never become catalogue entries
   assert.deepEqual(work.list(),[]);
 });
 
-test("a copied or unpaired aggregate is replaced by the pass rate for each expert criterion", async t => {
+test("the auditor replaces a copied or unpaired aggregate for each expert criterion", async t => {
   const {work} = fixture(t,{reply:() => JSON.stringify({
     requirements:["The reported EPS matches diluted GAAP EPS.","The citation supports the reporting period."],
     metrics:["Rate of delayed shipments."],
@@ -297,7 +303,7 @@ test("unwritten inspection policies are removed before the implementer sees the 
   assert.equal(review.parse(d.guidanceReview).omitted,2);
   assert.equal(review.parse(d.criteriaReview).supplementSource,"DASH built-in manufacturing inspection check");
   assert.equal(review.parse(d.guidanceReview).supplementSource,review.parse(d.criteriaReview).supplementSource);
-  assert.doesNotMatch(calls[1].messages[1].content,/0\.01|typical boundary/);
+  assert.doesNotMatch(calls[2].messages[1].content,/0\.01|typical boundary/);
   assert.doesNotMatch(d.prompt,/0\.01|pass rate|typical boundary/i);
 });
 
@@ -326,4 +332,186 @@ test("a canceled planning call keeps returned usage and never invokes a fallback
   assert.deepEqual(events.map(e=>e.status),["running","canceled"]);
   assert.equal(events[0].queryId,events[1].queryId);
   assert.deepEqual(events[1].usage,{inputTokens:12,outputTokens:0,estimatedCostUsd:null});
+});
+
+const audited = (metric:string,criterion:string,status:"proposed"|"needs-evidence"|"external"="proposed")=>({
+  metric,criterion,status,evidence:"The candidate answer and the source release for the case.",
+  method:"Compare the reported field with the labeled value and period.",reason:"This distinguishes the reported GAAP field from the adjusted figure.",
+});
+
+test("a short invalid metric and role echoes cannot replace an independent case-level audit",async t=>{
+  const objective="Report diluted GAAP EPS and the quarter from the release. For the quarter ended June 30, diluted GAAP EPS was $0.74 and adjusted EPS was $0.85.";
+  const captured="Reports the diluted GAAP EPS of $0.74 and the reporting quarter (ended June 30).";
+  const copied="Inspect what the ANSWER does, never inventory what happens to appear in an input document.";
+  const {work,calls}=fixture(t,{
+    reply:result=>result.metrics ? JSON.stringify({metrics:["part_id, ".repeat(10),"EPS"],requirements:[copied,"Compare reported diluted EPS against the release."]}) :
+      JSON.stringify({prompt:"Write two standalone sentences. Use only the values, units and decision rules explicitly given in the case or task. Leave the decision to the candidate. Request review if a necessary rule is absent.",reason:"Increases accuracy."}),
+    audit:messages=>{
+      assert.doesNotMatch(messages[1].content,/inventory what happens/);
+      return {audit:[audited("Diluted GAAP EPS source agreement",captured)]};
+    },
+  });
+  const suggested=await work.design({mode:"quick",domain:"Financial Services",objective},{},"suggest");
+  assert.equal(suggested.auditAgent?.id,"workflow-metric-auditor");
+  const first=suggested.metricAudit?.[0];
+  assert.ok(first);
+  assert.equal(first.status,"needs-evidence");
+  assert.match(first.reason,/adjusted figure/);
+  const draft=await work.design({mode:"quick",domain:"Financial Services",objective,suggestionId:suggested.id,
+    measures:{metrics:suggested.metrics,criteria:suggested.criteria}});
+  const implementation=calls.at(-1);
+  assert.ok(implementation);
+  const brief=candidateTask.parse(JSON.parse(implementation.messages[1].content));
+  assert.equal(brief.objective,objective);
+  const {objective:publicObjective,...rest}=brief;
+  assert.doesNotMatch(JSON.stringify(rest),/0\.74|June 30|Write two standalone/);
+  assert.equal(draft.prompt,objective);
+  assert.deepEqual(draft.promptRationale?.addition,"");
+  assert.equal(draft.planningAttempts?.filter(a=>a.stage==="Evaluation metric audit").length,1);
+  const saved=work.approve({draftId:draft.draftId,prompt:draft.prompt});
+  assert.deepEqual(work.get(saved.id).metricAudit,suggested.metricAudit);
+  assert.deepEqual(work.get(saved.id).promptRationale,draft.promptRationale);
+});
+
+test("external benefits remain separate and generic or copied auditor output gets bounded correction",async t=>{
+  const {work}=fixture(t,{audit:()=>({audit:[audited("Investor confidence","Verify whether investor confidence rose after the announcement.")]})});
+  const suggestion=await work.design({mode:"quick",domain:"Financial Services",objective:"Improve investor confidence."},{},"suggest");
+  assert.deepEqual(suggestion.metrics,[]);
+  assert.equal(suggestion.metricAudit?.[0].status,"external");
+  const bad=fixture(t,{audit:()=>({audit:[audited("Quality score","The answer meets the objective.")]})});
+  await assert.rejects(bad.work.design({...quick,domain:"Manufacturing"},{},"suggest"),/metric audit.*generic or copied/i);
+  assert.equal(bad.calls.filter(call=>call.structured.properties.audit).length,2);
+  const copied=fixture(t,{audit:()=>({audit:[audited("Result","Inspect what the ANSWER does, never inventory what happens to appear in an input document.")]})});
+  await assert.rejects(copied.work.design({...quick,domain:"Manufacturing"},{},"suggest"),/metric audit.*generic or copied/i);
+});
+
+test("only confirmed scenario measures can be proposed and edited approvals withdraw the original audit",async t=>{
+  const {work}=fixture(t,{audit:()=>({audit:[audited("False accepts","Compare the earnings record to the GAAP EPS in its source."),
+    audited("Revenue projections","Compare the EPS estimate with a forecast.") ]})});
+  const request={...dataset,objective:"Compare proposed accept decisions for GAAP EPS extraction."};
+  const publicContext={...context,pack:{...pack,id:"earnings",scorer:"earnings-record-v1",metrics:["Analyst-ready records","False accepts","Analyst review rate"]},
+    industry:"Financial Services",coverage:{cases:8,referenceCases:8,rubricCases:0}};
+  const plan=await work.design(request,publicContext);
+  assert.deepEqual(plan.metricAudit?.map(a=>a.status),["proposed","needs-evidence"]);
+  assert.deepEqual(plan.auditCoverage,{cases:8,referenceCases:8,rubricCases:0});
+  const text=plan.objective+"\n\nOperator-edited instructions for each release.";
+  const saved=work.approve({draftId:plan.draftId,prompt:text});
+  assert.equal(saved.metricAudit,undefined);
+  assert.equal(saved.promptRationale?.addition,"Operator-edited instructions for each release.");
+  assert.match(saved.promptRationale?.reason??"",/operator edited/i);
+  const missing=await work.design(request,{...publicContext,coverage:{cases:8,referenceCases:0,rubricCases:0}},"suggest");
+  assert.ok(missing.metricAudit?.every(r=>r.status==="needs-evidence"));
+});
+
+test("operational effects and extraction of a reported effect have distinct evidence boundaries",()=>{
+  for (const metric of ["Six-month warranty-cost reduction","Reduce warranty costs over six months","Improve investor confidence","Reduce analyst time"]) {
+    assert.equal(isExternalOutcomeMetric(metric),true,metric);
+  }
+  for (const metric of ["Accuracy of extracting reported warranty-cost reduction from the supplied filing",
+       "Reported cost savings extraction accuracy","Correctly reported GAAP EPS"]) {
+    assert.equal(isExternalOutcomeMetric(metric),false,metric);
+  }
+});
+
+test("approval keeps criteria only for exactly retained metrics in the final order",async t=>{
+  const amount=audited("GAAP EPS agreement","Compare diluted GAAP EPS with the reported GAAP figure.");
+  const quarter=audited("Quarter agreement","Compare the reported quarter with the supplied release.");
+  const citation=audited("Citation agreement","Check that the quote supports the reported GAAP EPS.");
+  const {work}=fixture(t,{audit:()=>({audit:[amount,quarter,citation]})});
+  const request={mode:"quick",domain:"Financial Services",objective:"Extract GAAP EPS, quarter and supporting citation."};
+  const plan=await work.design(request);
+  const finalMetrics=[citation.metric,"Revised quarter metric",amount.metric];
+  const saved=work.approve({draftId:plan.draftId,prompt:plan.prompt,metrics:finalMetrics});
+  assert.deepEqual(saved.metrics,finalMetrics);
+  assert.deepEqual(saved.requirements,[citation.criterion,amount.criterion]);
+  assert.equal(saved.metricAudit,undefined);
+  assert.deepEqual(work.get(saved.id).requirements,saved.requirements);
+  const cleared=await work.design(request);
+  const empty=work.approve({draftId:cleared.draftId,prompt:cleared.prompt,metrics:[]});
+  assert.deepEqual(work.get(empty.id).requirements,[]);
+});
+
+test("an invented fiscal year is omitted and a repeated objective is stripped from the implementer addition",async t=>{
+  const objective="Extract diluted GAAP EPS and reporting period. Supplied release: For the quarter ended June 30, diluted GAAP EPS was $0.74.";
+  const missingYear=audited("Quarter accuracy","Reports the quarter ended June 30, 2023.");
+  const eps=audited("EPS source agreement","Compare diluted GAAP EPS with the figure in the supplied release.");
+  const {work}=fixture(t,{
+    audit:()=>({audit:[missingYear,eps]}),
+    reply:result=>result.prompt ? JSON.stringify({prompt:"Objective: "+objective+" Preserve decimal precision."}) : null,
+  });
+  const plan=await work.design({mode:"quick",domain:"Financial Services",objective});
+  assert.deepEqual(plan.metricAudit?.map(a=>a.metric),[eps.metric]);
+  assert.doesNotMatch(JSON.stringify(plan.requirements),/2023/);
+  assert.equal(plan.prompt,objective+"\n\nPreserve decimal precision.");
+  assert.equal(plan.promptRationale?.addition,"Preserve decimal precision.");
+  const one=fixture(t,{audit:()=>({audit:[missingYear]})});
+  await assert.rejects(one.work.design({mode:"quick",domain:"Financial Services",objective},{},"suggest"),/unsupported number or year/);
+  assert.equal(one.calls.filter(q=>q.structured.properties.audit).length,2);
+});
+
+test("independent measure edits preserve known pairs across suggestions and approved revisions",async t=>{
+  const amount=audited("EPS agreement","Compare GAAP EPS with the reported source figure.");
+  const quote=audited("Citation agreement","Check that the cited passage supports the EPS.");
+  const period=audited("Quarter agreement","Compare the reporting period with the filing.");
+  const {work,calls}=fixture(t,{audit:messages=>{
+    const data=z.object({preserveSelectedWording:z.boolean()}).parse(JSON.parse(messages[1].content));
+    return data.preserveSelectedWording ? auditReply(messages) : {audit:[amount,quote,period]};
+  }});
+  const base={mode:"quick",domain:"Financial Services",objective:"Extract and cite GAAP EPS and its reporting quarter."};
+  const s=await work.design(base,{},"suggest");
+  const chosen=[period.metric,amount.metric];
+  const d=await work.design({...base,suggestionId:s.id,measures:{metrics:chosen,criteria:s.criteria}});
+  assert.deepEqual(d.metrics,chosen);
+  assert.deepEqual(d.requirements,[period.criterion,amount.criterion]);
+  const saved=work.approve({draftId:d.draftId,prompt:d.prompt});
+  const revised=await work.design({...base,parentId:saved.id,measures:{metrics:[amount.metric],criteria:saved.requirements}});
+  assert.deepEqual(revised.requirements,[amount.criterion]);
+  const before=calls.filter(c=>c.structured.properties.audit).length;
+  const cleared=await work.design({...base,suggestionId:s.id,measures:{metrics:[],criteria:s.criteria}});
+  assert.deepEqual(cleared.metrics,[]);
+  assert.deepEqual(cleared.requirements,[]);
+  assert.equal(calls.filter(c=>c.structured.properties.audit).length,before);
+  await assert.rejects(work.design({...base,suggestionId:s.id,
+    measures:{metrics:["New A","New B"],criteria:["New test A","New test B"]}}),/change one pair at a time/);
+});
+
+test("an operator passage count is scoped to its own edited pair and survives approval",async t=>{
+  const eps=audited("EPS agreement","Compare GAAP EPS with the reported source figure.");
+  const citations=audited("Supporting passages","Cite 2 supporting passages.");
+  const {work}=fixture(t,{audit:messages=>{
+    const data=z.object({preserveSelectedWording:z.boolean()}).parse(JSON.parse(messages[1].content));
+    if (!data.preserveSelectedWording) return {audit:[eps]};
+    return {audit:[{...eps,method:"Compare EPS against 2 case filings."},citations]};
+  }});
+  const request={mode:"quick",domain:"Financial Services",objective:"Extract and cite the reported GAAP EPS."};
+  const prior=await work.design(request,{},"suggest");
+  const draft=await work.design({...request,suggestionId:prior.id,measures:{
+    metrics:[eps.metric,citations.metric],criteria:[eps.criterion,citations.criterion],
+  }});
+  const [first,second]=draft.metricAudit??[];
+  assert.equal(first.metric,eps.metric);
+  assert.equal(first.status,"needs-evidence");
+  assert.doesNotMatch(first.method,/2 case filings/);
+  assert.equal(second.metric,citations.metric);
+  assert.equal(second.criterion,citations.criterion);
+  assert.equal(second.method,citations.method);
+  const saved=work.approve({draftId:draft.draftId,prompt:draft.prompt});
+  assert.deepEqual(work.get(saved.id).requirements,[eps.criterion,citations.criterion]);
+});
+
+test("revising a historical prompt recovers its aligned criteria and surfaces ambiguous historic lists",async t=>{
+  const {work,db}=fixture(t);
+  const base={mode:"quick",domain:"Financial Services",objective:"Extract and cite reported GAAP EPS."};
+  const metrics=["EPS agreement"],criteria=["Compare the reported EPS amount to the cited source."];
+  function historical(id:string,requirements:string[]) {
+    const spec={...base,id,familyId:id,version:1,title:"Historical EPS check",prompt:"Extract EPS.",metrics,requirements};
+    db.prepare("INSERT INTO outcome_prompts VALUES(?,?,?,?,?,?)").run(id,id,1,id,"legacy",JSON.stringify(spec));
+  }
+  historical("legacy-aligned",criteria);
+  const draft=await work.design({...base,parentId:"legacy-aligned",measures:{metrics,criteria}});
+  assert.deepEqual(draft.metrics,metrics);
+  assert.deepEqual(draft.requirements,criteria);
+  const ambiguous=[...criteria,"Confirm the reporting period."];
+  historical("legacy-ambiguous",ambiguous);
+  await assert.rejects(work.design({...base,parentId:"legacy-ambiguous",measures:{metrics,criteria:ambiguous}}),/Pair one success criterion/);
 });

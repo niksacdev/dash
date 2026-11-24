@@ -1,3 +1,4 @@
+import {auditReply} from "./audit-fixture.cjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -88,6 +89,7 @@ test("model boundary excludes reference labels and distinguishes runtime failure
       assert.equal(candidate.id, c.id);
       assert.equal(messages.length, 2);
       const fields=options.structured?.properties;
+      if (isRecord(fields) && fields.audit) return reply(JSON.stringify(auditReply(messages)));
       if (isRecord(fields) && fields.requirements)
         return reply(JSON.stringify({title:"Extract earnings",metrics:["Correct values"],requirements:["Ground answers in the case"]}));
       if (isRecord(fields) && fields.prompt)

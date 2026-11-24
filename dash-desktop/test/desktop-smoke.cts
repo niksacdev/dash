@@ -44,6 +44,36 @@ async function checkIpc(window:BrowserWindow) {
   } finally { foreign.destroy(); }
 }
 
+async function checkLocalRuntime(js:RendererEval, wait:(source:string)=>Promise<void>) {
+  const original=globalThis.fetch;
+  const key="liquid/lfm3-smoke";
+  let loaded=false,posts=0;
+  globalThis.fetch=async (input,options)=>{
+    const url=new URL(input instanceof Request ? input.url : input);
+    if (url.href==="http://127.0.0.1:1234/api/v1/models") return Response.json({models:[
+      {key,type:"llm",loaded_instances:loaded?[{id:"desk-worker",config:{context_length:2048}}]:[]}]});
+    if (url.href==="http://127.0.0.1:1234/v1/models") return Response.json({data:[]});
+    if (url.href==="http://127.0.0.1:11434/api/tags") return Response.json({models:[]});
+    assert.equal(url.href,"http://127.0.0.1:1234/api/v1/models/load");
+    assert.equal(options?.method,"POST");
+    assert.deepEqual(JSON.parse(String(options.body)),{model:key});
+    posts++;loaded=true;
+    return Response.json({type:"llm",status:"loaded",instance_id:"desk-worker"});
+  };
+  try {
+    await js("location.hash='providers'");
+    await wait("document.querySelector('h1')?.textContent==='Local runtimes'");
+    await js("document.querySelector('[data-act=refresh]').click()");
+    await wait("document.querySelector('[data-act=load-local-model]')?.dataset.key==='liquid/lfm3-smoke'");
+    await js("document.querySelector('[data-act=load-local-model]').click()");
+    await wait("document.querySelector('#screen').textContent.includes('desk-worker') && !document.querySelector('[data-act=load-local-model]')");
+    assert.equal(posts,1);
+  } finally {
+    globalThis.fetch=original;
+    await js("window.dash.refresh()");
+  }
+}
+
 async function waitForSamples(minimum:number) {
   for (let i=0;i<100;i++) {
     if (detailedSamples>=minimum) return;
@@ -235,6 +265,7 @@ app
       await js("document.querySelectorAll('#developer-run option').length"),
       2,
     );
+    await checkLocalRuntime(js,wait);
     await checkOverview(window, js, wait);
     console.log("Light/dark Overview previews: "+temporary);
     console.log(

@@ -1,3 +1,4 @@
+import {auditReply} from "./audit-fixture.cjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Bench } from "../lib/bench.cjs";
@@ -21,7 +22,9 @@ async function setup(t:TestContext) {
     discover:async () => [inventory(models)],
     async invoke(model, messages, options) {
       if (options.planning) {
-        const expert = requestProperties.parse(options.structured).properties.requirements;
+        const properties=requestProperties.parse(options.structured).properties;
+        if (properties.audit) return reply(JSON.stringify(auditReply(messages)));
+        const expert=properties.requirements;
         return reply(JSON.stringify(expert
           ? {title:"Capture earnings", metrics:["GAAP EPS capture accuracy"], requirements:["Distinguish GAAP from adjusted EPS."]}
           : {prompt:"Extract the reported GAAP EPS."}));
@@ -76,6 +79,7 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   const options = bench.quickGraderOptions(approved.id);
   assert.equal(options.recommended.length, 0);
   assert.equal(bench.graders.list().filter(g=>g.library?.scope === "customer").length, 0);
+  assert.ok(options.generated);
   assert.match(options.generated.criteria, /Distinguish GAAP from adjusted EPS/);
   assert.equal(options.generated.type, "opik");
   const outcomeRubric = {judgeId:models[2].id, criteria:options.generated.criteria};
@@ -125,4 +129,15 @@ test("a rejected Quick grading configuration leaves the run queue and grader lib
   assert.throws(()=>start({graderIds,outcomeRubric:{judgeId:models[2].id}}),/up to eight/);
   assert.equal(bench.graders.list().filter(g=>g.library?.scope === "customer").length,8);
   assert.equal(bench.list().runs.length,0);
+});
+
+test("an audited external KPI does not enable an outcome judge or erase the operator’s metric", async t=>{
+  const {bench,approved,models}=await setup(t);
+  const withKpi={...approved,metrics:["Actual analyst hours saved"]};
+  assert.ok(withKpi.auditAgent);
+  assert.equal(bench.graders.quickOptions(withKpi,models).generated,null);
+  assert.throws(()=>bench.graders.resolveQuick(withKpi,[],{type:"opik",judgeId:models[0].id},models),/observable success measure/);
+  assert.deepEqual(withKpi.metrics,["Actual analyst hours saved"]);
+  const edited={...approved,metrics:[],requirements:[],metricAudit:undefined};
+  assert.equal(bench.graders.quickOptions(edited,models).generated,null);
 });

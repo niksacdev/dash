@@ -8,20 +8,21 @@ function gradeScopeRecord(scope:string) {
   if (scope.startsWith("dataset:")) return state.datasets.find(d=>d.id===scope.slice(8));
   return null;
 }
-function gradeDesignerDraft(scope:string) {
-  const existing=graderDesignDrafts.get(scope);
+function gradeDesignerDraft(scope:string,workspace=false) {
+  const key=(workspace?"workspace/":"run/")+scope;
+  const existing=graderDesignDrafts.get(key);
   if (existing) return existing;
   const record=gradeScopeRecord(scope), scenario=state.packs.find(p=>p.id===(record && "pack" in record ? record.pack : null));
   const draft:UiGraderDraft = {
     objective:(record && "objective" in record ? record.objective : "") || scenario?.description || "", metrics:((record && "metrics" in record ? record.metrics : undefined) || scenario?.metrics || []).join("\n"),
     industry:(record && "domain" in record ? record.domain : "") || (record && "metadata" in record ? record.metadata.industry : "") || "Cross-industry", target:"response",
-    draftId:"",automatic:[],checks:[], summary:"", designer:null, error:"", saved:[], busy:"", hasPlan:false,
+    editableMethods:[],objectiveEdited:false,metricsEdited:false,draftId:"",automatic:[],checks:[], summary:"", designer:null, error:"", saved:[], busy:"", hasPlan:false,
   };
-  graderDesignDrafts.set(scope,draft);
+  graderDesignDrafts.set(key,draft);
   return draft;
 }
 function gradeDesignerLocalJudges() {
-  return models().filter(m=>["lmstudio","ollama"].includes(m.provider));
+  return state.servers.filter(s=>s.online).flatMap(s=>s.models).filter(m=>["lmstudio","ollama"].includes(m.provider));
 }
 function gradeDesignerScopeSelector() {
   return formField("Design for",'<select data-gd-source>'+opt("custom","Describe an evaluation",workspaceGradeScope)+
@@ -34,13 +35,14 @@ function graderDesignInputs(scope:string,draft:UiGraderDraft,record:ReturnType<t
   if (scope.startsWith("prompt:")) return '<p class="gd-brief"><strong>'+esc((record && "objective" in record ? record.objective : ""))+'</strong><small>'+
     esc([(record && "domain" in record ? record.domain : ""),...((record && "metrics" in record ? record.metrics : undefined) || [])].join(" · "))+'</small></p>';
   return formField("Task objective",'<textarea data-gd-brief="objective" maxlength="12000">'+esc(draft.objective)+'</textarea>')+
-    formField("Business measures or success criteria",'<textarea data-gd-brief="metrics" maxlength="3000">'+esc(draft.metrics)+'</textarea>')+
+    formField("Success measures (optional, one per line)",'<textarea data-gd-brief="metrics" maxlength="3000">'+esc(draft.metrics)+'</textarea>')+
     (scope==="custom"?'<div class="cols">'+formField("Domain",'<select data-gd-brief="industry">'+["Cross-industry","Financial Services","Manufacturing","General"].map(v=>opt(v,v,draft.industry)).join("")+'</select>')+
       formField("Evaluation target",'<select data-gd-brief="target">'+opt("response","Model response",draft.target)+opt("agent","Agent trajectory and output",draft.target)+'</select>')+'</div>':
       '<small>'+esc((record && "metadata" in record ? record.metadata.industry : ""))+' · '+esc((record && "metadata" in record ? record.metadata.family || record.name : ""))+' · '+esc(record?.version)+'</small>');
 }
-function designCheckFields(g:UiEditableGrader,i:number) {
+function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],scope:string) {
   const source=g.source, reuse=g.action==="reuse", judge=g.action==="derive" || ["opik","judge"].includes(g.type);
+  const editableIndustry=!g.source && scope==="custom";
   const field=(key:string,label:string,body:string)=>formField(label,body.replace("GD_FIELD",'data-gd-field="'+key+'"'));
   const basis=source ? '<p><strong>'+esc(source.scope+' grader · '+source.name+' v'+source.version)+'</strong></p><p>'+esc(source.criteria)+'</p>'+
     (source.hosted ? '<p>Uses OpenRouter · '+esc(source.model)+'. Running this grader requires confirmation before case evidence is sent.</p>' : '') : '';
@@ -48,17 +50,24 @@ function designCheckFields(g:UiEditableGrader,i:number) {
     esc(g.name || "Proposed grader")+'</span></label><small>'+esc(g.reason)+'</small><fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
     basis+(source ? field("action","After approval",'<select GD_FIELD>'+opt("reuse","Use this exact version",g.action)+opt("derive","Create a customer rubric from this version",g.action)+'</select>') : '<p>New customer grader</p>')+
     (reuse ? '' : '<div class="cols">'+field("name","Grader name",'<input GD_FIELD maxlength="100" value="'+esc(g.name)+'">')+
-    field("category","Metric",'<input GD_FIELD maxlength="100" value="'+esc(g.category)+'">')+'</div><div class="cols"><p>'+esc(judge?"Opik G-Eval":graderTypes[g.type])+'</p>'+
-    field("threshold","Pass threshold (0–1)",'<input GD_FIELD inputmode="decimal" value="'+esc(g.threshold)+'">')+'</div>'+
+    field("category","Category",'<input GD_FIELD maxlength="100" value="'+esc(g.category)+'">')+'</div><div class="cols">'+
+    field("industry","Applies to industry",'<select GD_FIELD '+(editableIndustry?'':'disabled')+'>'+[...new Set([g.industry,"Cross-industry","Financial Services","Manufacturing","General"])].map(v=>opt(v,v,g.industry)).join("")+'</select>')+
+    field("type","Method",'<select GD_FIELD '+(g.source?'disabled':'')+'>'+(g.source?opt("opik",graderTypes.opik,"opik"):methods.map(v=>opt(v,graderTypes[v],g.type)).join(""))+'</select>')+'</div>'+
+    field("threshold","Pass threshold (0–1)",'<input GD_FIELD type="number" min="0" max="1" step="any" value="'+esc(g.threshold)+'">')+
     field("criteria","Grading criteria",'<textarea GD_FIELD maxlength="6000">'+esc(g.criteria)+'</textarea>')+
+    (judge?field("evidenceView","Evidence shown to the judge",'<select GD_FIELD>'+opt("case","Task, answer and available case evidence",g.evidenceView || "case")+
+      (g.requiredEvidence?.length?'':opt("answer-only","Answer only",g.evidenceView))+'</select>'):'')+
+    (judge && g.requiredEvidence?.length?'<small>Cases without '+g.requiredEvidence.map(kind=>kind==="reference"?'a reference':'observed agent steps').join(" or ")+' stay unscored.</small>':'')+
     (judge?field("judgeId","Local judge model",'<select GD_FIELD>'+opt("","Choose a connected model",g.judgeId)+gradeDesignerLocalJudges().map(m=>opt(m.id,
       m.model+' · '+m.provider+(m.loaded?' · loaded':''),g.judgeId)).join("")+'</select>'):''))+'</fieldset></article>';
 }
 function gradeDesignerView(scope:string,workspace=false,open=workspace) {
-  const d=gradeDesignerDraft(scope), record=gradeScopeRecord(scope);
+  const d=gradeDesignerDraft(scope,workspace), record=gradeScopeRecord(scope);
   const count=d.checks.filter(g=>g.included).length;
-  const label=workspace?'Design graders with an agent':'Design graders for this '+(scope.startsWith("prompt:")?'prompt':'dataset');
-  return '<details class="gd-panel" data-gd-scope="'+esc(scope)+'" '+(workspace?'data-gd-workspace ':'')+(open?'open':'')+'><summary>'+label+'</summary>'+
+  const label=workspace?'Design with an agent':'Design graders for this '+(scope.startsWith("prompt:")?'prompt':'dataset');
+  const start=workspace ? '<section class="gd-panel gd-workspace" data-gd-workspace data-gd-scope="'+esc(scope)+'" aria-label="'+label+'">' :
+    '<details class="gd-panel" data-gd-scope="'+esc(scope)+'" '+(open?'open':'')+'><summary>'+label+'</summary>';
+  return start+
     '<div class="gd-content">'+(workspace?gradeDesignerScopeSelector():'')+
     '<fieldset class="gd-fields" '+(d.busy?'disabled':'')+'>'+graderDesignInputs(scope,d,record)+
     '<button type="button" class="gd-generate" data-gd-action="design">'+(d.busy==="design"?'Designing graders…':d.hasPlan || d.saved.length?'Design a new plan':'Propose graders')+'</button>'+
@@ -66,17 +75,17 @@ function gradeDesignerView(scope:string,workspace=false,open=workspace) {
     (d.hasPlan?'<section class="gd-proposals"><h3>Coverage · '+d.checks.length+' proposed '+(d.checks.length===1?'check':'checks')+'</h3><p>'+esc(d.summary)+'</p>'+
       (d.designer?.model?'<small>Designed by '+esc([d.designer.provider,d.designer.model].filter(Boolean).join(" · "))+'</small>':'')+
       (d.automatic.length ? '<p>Automatic checks · '+esc(d.automatic.join(' · '))+'</p>' : '')+
-      d.checks.map(designCheckFields).join("")+
+      d.checks.map((g,i)=>designCheckFields(g,i,d.editableMethods,scope)).join("")+
       '<div class="gd-actions">'+(d.checks.length?'<button type="button" class="yellow" data-gd-action="confirm" '+(count?'':'disabled')+'>'+
-      (d.busy==="confirm"?'Saving versions…':(scope==="custom"?'Save ':'Save and select ')+count+' '+(count===1?'grader':'graders'))+'</button>':'')+
+      (d.busy==="confirm"?'Saving versions…':(workspace || scope==="custom"?'Save ':'Save and select ')+count+' '+(count===1?'grader':'graders'))+'</button>':'')+
       '<button type="button" data-gd-action="discard">Discard plan</button></div></section>':'')+
-    (d.saved.length?'<div class="gd-saved" role="status"><strong>'+(scope==="custom"?'Saved in the grader library':'Confirmed for this '+(scope.startsWith("prompt:")?'prompt version':'dataset snapshot'))+
-      '</strong><ul>'+d.saved.map(g=>'<li>'+esc(g.label)+'</li>').join("")+'</ul></div>':'')+'</fieldset></div></details>';
+    (d.saved.length?'<div class="gd-saved" role="status"><strong>'+(workspace || scope==="custom"?'Saved in the grader library':'Confirmed for this '+(scope.startsWith("prompt:")?'prompt version':'dataset snapshot'))+
+      '</strong><ul>'+d.saved.map(g=>'<li>'+esc(g.label)+'</li>').join("")+'</ul></div>':'')+'</fieldset></div>'+(workspace?'</section>':'</details>');
 }
-function repaintGradeDesigner(scope:string) {
-  for (const panel of document.querySelectorAll<HTMLDetailsElement>("details[data-gd-scope]")) {
-    if (panel.dataset.gdScope!==scope) continue;
-    panel.outerHTML=gradeDesignerView(scope,panel.hasAttribute("data-gd-workspace"),panel.open);
+function repaintGradeDesigner(scope:string,workspace:boolean) {
+  for (const panel of document.querySelectorAll<HTMLElement>("[data-gd-scope]")) {
+    if (panel.dataset.gdScope!==scope || panel.hasAttribute("data-gd-workspace")!==workspace) continue;
+    panel.outerHTML=gradeDesignerView(scope,workspace,!(panel instanceof HTMLDetailsElement) || panel.open);
   }
 }
 function syncGraderDesignLaunch() {
@@ -142,7 +151,8 @@ function reviewChoices(draft:UiGraderDraft):UiReviewChoice[] {
     if(!Number.isFinite(threshold) || threshold<=0 || threshold>1) throw Error("Set each pass threshold above zero and at most one.");
     const judge=g.action==="derive" || ["judge","opik"].includes(g.type);
     if(judge && !gradeDesignerLocalJudges().some(m=>m.id===g.judgeId))throw Error("Choose a connected local judge for "+name+".");
-    result.push({index,action:g.action,definition:{name,category,criteria,threshold,...(judge && {judgeId:g.judgeId})}});
+    const type=g.action==="create" ? draft.editableMethods.find(m=>m===g.type) : undefined;
+    result.push({index,action:g.action,definition:{name,category,criteria,threshold,industry:g.industry,...(type && {type}),...(judge && {judgeId:g.judgeId,evidenceView:g.evidenceView ?? "case"})}});
   });
   if (!result.length)throw Error("Select at least one proposed check.");
   return result;
@@ -156,13 +166,15 @@ function updateDesignerField(t:EventTarget|null) {
   if (!textInput(t)) return;
   const panel=t.closest<HTMLElement>("[data-gd-scope]");
   if (!panel?.dataset.gdScope) return;
-  const draft=gradeDesignerDraft(panel.dataset.gdScope);
+  const draft=gradeDesignerDraft(panel.dataset.gdScope,panel.hasAttribute("data-gd-workspace"));
   if (draft.busy) return;
   const field=t.dataset.gdBrief;
   if (field==="objective" || field==="metrics" || field==="industry" || field==="target") {
     if (draft[field]===t.value) return;
     if (field==="target") {if (t.value!=="agent" && t.value!=="response") return; draft.target=t.value;}
     else draft[field]=t.value;
+    if(field==="objective")draft.objectiveEdited=true;
+    if(field==="metrics")draft.metricsEdited=true;
     if (draft.hasPlan) {
       draft.hasPlan=false;draft.checks=[];draft.summary="";
       panel.querySelector(".gd-proposals")?.remove();
@@ -177,6 +189,9 @@ function updateDesignerField(t:EventTarget|null) {
   if (!g) return;
   if (key==="included" && t instanceof HTMLInputElement) g.included=t.checked;
   else if(key==="action" && g.source && (t.value==="reuse" || t.value==="derive")) g.action=t.value;
+  else if(key==="type" && !g.source){const method=draft.editableMethods.find(m=>m===t.value);if(method)g.type=method;}
+  else if(key==="evidenceView" && (t.value==="answer-only" || t.value==="case"))g.evidenceView=t.value;
+  else if (key==="industry" && !g.source)g.industry=t.value;
   else if (key==="criteria" || key==="category" || key==="threshold" || key==="judgeId" || key==="name") g[key]=t.value;
   if (key==="name") $(".gd-inclusion span",item).textContent=g.name || "Proposed grader";
 }
@@ -187,13 +202,19 @@ document.addEventListener("change",e=>{
   const t=e.target,panel=t.closest<HTMLElement>("[data-gd-scope]");
   if (!panel?.dataset.gdScope) return;
   if (t.hasAttribute("data-gd-source")) {
+    const prior=gradeDesignerDraft(panel.dataset.gdScope,true),next=gradeDesignerDraft(t.value,true);
+    if(!next.hasPlan && !next.saved.length && !t.value.startsWith("prompt:")) {
+      if(prior.objectiveEdited && !next.objectiveEdited){next.objective=prior.objective;next.objectiveEdited=true;}
+      if(prior.metricsEdited && !next.metricsEdited){next.metrics=prior.metrics;next.metricsEdited=true;}
+      if(prior.objectiveEdited && !prior.metrics.trim() && !next.metricsEdited)next.metrics="";
+    }
     workspaceGradeScope=t.value;
     panel.outerHTML=gradeDesignerView(workspaceGradeScope,true,true);
   } else {
     updateDesignerField(t);
-    if (["action","included"].includes(t.dataset.gdField ?? "")) {
+    if (["action","included","type"].includes(t.dataset.gdField ?? "")) {
       const i=t.closest<HTMLElement>("[data-gd-check]")?.dataset.gdCheck;
-      repaintGradeDesigner(panel.dataset.gdScope);
+      repaintGradeDesigner(panel.dataset.gdScope,panel.hasAttribute("data-gd-workspace"));
       document.querySelector<HTMLElement>('[data-gd-check="'+i+'"] [data-gd-field="'+t.dataset.gdField+'"]')?.focus({preventScroll:true});
     }
   }
@@ -204,30 +225,31 @@ document.addEventListener("click", async e=>{
   const button=e.target.closest<HTMLButtonElement>("[data-gd-action]"),panel=button?.closest<HTMLElement>("[data-gd-scope]");
   if (!panel?.dataset.gdScope) return;
   e.preventDefault();
-  const scope=panel.dataset.gdScope,d=gradeDesignerDraft(scope),action=button?.dataset.gdAction;
+  const workspace=panel.hasAttribute("data-gd-workspace"),scope=panel.dataset.gdScope,d=gradeDesignerDraft(scope,workspace),action=button?.dataset.gdAction;
   if (!action || !button || d.busy) return;
   if (action==="discard") {
     d.hasPlan=false;d.checks=[];d.summary="";d.error="";
-    repaintGradeDesigner(scope);return;
+    repaintGradeDesigner(scope,workspace);return;
   }
-  d.error="";d.busy=action;repaintGradeDesigner(scope);syncGraderDesignLaunch();
+  d.error="";d.busy=action;repaintGradeDesigner(scope,workspace);syncGraderDesignLaunch();
   try {
     if (action==="design") {
       const request:UiDesignGraderRequest=scope.startsWith("prompt:") ? {promptId:scope.slice(7)} : {objective:d.objective.trim(),metrics:d.metrics.trim(),
         target:d.target,...(scope.startsWith("dataset:")?{datasetId:scope.slice(8)}:d.industry==="Cross-industry"?{}:{domainId:d.industry})};
-      if ("objective" in request && (!request.objective || !request.metrics)) throw Error("Describe the task and at least one success measure.");
+      if ("objective" in request && !request.objective) throw Error("Describe the task you want to evaluate.");
       const result=await api.designGraders(request);
       const judges=gradeDesignerLocalJudges();
-      const preferred=judges.find(m=>m.loaded && m.model===result.designer?.model) || judges.find(m=>m.loaded) || judges[0];
+      const preferred=judges.find(m=>m.loaded && m.provider===result.designer?.provider && m.model===result.designer.model) || judges.find(m=>m.loaded);
+      d.editableMethods=result.editableMethods;
       d.checks=result.checks.map(g=>({...g,included:!g.source?.hosted,judgeId:preferred?.id || ""}));
       d.draftId=result.draftId;d.automatic=result.automatic;d.summary=result.summary;d.designer=result.designer;d.hasPlan=true;
     } else if (action==="confirm") {
       const choices=reviewChoices(d),definitions=choices.map(c=>d.checks[c.index]);
-      const selected=gradeSelectionForScope(scope);
+      const selected=workspace?null:gradeSelectionForScope(scope);
       if (selected && retainedGraderIds(selected,definitions).length+definitions.length>8)
         throw Error("A run supports up to eight graders. Deselect existing graders or exclude checks before saving.");
       const ids=await api.confirmGraders({draftId:d.draftId,choices});
-      attachDesignedGraders(scope,ids,definitions);
+      if(!workspace) attachDesignedGraders(scope,ids,definitions);
       d.saved=ids.map((id,i)=>({id,label:definitions[i].name}));d.hasPlan=false;d.checks=[];
       if (document.querySelector<HTMLElement>("[data-gd-scope]")?.dataset.gdScope===scope) {
         await render();
@@ -235,5 +257,5 @@ document.addEventListener("click", async e=>{
       }
     }
   } catch(error) {d.error=String(errorText(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,"");}
-  finally {d.busy="";repaintGradeDesigner(scope);syncGraderDesignLaunch();}
+  finally {d.busy="";repaintGradeDesigner(scope,workspace);syncGraderDesignLaunch();}
 });

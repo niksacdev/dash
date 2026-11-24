@@ -60,11 +60,43 @@ function refinementSummary(run?:UiPriorRun|null) {
   return '<h3>Prior run observations</h3>'+link('Open source run '+esc(run.id.slice(0,8))+' →','run/'+encodeURIComponent(run.id),'link')+
     (measured || graded ? '<ul class="wf-metric-list">'+measured+graded+'</ul>' : '<p>No case results were recorded for this run.</p>');
 }
-function planningDetails(p:UiPrompt) {
+const auditLabels:Record<UiMetricAudit["status"],string> = {
+  proposed:"Proposed run check", "needs-evidence":"Needs evidence", external:"External business outcome"
+};
+function metricExplanation(review:UiReviewEvidence, edited=false) {
+  if (!review.metricAudit?.length) return "";
+  const pending=review.metricAudit.filter(row=>row.status==="needs-evidence").length;
+  const external=review.metricAudit.filter(row=>row.status==="external").length;
+  const summary=[pending && (pending+" awaiting evidence or a grader"),external && (external+" outside the run")].filter(Boolean).join(" · ");
+  const rows = review.metricAudit.map(item =>
+    '<li><strong>'+esc(item.metric)+'</strong><small>'+esc(auditLabels[item.status])+'</small>'+
+    '<p>'+esc(item.reason)+'</p><dl><dt>Pass condition</dt><dd>'+esc(item.criterion)+'</dd>'+
+    '<dt>Evidence needed</dt><dd>'+esc(item.evidence)+'</dd><dt>How to score</dt><dd>'+esc(item.method)+'</dd></dl></li>').join("");
+  return '<details class="wf-options wf-explanation"><summary>Why these metrics?'+(summary?' <small>· '+summary+'</small>':'')+'</summary><div class="wf-options-body">'+
+    '<p>Review by '+esc(review.auditDesigner?.model || "the evaluation metric auditor")+'.</p>'+
+    '<p class="wf-edit-note" data-metric-edit-note '+(edited?'':'hidden')+'>This review covers the original proposals. Edited measures need another review.</p>'+
+    '<ul>'+rows+'</ul></div></details>';
+}
+function promptExplanation(p:UiPrompt, edited:boolean) {
+  const why=p.promptRationale;
+  if (!why) return "";
+  return '<details class="wf-options wf-explanation"><summary>Why this prompt?</summary><div class="wf-options-body">'+
+    '<p>'+esc(why.reason)+'</p><dl><dt>Original objective</dt><dd>'+esc(why.original)+'</dd>'+
+    (why.addition ? '<dt>Instruction added to the draft</dt><dd>'+esc(why.addition)+'</dd>' : '<dt>Draft change</dt><dd>Kept the original objective.</dd>')+'</dl>'+
+    '<p class="wf-edit-note" data-prompt-edit-note '+(edited?'':'hidden')+'>This explanation covers the generated draft. You edited the prompt afterward.</p></div></details>';
+}
+function sameMeasureText(text:string, lines:string[]) {
+  const current=metricLines(text);
+  return current.length===lines.length && current.every((line,index)=>line===lines[index]);
+}
+function suggestionEdited(w:UiWorkflow) {
+  return !!w.suggestion && (!sameMeasureText(w.chosenMetrics ?? "",w.suggestion.metrics) || !sameMeasureText(w.criteria,w.suggestion.criteria));
+}
+function planningDetails(p:UiPrompt, promptEdited=false, metricsEdited=false) {
   if (!p.agents?.length) return "";
   const domainSources:Record<string,string>={dataset:"Dataset domain",user:"Selected domain",inferred:"Inferred domain"};
   const source=domainSources[p.domainSource || ""] || "Domain";
-  return '<details class="wf-options"><summary>How the agents prepared this prompt</summary><div class="wf-options-body"><p>' + esc(source+" · "+p.domain) + '</p>' +
+  return metricExplanation(p,metricsEdited) + promptExplanation(p,promptEdited) + '<details class="wf-options"><summary>How the agents prepared this prompt</summary><div class="wf-options-body"><p>' + esc(source+" · "+p.domain) + '</p>' +
     '<p>'+esc(p.agents.map(a=>(a.role==="expert"?"Industry expert":"Industry implementer")+" v"+a.version).join(" → "))+
     (p.designer?.model?' · '+esc(p.designer.model):'')+'</p><h3>Success criteria</h3>'+metricList(p.requirements)+plannerAttempts(p)+refinementSummary(p.priorRun)+'</div></details>';
 }
@@ -84,7 +116,7 @@ function measuresSection(w:UiWorkflow) {
   const attribution = w.suggestion ? '<strong>AI expert</strong> · AI suggestions can be wrong. Review and edit them before drafting.' +
     (supplement ? ' Supplementary criteria from '+esc(supplement)+'.' : '') : 'Edit or remove any line before drafting.';
   return head + '<div id="wf-measure-fields">' + fields +
-    (selected ? '<small class="wf-hint">' + attribution + '</small>' : '') + '</div>';
+    (selected ? '<small class="wf-hint">' + attribution + '</small>' : '') + (w.suggestion ? metricExplanation(w.suggestion,suggestionEdited(w)) : '') + '</div>';
 }
 function mergeSuggestions(text:string, previous:string[] = [], suggested:string[] = []) {
   const current = metricLines(text);
@@ -143,7 +175,7 @@ function workflowReview(w:UiWorkflow) {
     esc(w.reviewPrompt) + '</textarea></label>' +
     '<label class="field"><span>Success metrics</span><textarea id="wf-review-metrics" rows="3">' +
     esc(w.reviewMetrics) + '</textarea></label><p class="wf-hint">One metric per line. The graders selected for the run determine which checks are scored.</p>' +
-    planningDetails(d) + scenarioContract({...d,mode:w.mode,datasetId:w.datasetId}) +
+    planningDetails(d,w.reviewPrompt.trim()!==d.prompt,!sameMeasureText(w.reviewMetrics,d.metrics)) + scenarioContract({...d,mode:w.mode,datasetId:w.datasetId}) +
     '<div class="wf-actions"><button type="button" data-wf-edit>Edit outcome or domain</button><button class="yellow" type="submit" id="wf-approve">' +
     (w.busy ? 'Saving version…' : 'Approve &amp; choose models →') + '</button></div></fieldset></form>';
 }
@@ -283,6 +315,14 @@ document.addEventListener("input", e => {
   if (w && key && !w.busy) {
     const changed = w[key] !== e.target.value;
     w[key] = e.target.value;
+    if (changed && (key === "chosenMetrics" || key === "criteria" || key === "reviewMetrics")) {
+      const note=document.querySelector<HTMLElement>("[data-metric-edit-note]");
+      if (note) note.hidden=key==="reviewMetrics" && w.draft ? sameMeasureText(w.reviewMetrics,w.draft.metrics) : !suggestionEdited(w);
+    }
+    if (changed && key === "reviewPrompt" && w.draft) {
+      const note=document.querySelector<HTMLElement>("[data-prompt-edit-note]");
+      if (note) note.hidden=w.reviewPrompt.trim()===w.draft.prompt;
+    }
     if (key === "objective") {
       if (changed) invalidateSuggestions(w);
       const suggest = dashElement("#wf-suggest",HTMLButtonElement);

@@ -1,0 +1,1 @@
+Give the candidate a concrete way to complete the stated task using its case evidence. Explain what it should do if the particular evidence it needs is absent. Keep the candidate instruction free of grading targets and worked answers.

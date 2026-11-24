@@ -39,6 +39,7 @@ const bridge:DashBridge = {
   },
   list: () => invoke("list"),
   refresh: () => invoke("refresh"),
+  loadLocalModel: key => invoke("loadLocalModel",key),
   dataset: (id) => invoke("dataset", id),
   detail: (id) => invoke("detail", id),
   runProgress: (id,revision,offset) => invoke("runProgress",id,revision,offset),

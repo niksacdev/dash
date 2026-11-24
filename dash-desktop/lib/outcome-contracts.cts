@@ -2,6 +2,7 @@ import {z} from "zod";
 import {isRecord,isDomain,decodeAgentPin,type AgentPin,type Domain} from "../agents/registry.cjs";
 import {decodeRoleSnapshot,type RoleSnapshot} from "./domain-profiles.cjs";
 import type {PlanningAttempt,PlannerIdentity} from "./planner-routing.cjs";
+import {persistedAudit,rationaleSchema,type MetricAudit,type PromptRationale} from "./metric-audit.cjs";
 export type PlanningPurpose = "draft" | "suggest";
 export type RunMode = "quick"|"dataset";
 export interface DesignRequest {
@@ -10,9 +11,11 @@ export interface DesignRequest {
   measures?:{metrics:string[];criteria:string[]}|null;
 }
 export interface ScenarioContract {
-  id:string; title:string; description?:string; system:string; outputSchema:unknown; metrics:string[];
+  id:string; title:string; description?:string; scorer?:string; system:string; outputSchema:unknown; metrics:string[];
 }
+export interface EvidenceCoverage {cases:number;referenceCases:number;rubricCases:number}
 export interface DesignContext {
+  coverage?:EvidenceCoverage;
   pack?:ScenarioContract; datasetId?:string; version?:string|null; split?:string|null; industry?:string|null;
   priorRun?:{id:string}; onStage?:(event:PlanningAttempt & {mode:RunMode;requestId:string})=>void;
 }
@@ -46,9 +49,11 @@ export function decodeRequest(raw:unknown):DesignRequest {
     measures:measures==null?null:{metrics:lines(measures.metrics,"Selected metrics",2000,0),criteria:lines(measures.criteria,"Success criteria",2000,0)}};
 }
 interface PromptCore {
+  metricCriteria?:{metric:string;criterion:string}[];
   mode:RunMode; prompt:string; objective:string; title:string; domain:Domain; metrics:string[]; requirements:string[];
   datasetId:string|null; packId:string|null; contractHash:string|null; inputCap:number|null; outputCap:number|null;
   designer:PlannerIdentity|null;
+  auditCoverage?:EvidenceCoverage; metricAudit?:MetricAudit[]; promptRationale?:PromptRationale; auditAgent?:AgentPin; auditDesigner?:PlannerIdentity;
   planningAttempts?:UiPlanningAttempt[];
   agents?:RoleSnapshot[];
   workflowAgents?:AgentPin[];
@@ -56,6 +61,7 @@ interface PromptCore {
 export interface PromptDraft extends PromptCore {draftId:string;parentId:string|null;[key:string]:unknown}
 export interface ApprovedPrompt extends PromptCore {id:string;familyId:string;version:number;[key:string]:unknown}
 export interface MetricSuggestion {
+  auditCoverage?:EvidenceCoverage; metricAudit?:MetricAudit[]; auditAgent?:AgentPin; auditDesigner?:PlannerIdentity;
   id:string; domain:Domain;expertVersion:number;model:string;designer:PlannerIdentity;planningAttempts:PlanningAttempt[];metrics:string[];criteria:string[];criteriaReview?:{omitted:number;reasons:string[];supplementSource?:string};
 }
 const savedPlanningCall = z.object({
@@ -86,7 +92,12 @@ export function decodeApprovedPrompt(raw:unknown):ApprovedPrompt {
   const agents=raw.agents, workflowAgents=raw.workflowAgents;
   if (agents!=null && !Array.isArray(agents)) throw Error("Invalid saved domain agent revisions.");
   if (workflowAgents!=null && !Array.isArray(workflowAgents)) throw Error("Invalid saved workflow agent revisions.");
-  return {...raw,planningAttempts:savedPlanningCalls(raw.planningAttempts),...(Array.isArray(agents) && {agents:agents.map(decodeRoleSnapshot)}),
+  const {metricAudit,promptRationale,auditAgent,auditDesigner,auditCoverage,metricCriteria,...record}=raw;
+  const coverage=z.object({cases:z.int().nonnegative(),referenceCases:z.int().nonnegative(),rubricCases:z.int().nonnegative()}).refine(c=>c.referenceCases<=c.cases && c.rubricCases<=c.cases);
+  const identity=z.object({provider:z.string(),model:z.string(),revision:z.string().nullable()});
+  return {...record,...(metricCriteria!==undefined && {metricCriteria:z.array(z.object({metric:z.string().max(2000),criterion:z.string().max(2000)})).max(8).parse(metricCriteria)}),...(auditCoverage!==undefined && {auditCoverage:coverage.parse(auditCoverage)}),...(metricAudit!==undefined && {metricAudit:persistedAudit.parse(metricAudit)}),
+    ...(promptRationale!==undefined && {promptRationale:rationaleSchema.parse(promptRationale)}),
+    ...(auditAgent!==undefined && {auditAgent:decodeAgentPin(auditAgent)}),...(auditDesigner!==undefined && {auditDesigner:identity.parse(auditDesigner)}),planningAttempts:savedPlanningCalls(raw.planningAttempts),...(Array.isArray(agents) && {agents:agents.map(decodeRoleSnapshot)}),
     ...(Array.isArray(workflowAgents) && {workflowAgents:workflowAgents.map(decodeAgentPin)}),id:raw.id,familyId:raw.familyId,version:raw.version,mode:raw.mode,domain:raw.domain,prompt:raw.prompt,objective:raw.objective,
     title:typeof raw.title==="string"?raw.title:raw.objective,designer,metrics:lines(raw.metrics??[],"Saved metrics",2000,0),
     requirements:lines(raw.requirements??[],"Saved criteria",2000,0),datasetId:key(raw.datasetId),packId:key(raw.packId),contractHash:key(raw.contractHash),

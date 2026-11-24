@@ -10,7 +10,7 @@ import {decodeRequest,type DesignContext,type PlanningPurpose,type PromptDraft,t
 import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
 import {RunReports} from "./run-report.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
-import {getOpikTemplate,opikLibraryTemplates} from "./opik-library.cjs";
+import {getOpikTemplate,opikLibraryTemplates,hasEvidence} from "./opik-library.cjs";
 import type {GraderSpec} from "./graders.cjs";
 import {Graders,sdkEnabled} from "./graders.cjs";
 import {Endpoints} from "./endpoints.cjs";
@@ -21,7 +21,7 @@ import {decodeManifest,decodeResult,decodeRunSummary,decodeDatasetSummary} from 
 import {errorMessage,isCaseRow,jsonText,stringValue,statusValue} from "./run-types.cjs";
 import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
 import {ConfirmedInputMismatch, ProviderRejectedError} from "./runtime-types.cjs";
-import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate} from "./runtime-types.cjs";
+import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate,ModelLoadReceipt} from "./runtime-types.cjs";
 class RunCheckpointError extends Error {}
 interface Job {id:string;mode:StartRun["mode"];revision:number;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
 export const replayCandidate:FixtureCandidate = {
@@ -40,6 +40,11 @@ const systemPrompt = (pack:ScoredPack) =>
   JSON.stringify(pack.outputSchema) +
   "\nReturn only the raw JSON object. Start with { and end with }. Omit Markdown code fences, labels, comments and surrounding prose.";
 
+function hasReference(value:unknown):boolean {
+  if (typeof value==="string") return !!value.trim();
+  if (value===null || value===undefined) return false;
+  return typeof value!=="object" || Object.keys(value).length>0;
+}
 export class Bench {
   readonly db:DatabaseSync;
   readonly reports:RunReports;
@@ -50,6 +55,10 @@ export class Bench {
   readonly plannerSettings:PlannerSettings;
   readonly workflow:OutcomeWorkflow;
   designing=false;
+  private modelLoad:{key:string;task:Promise<ModelLoadReceipt>}|null=null;
+  private runtimeUsers=0;
+  private latestRefresh?:Promise<RuntimeInventory[]>;
+  get modelLoading():boolean {return this.modelLoad!==null;}
   servers:RuntimeInventory[]=[];
   active:Job|null=null;
   constructor(file:string, readonly adapters:RuntimeAdapters=providers, readonly powerSampler:typeof startPower=startPower) {
@@ -119,6 +128,7 @@ export class Bench {
   designPrompt(raw:unknown,onStage:DesignContext["onStage"],purpose:"suggest"):Promise<MetricSuggestion>;
   designPrompt(raw:unknown,onStage:DesignContext["onStage"],purpose:PlanningPurpose):Promise<PromptDraft|MetricSuggestion>;
   async designPrompt(raw:unknown, onStage?:DesignContext["onStage"], purpose:PlanningPurpose = "draft") {
+    if (this.modelLoading) throw Error("Wait for the LM Studio model load to finish before preparing a prompt.");
     const request=decodeRequest(raw);
     if (this.active || this.designing) throw Error("Wait for the current run or prompt preparation to finish.");
     this.designing = true;
@@ -126,11 +136,16 @@ export class Bench {
       let context:DesignContext = {};
       if (request?.mode === "dataset") {
         const snapshot = this.dataset(stringValue(request.datasetId,"dataset ID"));
-        const { id, title, description, system, outputSchema, metrics } = this.pack(snapshot.pack).pack;
+        const { id, title, description, system, outputSchema, metrics, scorer } = this.pack(snapshot.pack).pack;
         context = {
           datasetId: snapshot.id, industry: snapshot.metadata.industry,
           version: snapshot.rows[0].dataset_version, split: snapshot.rows[0].split,
-          pack: { id, title, description, system, outputSchema, metrics },
+          pack: { id, title, description, system, outputSchema, metrics, scorer },
+          coverage:{
+            cases:snapshot.rows.length,
+            referenceCases:snapshot.rows.filter(row=>hasReference(row.reference) || hasReference(row.gold)).length,
+            rubricCases:snapshot.rows.filter(row=>row.rubric?.trim()).length,
+          },
         };
       }
       if (request?.sourceRunId)
@@ -205,7 +220,7 @@ export class Bench {
     if (approved.mode !== "quick") throw Error("Choose a Quick compare prompt.");
     const available = [...this.servers.flatMap(s=>s.models), ...this.endpoints.list()];
     const signal = AbortSignal.timeout(20000);
-    return Promise.all(candidateIds.map(async candidateId=>{
+    return this.withRuntimeUse(()=>Promise.all(candidateIds.map(async candidateId=>{
       const candidate=available.find(c=>c.id===candidateId);
       if (!candidate) return {candidateId,status:"blocked" as const,message:"This model is unavailable. Refresh the starting line."};
       try {
@@ -217,11 +232,43 @@ export class Bench {
       } catch (err) {
         return {candidateId,...(err instanceof GuardrailError ? err.guardrail : {status:"unverified" as const,message:"The token preview could not finish. DASH will check again at dispatch."})};
       }
-    }));
+    })));
   }
-  async refresh() {
-    this.servers = await this.adapters.discover();
-    return this.servers;
+  async withRuntimeUse<T>(operation:()=>Promise<T>):Promise<T> {
+    if (this.modelLoading) throw Error("Wait for the LM Studio model load to finish.");
+    this.runtimeUsers++;
+    try {return await operation();}
+    finally {this.runtimeUsers--;}
+  }
+  loadLocalModel(key:string):Promise<ModelLoadReceipt> {
+    if (this.modelLoad) return this.modelLoad.key===key ? this.modelLoad.task :
+      Promise.reject(Error("Wait for the current LM Studio load to finish."));
+    if (this.active) return Promise.reject(Error("Wait for the active evaluation to finish before loading a model into memory."));
+    if (this.designing || this.runtimeUsers) return Promise.reject(Error("Wait for the current planning or runtime request to finish before loading a model."));
+    const load=this.adapters.loadLocalModel?.bind(this.adapters);
+    if (!load) return Promise.reject(Error("Model loading is unavailable on this runtime."));
+    // Claim the slot synchronously, before any adapter can dispatch a request.
+    const task=Promise.resolve().then(()=>load(key)).finally(async()=>{
+      try {await this.refresh();}
+      catch { /* Keep the original load receipt or error. A failed refresh clears the roster. */ }
+      finally {this.modelLoad=null;}
+    });
+    this.modelLoad={key,task};
+    return task;
+  }
+  refresh():Promise<RuntimeInventory[]> {
+    // If inventory requests finish out of order, the older caller also receives the newer result.
+    const current:Promise<RuntimeInventory[]>=Promise.resolve().then(()=>this.adapters.discover()).then(servers=>{
+      if (this.latestRefresh && this.latestRefresh!==current) return this.latestRefresh;
+      this.servers=servers;
+      return servers;
+    },error=>{
+      if (this.latestRefresh && this.latestRefresh!==current) return this.latestRefresh;
+      this.servers=[];
+      throw error;
+    });
+    this.latestRefresh=current;
+    return current;
   }
   list() {
     const datasets = this.db
@@ -268,6 +315,7 @@ export class Bench {
     outcomeRubric,
     animation = true,
   }:StartRun) {
+    if (this.modelLoading) throw Error("Wait for the LM Studio model load to finish before starting a run.");
     if (this.designing) throw Error("Wait for the prompt preparation to finish.");
     if (this.active)
       throw Error("A job is active. Stop it or wait for completion.");
@@ -356,6 +404,10 @@ export class Bench {
       const needsIndependentCriteria = rows.some(row=>row.reference == null && !row.rubric);
       const eligibleBusinessGrader = [...selected,...defaults].some(g=>{
         if (g.type==="catalog" && isInformationalRule(g.ruleKey)) return false;
+        if(g.type==="opik" && g.requiredEvidence?.length){
+          if(g.requiredEvidence.includes("trajectory"))return false; // This runner dispatches model responses.
+          return rows.some(row=>hasEvidence(row.reference ?? row.gold));
+        }
         if (!needsIndependentCriteria) return true;
         if (g.type==="field" || g.type==="trajectory") return false;
         if (g.type==="decision") return !g.requiredEvidence?.length;

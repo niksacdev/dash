@@ -3,7 +3,7 @@ type UiMode = "quick" | "dataset";
 type UiGradeType = "contains" | "exact" | "field" | "trajectory" | "judge" | "opik" | "decision" | "catalog" | "opik-metric";
 interface UiModelIdentity { model: string; provider: string }
 interface UiModel extends UiModelIdentity {
-  id: string; revision?: string | null; quantization?: string | null; loaded?: boolean | null;
+  nativeKey?:string; id: string; revision?: string | null; quantization?: string | null; loaded?: boolean | null;
   contextTokens?: number | null; maxContextTokens?: number | null; maxOutputTokens?: number | null;
   section?: string; endpoint?: string; needsKey?: boolean;
 }
@@ -15,9 +15,18 @@ interface UiDatasetDetail { id:string; name:string; pack:string; metadata:UiData
 interface UiPack { id:string; title:string; system:string; outputSchema:unknown; scorer?:string; description:string; metrics:string[]; kind?:string; version?:string }
 interface UiRole { domain:string; role:string; version:number; instructions:string; sources?:{title:string;url:string}[] }
 interface UiTokenCaps { inputCap?:number|null; outputCap?:number|null }
+interface UiMetricAudit {
+  metric:string; criterion:string; status:"proposed"|"needs-evidence"|"external";
+  evidence:string; method:string; reason:string;
+}
+interface UiReviewEvidence {
+  metricAudit?:UiMetricAudit[];
+  auditDesigner?:UiModelIdentity|null;
+}
 interface UiPlanningReview { omitted:number; reasons:string[]; supplementSource?:string }
 interface UiPriorRun {id:string; candidates:{candidate:string;responses:number;errors:number;passed:number;scored:number}[]; graders:{grader:string;version:number;candidate:string;passed:number;scored:number}[]}
-interface UiPrompt extends UiTokenCaps {
+interface UiPrompt extends UiTokenCaps, UiReviewEvidence {
+  promptRationale?:{original:string;addition:string;reason:string};
   mode:UiMode; objective:string; domain:string; requestedMetrics?:string; title:string; prompt:string; metrics:string[]; requirements:string[];
   datasetId?:string|null; dataset?:UiPack|null; domainSource?:string; agents?:Pick<UiRole,"domain"|"role"|"version"|"sources">[]; designer?:UiModelIdentity|null;
   priorRun?:UiPriorRun|null; guidanceReview?:UiPlanningReview; criteriaReview?:UiPlanningReview;
@@ -25,7 +34,7 @@ interface UiPrompt extends UiTokenCaps {
 }
 interface UiDraft extends UiPrompt {draftId:string}
 interface UiApproved extends UiPrompt {id:string; version:number; familyId:string}
-interface UiSuggestion {id:string; planningAttempts?:UiPlanningAttempt[]; domain:string; metrics:string[]; criteria:string[]; criteriaReview?:UiPlanningReview}
+interface UiSuggestion extends UiReviewEvidence {id:string; planningAttempts?:UiPlanningAttempt[]; domain:string; metrics:string[]; criteria:string[]; criteriaReview?:UiPlanningReview}
 interface UiWorkflow {
   mode:UiMode; objective:string; metrics:string; domain:string; inputCap:string; outputCap:string;
   datasetId:string; parentId:string|null; sourceRunId:string|null; draft:UiDraft|null; approved:UiApproved|null;
@@ -46,14 +55,14 @@ interface UiDecisionObservation extends UiDecisionRequest {actualModel:string;pr
 interface UiDecisionAttempt {dispatchedModel:string;fallbackReason:UiDecisionFallbackReason}
 type UiOpikMetricKey = "answer-relevance"|"usefulness"|"hallucination"|"moderation";
 interface UiOpikLibraryTemplate {key:UiOpikMetricKey;name:string;criteria:string;category:string;requiresReference:boolean;docsUrl:string}
-interface UiGraderDefinition {metricKey?:UiOpikMetricKey;name:string;category:string;industry:string;type:UiGradeType;criteria:string;threshold:number;judgeId?:string|null;decision?:UiDecisionConfig;requiredEvidence?:UiDecisionEvidence[]}
+interface UiGraderDefinition {evidenceView?:"answer-only"|"case";metricKey?:UiOpikMetricKey;name:string;category:string;industry:string;type:UiGradeType;criteria:string;threshold:number;judgeId?:string|null;decision?:UiDecisionConfig;requiredEvidence?:UiDecisionEvidence[]}
 type UiGraderScope = "general" | "industry" | "customer";
 interface UiGraderLibrary {scope:UiGraderScope;familyId:string;parentRevisionId?:string;scenario?:string;automatic?:boolean}
 type UiGraderSave = UiGraderDefinition & ({intent:"create"}|{intent:"derive"|"revise";sourceGraderId:string});
 interface UiGraderRun {id:string;title:string;created:string}
 interface UiGraderOptions {automatic:UiGrader[];available:UiGrader[]}
 interface UiGrader extends UiGraderDefinition {library?:UiGraderLibrary;ruleKey?:string;ruleVersion?:number;id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
-interface UiQuickOptions extends UiGraderOptions {recommended:UiGrader[];generated:UiGraderDefinition;judges:UiModel[]}
+interface UiQuickOptions extends UiGraderOptions {recommended:UiGrader[];generated:UiGraderDefinition|null;judges:UiModel[]}
 interface UiQuickPlan {options:UiQuickOptions|null; saved:Set<string>; enabled:boolean;designed:boolean;
  criteria:string;judgeId:string;threshold:number|string;error:string;sequence:number}
 interface UiAssessment {opikMetric?:{metricKey:UiOpikMetricKey;nativeScore:number;direction:"higher-is-better"|"higher-is-risk"};decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
@@ -97,6 +106,7 @@ interface UiPlanningEvent extends UiPlanningAttempt {
   mode:UiMode; requestId:string; queryId:string; provider:string; attempt:number;
 }
 interface DashBridge {
+ loadLocalModel(key:string):Promise<{status:"already-loaded"|"loaded";instanceId:string}|{status:"unconfirmed"}>;
  list():Promise<UiState>;refresh():Promise<UiServer[]>;dataset(id:string):Promise<UiDatasetDetail>;detail(id:string):Promise<UiRunDetail>;
  runProgress(id:string,revision:number,offset:number):Promise<UiRunProgress>;
  designPrompt(request:UiDesignInput):Promise<UiDraft>;suggestMetrics(request:UiDesignInput):Promise<UiSuggestion>;

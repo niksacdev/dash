@@ -18,7 +18,7 @@ function graderScenario(g:UiGrader) {
   return id ? state.packs.find(p=>p.id===id)?.title || id : "";
 }
 function graderApplicability(g:UiGrader) {
-  return [g.industry,graderScenario(g),graderTypes[g.type],decisionTarget(g) || g.judge?.model,
+  return [g.industry,graderScenario(g),graderTypes[g.type],decisionTarget(g) || g.judge?.model,g.evidenceView==="answer-only"?"Answer only":"",
     g.metricKey && state.opikLibraryTemplates.find(t=>t.key===g.metricKey)?.requiresReference?"Requires a case reference":"",
     g.requiredEvidence?.length?"Requires "+g.requiredEvidence.map(e=>e==="reference"?"a reference answer":"observed agent actions").join(" and "):""
   ].filter(Boolean).join(" · ");
@@ -168,6 +168,7 @@ async function discoverDecisionModels(form:HTMLFormElement,button:HTMLButtonElem
   } catch(error){if(request===discoverySequence)status.textContent=errorText(error);}
   finally{if(request===discoverySequence)button.disabled=false;}
 }
+let graderAuthoringMode:"agent"|"manual"="agent";
 function gradeCreate(){
   const g:UiGraderDefinition & {judge?:UiModel|null}=graderDraft ? {...graderDraft,type:graderDraft.type==="judge"?"opik":graderDraft.type} :
     graderTemplate?{name:graderTemplate.name,category:graderTemplate.category,industry:"Cross-industry",criteria:graderTemplate.criteria,type:"opik-metric",metricKey:graderTemplate.key,threshold:.8}:
@@ -175,7 +176,8 @@ function gradeCreate(){
   const inherited=graderDraft?.library?.scenario;
   const lockIndustry=!!inherited;
   const caption=graderTemplate?"Set up "+graderTemplate.name:graderEditIntent==="derive"?"Customize "+(graderDraft?.name || "grader"):graderEditIntent==="revise"?"Revise "+(graderDraft?.name || "grader"):"Create a grader";
-  return '<details class="panel" '+(graderDraft || graderTemplate?'open':'')+'><summary>'+esc(caption)+'</summary><form id="grade-create" data-method="'+esc(g.type)+'" class="spacer">'+(graderDraft?'<p class="muted">'+esc((graderEditIntent==="derive"?"Based on ":"Previous revision · ")+graderDraft.name+" v"+graderDraft.version+
+  const editing=!!(graderDraft || graderTemplate);
+  const manual='<form id="grade-create" data-method="'+esc(g.type)+'" class="spacer">'+(graderDraft?'<p class="muted">'+esc((graderEditIntent==="derive"?"Based on ":"Previous revision · ")+graderDraft.name+" v"+graderDraft.version+
       (inherited?" · "+graderScenario(graderDraft):""))+'</p>':'')+'<div class="cols">'+
     formField("Grader name",'<input name="name" required maxlength="100" value="'+esc(g.name)+'">')+
     formField("Category",'<input name="category" required maxlength="100" value="'+esc(g.category)+'" placeholder="e.g. Factual accuracy">')+'</div><div class="cols">'+
@@ -185,8 +187,18 @@ function gradeCreate(){
     '<small id="gc-rule-note" '+(["catalog","opik-metric"].includes(g.type)?'':'hidden')+'>This rule has versioned logic. Choose another method to edit the criterion.</small>'+
     decisionFields(g)+'<div class="cols">'+formField(g.type==="decision"?"Pass when P(yes) is at or above":"Pass threshold (0–1)",'<input name="threshold" type="number" min="0" max="1" step="any" required value="'+esc(g.threshold)+'">')+
     '<div id="judge-choice" '+(["judge","opik","opik-metric"].includes(g.type)?"":"hidden")+'>'+formField("Judge model",'<select name="judgeId">'+judgeOptions(g.judge?.id)+'</select>')+'</div></div>'+
+    '<div id="grade-evidence-view" '+(g.type==="opik"?'':'hidden')+'>'+formField("Evidence shown to the judge",'<select name="evidenceView">'+
+      opt("case","Task, answer and available case evidence",g.evidenceView || "case")+(g.requiredEvidence?.length?'':opt("answer-only","Answer only",g.evidenceView))+'</select>')+'</div>'+
     '<div class="gc-actions"><button class="yellow">'+(graderEditIntent==="derive"?"Save to My graders":"Save grader version")+'</button>'+
-    (graderDraft || graderTemplate?'<button type="button" data-new-grader>Cancel edit</button>':'')+'</div></form></details>';
+    (graderDraft || graderTemplate?'<button type="button" data-new-grader>Cancel edit</button>':'')+'</div></form>';
+  if(editing)return '<details class="panel" open><summary>'+esc(caption)+'</summary>'+manual+'</details>';
+  const assisted=graderAuthoringMode==="agent";
+  return '<details id="grader-authoring" class="panel" open><summary>Create a grader</summary>'+
+    '<fieldset class="wf-domain gc-authoring-options"><legend>Authoring method</legend><div>'+
+    (["agent","manual"] as const).map(mode=>'<label><input type="radio" name="grader-authoring-mode" value="'+mode+'" '+
+      (graderAuthoringMode===mode?'checked':'')+'><span>'+(mode==="agent"?'Design with an agent':'Write manually')+'</span></label>').join("")+'</div></fieldset>'+
+    '<div data-authoring-panel="agent" '+(assisted?'':'hidden')+'>'+gradeDesignerView(workspaceGradeScope,true)+'</div>'+
+    '<div data-authoring-panel="manual" '+(assisted?'hidden':'')+'>'+manual+'</div></details>';
 }
 function gradeSelect(){return '<select name="grader" required>'+opt("","Choose a grader","")+catalogSections.map(({scope,title})=>{
   const list=(state.graders||[]).filter(g=>graderScope(g)===scope);
@@ -252,7 +264,7 @@ function applyCatalogFilter(){
 async function gradersPage(){
   const list=state.graders||[], samples=await api.graderSamples();
   return heading("Workspace","Graders","Choose a versioned check, customize it for your domain, or grade a saved output.")+
-    gradeDesignerView(workspaceGradeScope,true)+gradeCreate()+bar("Grader library")+formField("Search graders",'<input type="search" id="grade-filter" value="'+esc(gradeFilter)+'" placeholder="Name, industry, scenario or criterion">')+
+    gradeCreate()+bar("Grader library")+formField("Search graders",'<input type="search" id="grade-filter" value="'+esc(gradeFilter)+'" placeholder="Name, industry, scenario or criterion">')+
     catalogSections.map(s=>catalogSection(s.scope,s.title)).join("")+'<p id="gc-no-matches" hidden role="status">No matching graders.</p>'+
     bar("Grade an output")+'<form id="grade-sample" class="panel">'+formField("Grader",gradeSelect())+
     '<div class="cols">'+formField("Task or input",'<textarea name="input" required></textarea>')+formField("Model or agent output",'<textarea name="output" required></textarea>')+'</div>'+
@@ -300,6 +312,7 @@ document.addEventListener("change",e=>{
     f.dataset.method=e.target.value;
     const decisionControls=requireElement("#grade-decision",HTMLFieldSetElement,f);
     decisionControls.hidden=decisionControls.disabled=!decision;
+    $("#grade-evidence-view",f).hidden=e.target.value!=="opik";
     $("#judge-choice",f).hidden=!["opik","judge","opik-metric"].includes(e.target.value);
     resetDecisionDiscovery(f);
   }
@@ -320,6 +333,15 @@ document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
   if(e.target.name==="decision-endpoint" && e.target.form)resetDecisionDiscovery(e.target.form);
   if(e.target.id==="grade-filter"){gradeFilter=e.target.value;applyCatalogFilter();}
+});
+document.addEventListener("change",e=>{
+  const radio=e.target;
+  if(!(radio instanceof HTMLInputElement) || radio.name!=="grader-authoring-mode" || !radio.checked ||
+    (radio.value!=="agent" && radio.value!=="manual"))return;
+  graderAuthoringMode=radio.value;
+  for(const panel of document.querySelectorAll<HTMLElement>("#grader-authoring [data-authoring-panel]")){
+    panel.hidden=panel.dataset.authoringPanel!==graderAuthoringMode;
+  }
 });
 document.addEventListener("click",async e=>{
   if (!(e.target instanceof Element)) return;
@@ -390,6 +412,7 @@ document.addEventListener("submit",async e=>{
       const type=field("type");
       if (!isGradeType(type)) throw Error("Choose a grading method.");
       const definition:UiGraderDefinition={name:field("name"),criteria:field("criteria"),industry:field("industry"),category:field("category"),type,threshold:Number(field("threshold")),judgeId:field("judgeId")};
+      if(type==="opik")definition.evidenceView=field("evidenceView")==="answer-only"?"answer-only":"case";
       if(type==="opik-metric"){
         const key=graderTemplate?.key || graderDraft?.metricKey;
         if(!key)throw Error("Choose an Opik metric template.");

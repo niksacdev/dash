@@ -37,3 +37,7 @@
 .gc-options small {display:block;font-weight:400;color:var(--muted);overflow-wrap:anywhere}
 .gc-options strong small {display:inline}
 @media(max-width:680px){.gc-actions button {min-height:44px}}
+
+.gc-authoring-options {margin-block:14px}
+.gd-workspace {margin:0;padding:0;border:0;background:transparent}
+.gd-workspace>.gd-content {padding:0}

@@ -108,13 +108,13 @@
     },
     {
       "id": "workflow-implementer",
-      "version": 1,
-      "path": "prompts/workflow-implementer.md"
+      "version": 2,
+      "path": "prompts/workflow-implementer-v2.md"
     },
     {
       "id": "grader-designer",
-      "version": 3,
-      "path": "prompts/grader-designer-v3.md"
+      "version": 4,
+      "path": "prompts/grader-designer-v4.md"
     },
     {
       "id": "report-analyzer",
@@ -133,8 +133,13 @@
     },
     {
       "id": "workflow-implementer-assignment",
+      "version": 2,
+      "path": "prompts/workflow-implementer-assignment-v2.md"
+    },
+    {
+      "id": "workflow-metric-auditor",
       "version": 1,
-      "path": "prompts/workflow-implementer-assignment.md"
+      "path": "prompts/workflow-metric-auditor.md"
     }
   ]
 }

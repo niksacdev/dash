@@ -441,12 +441,21 @@ async function developerPage(id?:string) {
     "</div>";
   return out;
 }
+let loadingModelKey:string|null=null;
+function loadModelButton(model:UiModel):string {
+  if (model.provider!=="lmstudio" || !model.nativeKey || model.loaded!==false) return "";
+  const pending=loadingModelKey===model.nativeKey;
+  const disabled=loadingModelKey!==null || !!state.active;
+  return '<button type="button" class="btn" data-act="load-local-model" data-key="'+esc(model.nativeKey)+'"'+
+    (disabled?' disabled':'')+' aria-label="'+esc((pending?"Loading ":"Load ")+model.nativeKey)+'">'+
+    (pending?"Loading…":state.active?"Run active":"Load")+'</button>';
+}
 function providersPage() {
   return (
     heading(
       "Workspace",
       "Local runtimes",
-      "Select models exposed by a local server. The earnings comparison targets Liquid LFM3, Qwen and Gemma 4.",
+      "Load a downloaded LM Studio chat model here, or inspect the models available from Ollama.",
     ) +
     '<div class="bar"><h2>Connections</h2>' +
     btn("Refresh models", "refresh") +
@@ -468,6 +477,7 @@ function providersPage() {
                     '<div class="listrow"><div><strong>' +
                     esc(c.model) +
                     "</strong><small>" +
+                    (c.nativeKey && c.nativeKey!==c.model ? esc(c.nativeKey)+" · " : "") +
                     esc(c.quantization || "") +
                     " " +
                     (c.loaded === true
@@ -476,7 +486,7 @@ function providersPage() {
                         ? "· Available to load · "
                         : "· Load state unknown · ") +
                     esc(c.revision?.slice(0, 18) || "Revision unavailable") +
-                    "</small></div></div>",
+                    "</small></div>"+loadModelButton(c)+"</div>",
                 )
                 .join("")
             : "<small>" +
@@ -976,6 +986,19 @@ document.addEventListener("click", async (e) => {
   const [, id, rec] = trail();
   el.disabled = true;
   try {
+    if (act==="load-local-model" && el.dataset.key && !loadingModelKey) {
+      const key=el.dataset.key;
+      loadingModelKey=key;
+      try {
+        await render();
+        const result=await api.loadLocalModel(key);
+        if (result.status==="unconfirmed") message("Load status is unconfirmed. Check LM Studio and refresh Local runtimes before requesting another load.");
+        else message("LM Studio confirms a loaded instance: "+result.instanceId);
+      } finally {
+        loadingModelKey=null;
+        await render();
+      }
+    }
     if (act === "refresh") {
       el.textContent = "Checking…";
       clearBudgetPreviews();

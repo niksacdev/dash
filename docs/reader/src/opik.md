@@ -13,3 +13,16 @@ With Docker running and Compose 2.24.4 or later available, run `npm run setup:lo
 3. Choose **Open Opik dashboard** to see a candidate experiment for each model on the pinned dataset version. After an interrupted sync, use **Resume saved run sync** for that same run and destination.
 
 To show a metric in the DASH report, [attach its grader revision before starting the run](graders.md#add-an-opik-score-to-a-dataset-run). A score added independently in Opik does not flow back into the saved DASH report.
+
+## Which engine grades a response?
+
+| Grader chosen in DASH | What executes |
+| --- | --- |
+| Opik G-Eval | The official TypeScript SDK applies the approved criteria through the selected local judge. It returns a normalized score and explanation. DASH applies the saved pass threshold. |
+| Answer relevance, usefulness, hallucination or moderation | The corresponding Opik metric scores the response. DASH keeps the native score and direction. A high hallucination or moderation risk translates into a low quality score. |
+| Exact match or contains | The Opik matching metric compares the response with the expected text. This needs no judge call. |
+| Industry rule, field comparison or ordered tool calls | DASH checks the domain evidence or the recorded actions with the versioned rule. A decision-model grader calls its configured decision endpoint. The separate local LLM judge method uses DASH’s score-and-reason request. |
+
+Before reusing a judgment-heavy rubric, try a known pass, a decisive failure and a case missing the evidence it requires. Check both the score and the explanation. For example, if using adjusted EPS in place of reported GAAP EPS must receive zero, a judge that awards partial credit still misses the rubric even when its score falls below the pass threshold. Use a field comparison or the earnings scenario rule when the expected value and basis are available in structured data.
+
+Grading runs in the workbench using the selected inference destination. You can grade locally with self-hosted Opik stopped. Synchronization later publishes recorded experiments, traces and scores to the configured Opik service. A planning suggestion is a draft rubric. To use it for scoring, save its version and select it for the run. [Choose graders](graders.md) · [Opik TypeScript metrics](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)
