@@ -1,7 +1,7 @@
 /** Local renderer DTOs shared by the classic scripts and the isolated preload. */
 type UiMode = "quick" | "dataset";
 type UiGradeType = "contains" | "exact" | "field" | "trajectory" | "judge" | "opik" | "decision" | "catalog" | "opik-metric";
-interface UiModelIdentity { model: string; provider: string }
+interface UiModelIdentity { model:string; provider:string; revision?:string|null }
 interface UiModel extends UiModelIdentity {
   nativeKey?:string; id: string; revision?: string | null; quantization?: string | null; loaded?: boolean | null;
   contextTokens?: number | null; maxContextTokens?: number | null; maxOutputTokens?: number | null;
@@ -27,6 +27,7 @@ interface UiPlanningReview { omitted:number; reasons:string[]; supplementSource?
 interface UiPriorRun {id:string; candidates:{candidate:string;responses:number;errors:number;passed:number;scored:number}[]; graders:{grader:string;version:number;candidate:string;passed:number;scored:number}[]}
 interface UiTaskInput {task:string;inputs:Record<string,string>}
 interface UiPrompt extends UiTokenCaps, UiReviewEvidence {
+  schemaReview?:{taskEdited:boolean;declaredKeys?:boolean;fields:{name:string;type:string;nullable:boolean;note:{quote:string;explanation:string}|null}[]};
   input?:UiTaskInput;outputSchema?:Record<string,unknown>;
   promptRationale?:{original:string;addition:string;reason:string};
   mode:UiMode; objective:string; domain:string; requestedMetrics?:string; title:string; prompt:string; metrics:string[]; requirements:string[];
@@ -87,7 +88,7 @@ interface UiManifest {
   tokenBudget?:UiTokenCaps;guardrailFailure?:UiGuardrail|null;invocations?:{candidateId:string;adapter:string;template?:string|null}[];
 }
 type UiRunProgress = {kind:"unchanged"}|{kind:"refresh"}|{kind:"append";candidateId:string;text:string};
-interface UiRunDetail {liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;text?:string}|null}
+interface UiRunDetail {liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;text?:string;grading?:{name:string;version:number}}|null}
 interface UiDiagnostic {status:string;fixture:boolean;candidates:Pick<UiModel,"model"|"id">[];traces:{
   candidateId:string;caseId:string;index:number;telemetry?:UiTelemetry|null;stage:string;note:string;traceId:string;started:string;finished?:string;finishReason?:string|null;adapter?:string|null}[]}
 interface UiPower {at:string;watts:number|null;source:string|null;
@@ -122,6 +123,7 @@ interface DashBridge {
  list():Promise<UiState>;refresh():Promise<UiServer[]>;dataset(id:string):Promise<UiDatasetDetail>;detail(id:string):Promise<UiRunDetail>;
  runProgress(id:string,revision:number,offset:number):Promise<UiRunProgress>;
  designPrompt(request:UiDesignInput):Promise<UiDraft>;suggestMetrics(request:UiDesignInput):Promise<UiSuggestion>;
+ previewStructuredPrompt(request:{input:Record<string,unknown>;outputSchema:Record<string,unknown>}):Promise<{role:string;content:string}[]>;
  approvePrompt(request:UiApproval):Promise<UiApproved>;cancelDesign():Promise<void>;onPlanningStage(callback:(event:UiPlanningEvent)=>void):void;
  saveDomainRole(request:{domain:string;role:string;instructions:string;expectedVersion:number}):Promise<UiRole>;
  savePlannerFallback(request:{model:string;enabled:boolean;key:string}):Promise<UiPlannerFallback>;

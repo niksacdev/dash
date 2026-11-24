@@ -138,8 +138,8 @@
     },
     {
       "id": "workflow-structured-output",
-      "version": 1,
-      "path": "prompts/workflow-structured-output.md"
+      "version": 2,
+      "path": "prompts/workflow-structured-output-v2.md"
     },
     {
       "id": "workflow-metric-auditor",

@@ -12,7 +12,8 @@ const source = join(book, "src");
 const sample = "bearing-inspection.jsonl";
 const summary = readFileSync(join(source, "SUMMARY.md"), "utf8");
 const chapters = Array.from(summary.matchAll(/\]\(([\w-]+\.md)\)/g), match => match[1]);
-const inputs = new Set(["SUMMARY.md", sample, ...chapters]);
+const quickSetup = "quick-evaluation-setup.png";
+const inputs = new Set(["SUMMARY.md", sample, quickSetup, ...chapters]);
 if (!chapters.includes("index.md")) throw Error("The reader needs a landing page.");
 for (const entry of readdirSync(source, { withFileTypes: true })) {
   if (!entry.isFile() || !inputs.has(entry.name)) throw Error("Unlisted reader input: " + entry.name);
@@ -64,7 +65,7 @@ function verifyLinks(output: string) {
     const editLink = "https://github.com/niksacdev/dash/edit/main/docs/reader/src/" + chapter;
     if (!links.get(page)?.includes(editLink)) throw Error("Missing chapter or source edit link: " + chapter);
   }
-  for (const required of ["searchindex.js", sample, "LICENSE.txt", "NOTICE.txt", "circuit.jpg"]) {
+  for (const required of ["searchindex.js", sample, quickSetup, "LICENSE.txt", "NOTICE.txt", "circuit.jpg"]) {
     if (!files.has(required)) throw Error("Missing reader asset: " + required);
   }
 }

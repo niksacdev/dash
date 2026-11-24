@@ -20,6 +20,10 @@ customElements.define("dash-planning-elapsed", class extends HTMLElement {
 function planningClock(start:number|undefined) {
   return typeof start==="number" && Number.isFinite(start) ? '<dash-planning-elapsed data-started="'+esc(start)+'"></dash-planning-elapsed>' : "";
 }
+function activityMeter(label:string, reading?:{value:number;max:number}) {
+  if (reading) return '<progress class="run-meter" aria-label="'+esc(label)+'" value="'+esc(reading.value)+'" max="'+esc(reading.max)+'"></progress>';
+  return '<div class="run-working" role="progressbar" aria-label="'+esc(label)+'"></div>';
+}
 function planningQueryRow(call:UiPlanningAttempt) {
   const running = call.status === "running";
   const local = call.provider === "lmstudio" || call.provider === "ollama";
@@ -38,6 +42,7 @@ function planningQueryRow(call:UiPlanningAttempt) {
     (running ? '<span class="ai-pulse" aria-hidden="true"><i></i><i></i><i></i></span>' : '') +
     '<strong>'+esc(call.stage)+'</strong><span class="ai-model">'+esc([location,model].filter(Boolean).join(" · "))+'</span>' +
     '<small>'+esc(phase || call.status)+(call.attempt && call.attempt>1 ? ' · Try '+esc(call.attempt) : '')+'</small></div>' +
+    (running ? activityMeter(phase, call.progress?.phase==="processing-prompt" ? {value:call.progress.percent,max:100} : undefined) : '')+
     '<dl class="ai-usage"><div><dt>Input tokens</dt><dd>'+esc(input?.toLocaleString() ?? pending)+'</dd></div>' +
     '<div><dt>Output tokens</dt><dd>'+esc(output?.toLocaleString() ?? liveOutput)+'</dd></div>' +
     '<div><dt>API cost</dt><dd>'+esc(cost)+'</dd></div>'+
@@ -50,7 +55,7 @@ function planningQueryRow(call:UiPlanningAttempt) {
 function planningActivityBody(w:Pick<UiWorkflow,"activity"|"busy">,pendingLabel="Finding a planning model…") {
   const calls = w.activity?.calls || [];
   const latest = calls.at(-1);
-  if (!latest) return w.busy ? '<span class="wf-hint">'+esc(pendingLabel)+' '+planningClock(w.activity?.startedAt)+'</span>' : "";
+  if (!latest) return w.busy ? '<span class="wf-hint">'+esc(pendingLabel)+' '+planningClock(w.activity?.startedAt)+'</span>'+activityMeter(pendingLabel) : "";
   return planningQueryRow(latest) + (calls.length > 1 ? '<details class="ai-earlier"><summary>Earlier queries ('+(calls.length-1)+
     ')</summary>'+calls.slice(0,-1).map(planningQueryRow).join("")+'</details>' : '');
 }

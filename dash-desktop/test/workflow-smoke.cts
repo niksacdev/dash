@@ -35,6 +35,7 @@ const request = z.looseObject({
 });
 type Stage = "grader-plan" | "audit" | "native-relevance" | "expert" | "implementer" | "route" | "analyzer" | "reporter" | "candidate" | "geval-score" | "geval-steps";
 let inlineDesignerFixture=false;
+let graderDesignGate:Promise<void>|undefined;
 let holdRouting: (()=>Promise<void>) | undefined;
 interface TransportCall {stage:Stage; body:z.infer<typeof request>; brief:unknown}
 const calls:TransportCall[] = [];
@@ -49,9 +50,9 @@ const gradedDetail = z.object({
 });
 const models = { ollama: "lfm3-qa-7b", lmstudio: "qa-ledger-2b" };
 const quickGoal = "Help inspection staff decide which nonconforming parts need a second inspection.";
-const metric = "Measure the share of lots with cited inspection evidence.";
-const markerMetric="Share of responses correctly including the QA response marker.";
-const markerCriterion="Include the literal text QA response in the answer.";
+const metric = "Inspection evidence citation rate";
+const markerMetric="Hold instruction compliance";
+const markerCriterion="Include the required disposition: Hold for drawing review.";
 const guidance = "Cite the inspection record and identify the next review step.";
 const roleEdit = "Trace the inspection record to the incoming lot.";
 
@@ -74,7 +75,7 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   if(stage==="native-relevance")return {answer_relevance_score:.9,reason:"The synthetic response addresses the supplied task."};
   if (stage === "route") return { domain: "Manufacturing" };
   if (stage === "expert") return {
-    title: "Review incoming evidence",
+    title: "Triage incoming parts",
     metrics: ["Share of cases with cited evidence",...(z.object({objective:z.string()}).parse(raw).objective===quickGoal?[markerMetric]:[])],
     requirements: ["Cite the evidence used for each decision",...(z.object({objective:z.string()}).parse(raw).objective===quickGoal?[markerCriterion]:[])],
   };
@@ -90,8 +91,8 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
     const brief=z.looseObject({objective:z.string().min(1)}).parse(raw);
     assert.equal(brief.expertBrief,undefined,"Held-out grader criteria stay with the evaluators");
     return { prompt: guidance, reason:"Asking for a citation lets the grader locate the inspection evidence.",
-      ...(typeof brief.formatInstructions==="string" && {fields:[{name:"decision",type:"string",nullable:false}],
-        inputs:[{name:"lot",value:"K7"}]}) };
+      ...(typeof brief.formatInstructions==="string" && {fields:Array.isArray(brief.requestedOutputKeys) ? {decision:{type:"string",nullable:false}} : [{name:"decision",type:"string",nullable:false}],
+        inputs:[{name:"lot",value:"K7"}],fieldNotes:[]}) };
   }
   if (stage === "analyzer") {
     const brief = z.object({evidence:z.array(z.object({id:z.string()})).min(1)}).parse(raw);
@@ -111,10 +112,10 @@ function modelOutput(stage:Stage, raw:unknown, model:string):unknown {
   }
   if (stage === "geval-score") {
     const brief = z.object({output:z.string()}).parse(raw);
-    const cited = brief.output.includes("QA inspection record");
+    const cited = brief.output.includes("Lot K7 inspection record");
     return { score: cited ? 10 : 0, reason: cited ? "The response cites the inspection record." : "The response lacks the required evidence." };
   }
-  return { decision: "review", evidence: model === models.ollama ? "QA inspection record" : "QA response" };
+  return { decision: "review", evidence: model === models.ollama ? "Lot K7 inspection record" : "Hold for drawing review" };
 }
 
 // Only this dedicated loopback listener can receive real HTTP in the smoke test.
@@ -165,6 +166,7 @@ globalThis.fetch = async (url, options = {}) => {
   const brief:unknown = evaluation ? evaluation.evidence : stage === "candidate" || stage === "native-relevance" ? null : JSON.parse(body.messages[body.messages.length - 1].content);
   calls.push({ stage, body, brief });
   if (stage==="route" && holdRouting) await holdRouting();
+  if (stage==="grader-plan" && graderDesignGate) await graderDesignGate;
   const structuredCandidate=stage==="candidate" && !!props.lotCode;
   const content = structuredCandidate ? JSON.stringify(body.model===models.ollama ? {decision:"review",lotCode:"K7"} : {decision:"review"}) : stage === "geval-steps" ? "Check the inspection record citation against the supplied evidence." : JSON.stringify(modelOutput(stage, brief, body.model));
   if (target.pathname === "/api/chat") {
@@ -210,9 +212,37 @@ async function smoke() {
     } while (Date.now() < until);
     throw Error(message + "\n" + await js("document.body.innerText.slice(-1600)"));
   }
+  async function reveal(selector:string) {
+    await wait(()=>exists(selector),"Available control "+selector);
+    await js("(() => {for(let node=document.querySelector("+q(selector)+");node;node=node.parentElement)if(node instanceof HTMLDetailsElement)node.open=true})()");
+  }
   async function click(selector:string) {
     await wait(() => js("!!document.querySelector(" + q(selector) + ") && !document.querySelector(" + q(selector) + ").disabled"), "Missing enabled control " + selector);
     await js("document.querySelector(" + q(selector) + ").click(); true");
+  }
+  async function verifyPendingGraderDesign(form:string, scope:string) {
+    const panel='[data-gd-scope="'+scope+'"] ';
+    const launch=q(form+" .go-button");
+    await reveal(panel+"[data-gd-action=design]");
+    if (scope.startsWith("dataset:")) {
+      await fill(panel+"[data-gd-brief=objective]","Assess the lot disposition and its evidence.");
+      await fill(panel+"[data-gd-brief=metrics]","Disposition reasoning");
+    }
+    assert.equal(await js("document.querySelector("+launch+").disabled"),false);
+    const callsBefore=calls.length, count=()=>db.prepare("SELECT count(*) n FROM runs").get()?.n;
+    const runsBefore=count();
+    let release=()=>{};
+    graderDesignGate=new Promise<void>(resolve=>{release=resolve;});
+    try {
+      await click(panel+"[data-gd-action=design]");
+      await wait(()=>calls.slice(callsBefore).some(c=>c.stage==="grader-plan"),"Grader design dispatched");
+      assert.equal(await js("document.querySelector("+launch+").disabled"),true,"A pending grader plan blocks launch");
+      await js("document.querySelector("+q(form)+").requestSubmit(); window.dash.list().then(()=>true)");
+      assert.equal(count(),runsBefore,"Submitting while the design is pending cannot create a run");
+    } finally {release();graderDesignGate=undefined;}
+    await wait(()=>exists(panel+".gd-proposals"),"Grader design completed");
+    await click(panel+"[data-gd-action=discard]");
+    await wait(()=>js("!document.querySelector("+launch+").disabled"),"Launch available after grader design");
   }
   async function checkRosterColors() {
     const original = await text("document.documentElement.dataset.appearance");
@@ -263,22 +293,50 @@ async function smoke() {
     assert.equal(await js("document.querySelector('#wf-structured').checked"),false);
     await click('[data-wf-example="manufacturing"]');
     await click("#wf-structured");
+    await fill("#wf-objective","Return exactly these fields: decision. "+await text("document.querySelector('#wf-objective').value"));
     await fill("#wf-output-cap","150");
     await click("#wf-design");
     await wait(()=>exists("#wf-json-input"),"Review the generated JSON contract");
     const input=z.object({task:z.string(),inputs:z.record(z.string(),z.string())}).parse(JSON.parse(await text("document.querySelector('#wf-json-input').value")));
     assert.equal(input.inputs.lot,"K7");
+    const originalSchema=await text("document.querySelector('#wf-json-schema').value");
+    await js("const editor=document.querySelector('#wf-json-schema'); editor.value='x'.repeat(16385); editor.dispatchEvent(new Event('input',{bubbles:true}));");
+    assert.match(await text("document.querySelector('#wf-json-edit-status').innerText"),/editor limit.*previous edit was kept/);
+    assert.equal(await text("document.querySelector('#wf-json-schema').value"),originalSchema);
+    assert.equal(await js("(()=>{const value='a'+'\\u0001'.repeat(1999);const input={task:(value.repeat(12)),inputs:Object.fromEntries(Array.from({length:8},(_,i)=>['slot'+i,value]))};return readJsonObject(JSON.stringify(input),'JSON input').task===input.task;})()"),true);
+    const longSchema=z.record(z.string(),z.unknown()).parse(JSON.parse(originalSchema));
+    await fill("#wf-json-schema",JSON.stringify({...longSchema,properties:Object.fromEntries(Array.from({length:13},(_,i)=>["field"+i,{type:"string"}]))}));
+    assert.match(await text("document.querySelector('[data-schema-field-notes]').innerText"),/at most 12/);
+    assert.equal(await js("document.querySelectorAll('[data-schema-field-notes] li').length"),0);
+    await fill("#wf-json-schema",originalSchema);
+    assert.match(await text("document.querySelector('#wf-request-preview').parentElement.textContent"),/return|one JSON object/i);
+    const facts=await text("document.querySelector('[data-schema-field-notes]').innerText");
+    assert.match(facts,/decision.*Named in your objective/s);
+    assert.match(facts,/value must be text.*null value fails/s);
+    assert.doesNotMatch(facts,/Implementer suggestion/);
+    const attribution=await text("schemaAttribution({...workflows.quick.draft,metrics:[]})");
+    assert.match(attribution,/expert helped prepare the task/);
+    assert.doesNotMatch(attribution,/proposed measures|checked the success measures/);
     assert.match(input.task,/10.04 mm/);
     const reviewed={...input,inputs:{...input.inputs,reading:"10.04 mm"}};
-    const contract={type:"object",properties:{decision:{type:"string"},lotCode:{type:"string"}},required:["decision","lotCode"],additionalProperties:false};
+    const contract={type:"object",properties:{decision:{type:["string","null"]},lotCode:{type:"string"}},required:["decision","lotCode"],additionalProperties:false};
     await fill("#wf-json-input",JSON.stringify(reviewed));
     await fill("#wf-json-schema","{");
     await click("#wf-approve");
     await wait(()=>js("document.querySelector('[role=alert]')?.textContent.includes('Enter valid JSON')"),"Show which JSON document needs correction");
     await fill("#wf-json-schema",JSON.stringify(contract));
+    assert.match(await text("document.querySelector('[data-schema-field-notes]').textContent"),/lotCode.*Added by the operator/);
+    assert.match(await text("document.querySelector('[data-schema-field-notes]').innerText"),/text or null when unavailable/);
+    await click("#wf-request-preview > summary");
+    await wait(()=>exists("[data-exact-messages] pre"),"Show the exact candidate messages");
+    const preview=z.array(z.string()).parse(await js("Array.from(document.querySelectorAll('[data-exact-messages] pre'),node=>node.textContent)"));
+    assert.equal(preview[1],JSON.stringify(reviewed));
+    assert.doesNotMatch(preview.join(" "),/required string names/);
     await click("#wf-approve");
     await wait(()=>exists("#setup .go-button"),"Approved structured prompt");
+    assert.match(await text("document.querySelector('.qc-brief-top').textContent"),/JSON response · 2 fields/);
     const approved=records().at(-1);
+    assert.ok(approved);
     assert.deepEqual(approved?.input,reviewed);
     assert.deepEqual(approved?.outputSchema,contract);
     const start=calls.length;
@@ -297,9 +355,20 @@ async function smoke() {
     const dispatched=calls.slice(start).filter(call=>call.stage==="candidate");
     assert.equal(dispatched.length,2);
     for(const {body} of dispatched){
+      assert.deepEqual(body.messages?.map(turn=>turn.content),preview);
       assert.deepEqual(JSON.parse(body.messages.at(-1)?.content ?? ""),reviewed);
       assert.deepEqual(body.format ?? body.response_format?.json_schema.schema,contract);
     }
+    await route("prompts");
+    await click('[data-wf-use="'+approved.id+'"]');
+    await wait(()=>exists("#quick-models"),"Reopen the evaluated prompt");
+    const remove=await text("document.querySelector('#quick-models [data-remove]')?.dataset.remove || ''");
+    if(remove)await click('[data-remove="'+remove+'"]');
+    await click('[data-model="ollama/qa-short-context"]');
+    await wait(()=>exists("[data-qc-revise]"),"Blocked lane offers prompt revision");
+    await click("[data-qc-revise]");
+    await wait(()=>exists("#wf-objective"),"Blocked lane opens a revision of its approved task");
+    assert.equal(await text("document.querySelector('#wf-objective').value"),approved.objective);
   }
   await wait(() => exists(".hero"), "Overview");
   if(process.argv.includes("--structured-quick")){
@@ -458,10 +527,10 @@ async function smoke() {
   await click("#wf-measures .wf-explanation summary");
   assert.match(await text("document.querySelector('#wf-measures .wf-explanation').innerText"),/Evidence needed/);
   assert.equal(records().length, 0);
-  const criterion = "Route any part with a missing drawing revision to inspection.";
+  const criterion = "Cite the inspection record supporting the disposition.";
   const markerGrader=z.string().parse(await js("window.dash.saveGrader("+q({
-    intent:"create",name:"QA response marker",category:"Response format",industry:"Manufacturing",
-    type:"contains",criteria:"QA response",threshold:1
+    intent:"create",name:"Required hold instruction",category:"Response format",industry:"Manufacturing",
+    type:"contains",criteria:"Hold for drawing review",threshold:1
   })+")"));
   await fill("#wf-criteria", [criterion,markerCriterion].join("\n"));
   await fill("#wf-chosen-metrics", [metric,markerMetric].join("\n"));
@@ -507,8 +576,13 @@ async function smoke() {
   assert.equal(await text("document.querySelector("+q(controls(rowA,"choice"))+").value"),"rubric");
   assert.match(await text("document.querySelector("+q(rowA)+").textContent"),/Unscored in Quick compare/);
   assert.match(await text("document.querySelector("+q(controls(rowA,"criteria"))+").value"),/inspection|lots/i);
-  assert.match(await text("document.querySelector("+q(rowB)+").textContent"),/literal text QA response/);
+  assert.match(await text("document.querySelector("+q(rowB)+").textContent"),/required disposition/);
+  await click(rowA+" .qc-assignment > summary");
+  await click(rowA+" .qc-rubric-options > summary");
+  await js("document.querySelector("+q(controls(rowA,"evidence"))+").focus()");
   await fill(controls(rowA,"evidence"),"task-answer");
+  assert.ok(await js("document.activeElement===document.querySelector("+q(controls(rowA,"evidence"))+") && document.activeElement.checkVisibility()"),"Editing the evidence keeps keyboard focus on the visible control");
+  await click(rowA+" .qc-assignment > summary");
   await fill(controls(rowA,"threshold"),"0.8");
   await fill(controls(rowB,"choice"),"skip");
   assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/1 of 2 measures ready/);
@@ -524,6 +598,79 @@ async function smoke() {
   await click('[data-remove="ollama/qa-short-context"]');
   await click(pick("ollama"));
   await wait(() => exists('[data-qc-budget="ollama/'+models.ollama+'"][data-budget-status="unverified"]'), "Compatible lane budget preview");
+  assert.ok(await js("!!(document.querySelector('#quick-models').compareDocumentPosition(document.querySelector('#qc-grading')) & Node.DOCUMENT_POSITION_FOLLOWING)"),"Choose models before configuring quality checks");
+  assert.equal(await text("document.querySelector('#qc-launch-state').textContent"),"Ready to evaluate both answers.");
+  assert.ok(await js("document.querySelectorAll('#setup button[type=submit]').length===1"),"One evaluation launch action");
+  await verifyPendingGraderDesign("#setup","prompt:"+first.id);
+  if(process.env.DASH_QUICK_PREVIEW_DIR) {
+    const original=await text("document.documentElement.dataset.appearance");
+    await wc.debugger.attach("1.3");
+    try {
+      for(const [theme,width,height] of [["light",1150,850],["dark",1150,850],["light",390,844]] as const){
+        await wc.debugger.sendCommand("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:false});
+        await click('#appearance input[value="'+theme+'"] + span');
+        await js("window.scrollTo(0,0);requestAnimationFrame(()=>{});true");
+        await wait(()=>js("document.documentElement.scrollWidth<=innerWidth+1"),"Quick evaluation setup fits "+width+"px");
+        const shot=z.object({data:z.string()}).parse(await wc.debugger.sendCommand("Page.captureScreenshot",{format:"png",captureBeyondViewport:false}));
+        writeFileSync(path.join(process.env.DASH_QUICK_PREVIEW_DIR,"quick-setup-"+width+"-"+theme+".png"),Buffer.from(shot.data,"base64"));
+        if(width===390){
+          const prior=await text("location.hash");
+          await click("[data-qc-grade-jump]");
+          assert.equal(await text("document.activeElement.id"),"qc-grading");
+          assert.equal(await text("location.hash"),prior);
+        }
+      }
+    }finally{
+      await wc.debugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+      wc.debugger.detach();
+      await click('#appearance input[value="'+original+'"] + span');
+    }
+  }
+  // Enter from the active setup, retain both lane IDs across reload, and attach through the real catalogue.
+  await fill(controls(rowB,"choice"),"skip");
+  const scopedLibrary="#graders/quick/"+first.id;
+  const catalogueLink='#qc-grading a[href="'+scopedLibrary+'"]';
+  await click(catalogueLink);
+  await wait(()=>exists('nav[aria-label="Quick comparison setup"]'),"Quick return breadcrumb");
+  assert.equal(await text("location.hash"),scopedLibrary);
+  assert.equal(await text("document.querySelector('.qc-chooser h1').textContent"),"Graders for this comparison");
+  assert.ok(await js("document.querySelector('[data-quick-eligible] [data-quick-extra]')?.checkVisibility()"));
+  assert.equal(await exists("#grader-authoring"),false,"A Quick detour starts at the compatible versions");
+  const reloaded=once(win.webContents,"did-finish-load");
+  win.webContents.reload();await reloaded;
+  await wait(()=>exists('nav[aria-label="Quick comparison setup"]'),"Context after page reload");
+  const attach='[data-use-version="'+markerGrader+'"] ';
+  await reveal(attach+"[data-quick-extra]");await click(attach+"[data-quick-extra]");
+  await wait(()=>exists(attach+"[data-quick-added]"),"One click adds this version without leaving the catalogue");
+  assert.equal(await text("location.hash"),scopedLibrary);
+  await reveal(attach+"[data-quick-attach]");await click(attach+"[data-quick-attach]");
+  await wait(()=>exists(attach+"[data-quick-assignment]"),"Choose measure or additional grader");
+  await click(attach+"[data-quick-cancel]");
+  assert.equal(await js("document.querySelector("+q(attach+".gc-target")+").hidden"),true);
+  await click('nav[aria-label="Quick comparison setup"] a');
+  await wait(()=>exists(controls(rowA,"threshold")),"Return without changing the Quick draft");
+  assert.equal(await text("document.querySelector("+q(controls(rowB,"choice"))+").value"),"skip");
+  assert.deepEqual(await js("Array.from(document.querySelectorAll('#quick-models [data-remove]'),e=>e.dataset.remove)"),
+    ["lmstudio/"+models.lmstudio,"ollama/"+models.ollama]);
+  assert.equal(await text("document.querySelector("+q(controls(rowA,"threshold"))+").value"),"0.8");
+  assert.equal(await text("document.querySelector("+q(controls(rowA,"evidence"))+").value"),"task-answer");
+  await click('#env a[href="'+scopedLibrary+'"]');await reveal(attach+"[data-quick-attach]");
+  await click(attach+"[data-quick-attach]");await fill(attach+"[data-quick-assignment]","1");
+  await click(attach+"[data-quick-confirm]");
+  await wait(()=>exists(controls(rowB,"choice")),"Attach and return");
+  assert.equal(await text("document.querySelector("+q(controls(rowB,"choice"))+").value"),"saved:"+markerGrader);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM runs").get()?.n,0);
+  assert.equal(records().length,1);
+  const privateRubric="Private QA note that must never be written to profile navigation storage.";
+  await fill(controls(rowA,"criteria"),privateRubric);
+  const savedSetup=await text("localStorage.getItem('dash.quick-lineups.v1')");
+  assert.ok(![privateRubric,approvedText,markerCriterion].some(privateText=>savedSetup.includes(privateText)));
+  const reopened=once(win.webContents,"did-finish-load");
+  win.webContents.reload();await reopened;
+  await wait(()=>exists("[data-restore-quick-rubric]"),"Explicit recovery for a private custom rubric");
+  assert.equal(await js("document.querySelector('#setup .go-button').disabled"),true);
+  await reveal("[data-restore-quick-rubric]");await click("[data-restore-quick-rubric]");
+  await wait(()=>js("document.querySelector('#setup .go-button')?.disabled===false"),"Ready after restoring approved scoring rubric");
   streamedQuick.armed=true;
   await click("#setup .go-button");
   await wait(()=>Promise.resolve(!!streamedQuick.send),"Quick stream opened");
@@ -540,6 +687,7 @@ async function smoke() {
   sendPart(2);
   const quick = await completedRun(1);
   assert.equal(quick.mode, "quick");
+  assert.equal(await js("JSON.parse(localStorage.getItem('dash.quick-lineups.v1')).active"),null,"Dispatch retires the active draft");
   assert.equal(quick.prompt, approvedText);
   assert.deepEqual(quick.candidates.map(c => c.model).sort(), Object.values(models).sort());
   const candidateRequests = calls.filter(c => c.stage === "candidate");
@@ -601,12 +749,16 @@ async function smoke() {
   await route("prompts");
   await click('[data-wf-use="' + first.id + '"]');
   await wait(() => exists(pick("ollama")), "Reused approved prompt");
+  assert.deepEqual(await js("Array.from(document.querySelectorAll('#quick-models [data-remove]'),e=>e.dataset.remove)"),
+    ["lmstudio/"+models.lmstudio,"ollama/"+models.ollama],"Reusing this prompt version preserves its original lanes");
   assert.equal(calls.filter(c => c.stage === "expert").length, 1, "Reuse must preserve the approved prompt");
   await route("prompts");
   await click('[data-wf-revise="' + first.id + '"]');
   await click("#wf-design");
   await click("#wf-approve");
   await wait(() => records().length === 2, "Saved revision");
+  await wait(()=>exists("#quick-models"),"New approved revision ready");
+  assert.equal(await js("document.querySelectorAll('#quick-models [data-remove]').length"),0,"A new prompt version starts with its own lineup");
   const second = records()[1];
   assert.equal(second.familyId, first.familyId);
   assert.equal(second.parentId, first.id);
@@ -620,7 +772,6 @@ async function smoke() {
   const scenario = z.string().parse(db.prepare("SELECT id FROM datasets WHERE pack='earnings' ORDER BY rowid LIMIT 1").get()?.id);
   await fill("#pack", "earnings");
   await fill("#ds", scenario);
-  const directStart = calls.length;
   const directChoice = '#dataset-models [data-model="ollama/' + models.ollama + '"]';
   await wait(() => exists(directChoice), "Dataset starting line");
   assert.equal(await js("document.querySelector('#dataset-models .go-button').disabled"), true);
@@ -629,6 +780,8 @@ async function smoke() {
   await click(directChoice);
   await fill("#model-search", "");
   assert.equal(await js("document.querySelector('#dataset-models .go-button').disabled"), false);
+  await verifyPendingGraderDesign("#dataset-run-form","dataset:"+scenario);
+  const directStart = calls.length;
   // A hard input cap cannot dispatch to the simulated Ollama connection.
   await fill('#dataset-run-form [name="inputCap"]',"8");
   await click("#dataset-run-form button[type=submit]");
@@ -713,13 +866,13 @@ async function smoke() {
   assert.ok(stages.some(call=>call.stage==="expert"));
   for (const call of stages) {
     if (call.stage!=="expert") {
-      assert.doesNotMatch(JSON.stringify(call.brief),/"scored"|"gold"|"case_id"|QA response/);
+      assert.doesNotMatch(JSON.stringify(call.brief),/"scored"|"gold"|"case_id"|Hold for drawing review/);
       continue;
     }
     const brief = priorRunBrief.parse(call.brief);
     assert.equal(brief.priorRun.id, dataset.id);
     assert.equal(brief.priorRun.candidates[0].scored, dataset.caseIds.length);
-    assert.doesNotMatch(JSON.stringify(brief.priorRun), /QA response|gold/);
+    assert.doesNotMatch(JSON.stringify(brief.priorRun), /Hold for drawing review|gold/);
   }
   // Create and revise one grader as an operator would. The scoring server and
   // credential are synthetic; the IPC, validation, version store and UI are real.
@@ -953,10 +1106,6 @@ async function smoke() {
     await fill("[name=decision-endpoint]",decisionOrigin);
     await click("#grade-discover");
     await wait(()=>js("document.querySelector('[name=decision-model]').value==="+q(localAlias)),"Discovered served decision model");
-    const reveal=async(selector:string)=>{
-      await wait(()=>exists(selector),"Available control "+selector);
-      await js("(() => {for(let node=document.querySelector("+q(selector)+");node;node=node.parentElement)if(node instanceof HTMLDetailsElement)node.open=true})()");
-    };
     const primaryAlias="qa/unloaded-primary";
     await fill("[name=decision-model]",primaryAlias);
     await reveal("[name=decision-fallback]");await fill("[name=decision-fallback]",localAlias);
@@ -1057,8 +1206,13 @@ async function smoke() {
     await wait(()=>exists(controls(rowB,"choice")),"Reopened approved prompt");
     assert.equal(await text("document.querySelector("+q(controls(rowB,"choice"))+").value"),"saved:"+markerGrader,
       "Reopening DASH restores the exact saved grader version to its approved measure");
-    await reveal('[name=qc-saved-grader][value="'+hostedId+'"]');
-    await click('[name=qc-saved-grader][value="'+hostedId+'"]');
+    await click("#qc-grading a");
+    const hostedAttachment='[data-use-version="'+hostedId+'"] ';
+    await reveal(hostedAttachment+"[data-quick-attach]");
+    await click(hostedAttachment+"[data-quick-attach]");
+    await fill(hostedAttachment+"[data-quick-assignment]","extra");
+    await click(hostedAttachment+"[data-quick-confirm]");
+    await wait(()=>exists('[data-qc-extra-remove="'+hostedId+'"]'),"Hosted grader attached as an additional check");
     for(const provider of ["ollama","lmstudio"] as const){
       const item=pick(provider);
       if(await js("document.querySelector("+q(item)+").getAttribute('aria-pressed')")!=="true")await click(item);
@@ -1144,6 +1298,7 @@ async function smoke() {
     await click('[data-grade-default="'+relevance+'"]');
     await wait(()=>exists('[data-grade-default="'+relevance+'"][aria-pressed=true]'),"Opted into an automatic semantic metric");
     await route("prompts");await click('[data-wf-use="'+first.id+'"]');
+    await click(".qc-auto-options > summary");
     await wait(()=>js("document.querySelector('#qc-grading .gc-auto')?.innerText.includes('QA native relevance')"),"Native default in Quick preview");
     await route("graders");await click('[data-grade-default="'+relevance+'"]');
     await wait(()=>exists('[data-grade-default="'+relevance+'"][aria-pressed=false]'),"Disabled future semantic baseline");
@@ -1165,6 +1320,7 @@ async function smoke() {
     await reveal(defaultButton);await click(defaultButton);
     await wait(()=>exists(defaultButton+'[aria-pressed=true]'),"Enabled the decision family default");
     await route("prompts");await click('[data-wf-use="'+first.id+'"]');
+    await click(".qc-auto-options > summary");
     await wait(()=>js("document.querySelector('#qc-grading .gc-auto')?.innerText.includes("+q(generalDecision)+")"),"Decision default in Quick compare");
     await route("new");
     await wait(()=>js("document.querySelector('.gc-auto')?.innerText.includes("+q(generalDecision)+")"),"Decision default in Dataset run");
@@ -1329,12 +1485,13 @@ async function smoke() {
     inlineDesignerFixture=false;
     await fill(inline+"[data-gd-check='0'] [data-gd-field=name]","Renamed inspection criterion");
     await fill(inline+"[data-gd-check='0'] [data-gd-field=category]","Inspection");
-    await click(inline+"[data-gd-action=confirm]");
+    assert.equal(await js("(() => {const go=document.querySelector('#setup .go-button');const ready=!go.disabled;document.querySelector("+q(inline+"[data-gd-action=confirm]")+").click();return ready && go.disabled;})()"),true,
+      "Confirming grader versions immediately blocks comparison until selections are pinned");
     await wait(()=>exists(inline+".gd-saved"),"Reviewed grader versions selected for the exact prompt");
     const reviewed=z.string().parse(loadVersion("Renamed inspection criterion",1));
     assert.equal(await text("document.querySelector("+q(controls(rowA,"choice"))+").value"),"saved:"+reviewed);
     assert.deepEqual(await js("JSON.parse(localStorage.getItem("+q("dash.attachedGraders.v1.prompt:"+first.id)+")).mapped[0]"),{index:0,id:reviewed});
-    assert.equal(await js("document.querySelector("+q('[name=qc-saved-grader][value="'+reviewed+'"]')+")?.checked"),false);
+    assert.equal(await exists('[data-qc-extra-remove="'+reviewed+'"]'),false,"A mapped grader is not also an additional grader");
 
   } finally {
     decisionOrigin="";

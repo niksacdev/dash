@@ -362,7 +362,7 @@ function gradeSelect(selected=""){return '<select name="grader" required>'+opt("
 }).join("")+'</select>';}
 function catalogRevision(g:UiGrader,latest:boolean) {
   const scope=graderScope(g);
-  const parent=state.graders.find(p=>p.id===g.library?.parentRevisionId);
+  const parent=quickLibraryRoute()?undefined:state.graders.find(p=>p.id===g.library?.parentRevisionId);
   const enabled=state.generalGraderDefaults.includes(g.id);
   const use=g.library?.automatic || enabled ? "Automatic on eligible new runs":"Optional";
   const canSetDefault=!!g.generalDefaultKey;
@@ -378,8 +378,11 @@ function catalogRevision(g:UiGrader,latest:boolean) {
   const detailsId="grader-info-"+g.id;
   const more='<p>'+esc(g.criteria)+'</p><small>'+esc(graderApplicability(g))+'</small><small>'+esc("Pass threshold · "+g.threshold+" / 1")+'</small>';
   const title='<strong>'+esc(g.name)+'</strong> <small class="gc-version">v'+esc(g.version)+'</small>';
-  return '<article class="grader-row'+(industry?' gc-card':'')+'" data-grade-version="'+esc(g.id)+'" data-filter="'+esc(text.join(" ").toLowerCase())+'">'+
-    '<div class="gc-revision-head"><div>'+title+'</div>'+(industry?'<button type="button" class="gc-info" data-grader-details aria-expanded="false" aria-controls="'+esc(detailsId)+'">Details</button>':'<small>'+esc(use)+'</small>')+'</div>'+
+  const open='<article class="grader-row'+(industry && !quickLibraryRoute()?' gc-card':'')+'" data-grade-version="'+esc(g.id)+'" data-filter="'+esc(text.join(" ").toLowerCase())+'">';
+  if (quickLibraryRoute()) return open+'<div class="gc-revision-head"><div>'+title+'</div><small>'+esc(graderTypes[g.type])+'</small></div>'+
+    '<p class="gc-description">'+esc(description)+'</p><div class="gc-use" data-use-version="'+esc(g.id)+'">'+quickLibraryActions(g)+
+    '<div class="gc-target" role="status" hidden></div></div><details class="gc-manage"><summary>Grader details</summary>'+more+'</details></article>';
+  return open+'<div class="gc-revision-head"><div>'+title+'</div>'+(industry?'<button type="button" class="gc-info" data-grader-details aria-expanded="false" aria-controls="'+esc(detailsId)+'">Details</button>':'<small>'+esc(use)+'</small>')+'</div>'+
     '<p class="gc-description">'+esc(industry?description:g.criteria)+'</p>'+
     (ancestry?'<small class="block">'+esc(ancestry)+'</small>':'')+
     graderUseActions(g,undefined,edit)+
@@ -419,7 +422,7 @@ function catalogSection(scope:UiGraderScope,title:string) {
     (!items.length && !templates?'<p class="muted">'+(scope==="customer"?"Save a grader or customize a shipped version to start your collection.":"No graders in this section.")+'</p>':'')+'</section>';
 }
 function applyCatalogFilter(){
-  const query=gradeFilter.trim().toLowerCase();
+  const query=(quickLibraryRoute()?quickChooserFilter:gradeFilter).trim().toLowerCase();
   for(const row of document.querySelectorAll<HTMLElement>(".gc-template"))row.hidden=!(row.dataset.filter || "").includes(query);
   document.querySelectorAll<HTMLElement>(".gc-family").forEach(family=>{
     const rows=[...family.querySelectorAll<HTMLElement>(".grader-row")];
@@ -489,6 +492,7 @@ async function refreshSampleHistory(){
   return scores;
 }
 async function gradersPage(){
+  if(quickLibraryRoute())return quickChooserPage();
   const history=await sampleHistory(),draft=pendingSample ?? retrySample?.draft;
   const group=pendingSample ? ' disabled' : '';
   const outputTest='<details id="grade-sample-panel" data-own-open class="panel" '+(samplePanelOpen || retrySample?.error?'open':'')+'><summary>Test one output</summary><p>Paste the task and an existing answer to see the score and rationale from one grader.</p><form id="grade-sample" aria-busy="'+!!pendingSample+'"><fieldset class="gc-sample-fields"'+group+'><legend class="visually-hidden">Output test</legend>'+formField("Grader",gradeSelect(draft?.grader))+
@@ -572,7 +576,7 @@ document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
   if(e.target.form?.id==="grade-sample")editSampleRetry(e.target.form);
   if(e.target.name==="decision-endpoint" && e.target.form)resetDecisionDiscovery(e.target.form);
-  if(e.target.id==="grade-filter"){gradeFilter=e.target.value;applyCatalogFilter();}
+  if(e.target.id==="grade-filter"){if(quickLibraryRoute())quickChooserFilter=e.target.value;else gradeFilter=e.target.value;applyCatalogFilter();}
 });
 document.addEventListener("change",e=>{
   const radio=e.target;
@@ -595,6 +599,13 @@ document.addEventListener("click",async e=>{
   if(jump){
     const section=[...document.querySelectorAll<HTMLElement>("[data-catalog-scope]")].find(s=>s.dataset.catalogScope===jump.dataset.catalogJump);
     if(section && !section.hidden){section.focus({preventScroll:true});section.scrollIntoView({block:"start"});}
+    return;
+  }
+  const attach=e.target.closest<HTMLButtonElement>("[data-quick-attach],[data-quick-extra],[data-quick-stay],[data-quick-confirm],[data-quick-cancel]");
+  const section=attach?.closest<HTMLElement>("[data-use-version]");
+  if (attach && section) {
+    const g=state.graders.find(g=>g.id===section.dataset.useVersion);
+    if(g)await quickLibraryAction(attach,section,g);
     return;
   }
   const action=e.target.closest<HTMLButtonElement>("[data-grade-run],[data-grade-continue],[data-grade-cancel],[data-grade-test]");

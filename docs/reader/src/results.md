@@ -4,6 +4,10 @@ Open **Run history**, filter by industry if useful, and select **Run to inspect*
 
 The **Traceability and Observability** slide uses a GAAP-versus-adjusted EPS mismatch as an example. Inspect the grader reason locally or [sync the run to Opik OSS](opik.md) to follow a case trace with latency, available token counts and grader scores.
 
+## Follow a running Quick comparison
+
+After starting the evaluation, **Evaluation in progress** identifies the candidate answering or the grader scoring it. **Answers received** counts completed responses. **Grader assessments recorded** counts recorded assessments, including an unscored assessment when a judge lacks evidence. An activity bar keeps moving while a call is pending. The counters advance when DASH records evidence. Open the final results to inspect each response, criterion and score.
+
 ## Compare two answers by business measure
 
 In Quick compare, the report pairs each approved measure with the criterion and grader version used on both answers. Inspect the two scores, the corresponding outputs and the assessment evidence. For example, one earnings answer might give the correct GAAP EPS and omit the reporting period. A second might cite the period and use adjusted EPS. If these are separate pass/fail checks, the scores are 1 and 0 for the EPS check, and 0 and 1 for the period check. The verdict is mixed. Use a labeled dataset when you need a pass rate over many cases.

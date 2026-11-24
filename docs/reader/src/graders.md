@@ -30,7 +30,9 @@ For an earnings task, a grader can check whether the answer identifies diluted G
 
 ## Map a Quick compare measure
 
-After approving the task prompt, inspect each measure and its pass condition before **GO**. A saved deterministic check can answer a literal question. Choose a dedicated Opik rubric and judge when several phrasings can satisfy the condition. Read its full-credit and failure conditions. A check requiring a separate reference answer can be evaluated on a labeled dataset. A business outcome that needs later operational data stays unscored until you have that evidence.
+From an approved Quick comparison, choose **Choose graders** to open the catalogue for that specific draft. Attach a compatible version, then return to the comparison to see it beside the two chosen models. When you open the catalogue independently, **Use in Run** still offers the dataset workflow.
+
+After approving the task prompt, inspect each measure and its pass condition before selecting **Run evaluation**. A saved deterministic check can answer a literal question. Choose a dedicated Opik rubric and judge when several phrasings can satisfy the condition. Read its full-credit and failure conditions. A check requiring a separate reference answer can be evaluated on a labeled dataset. A business outcome that needs later operational data stays unscored until you have that evidence.
 
 Both candidates receive the same task and each returned answer goes to the same pinned grader versions. A prompt with two independent model-judged measures and two candidates can require four assessments. Additional automatic diagnostics appear separately in the results. Earlier prompt versions can still use their original combined rubric.
 
