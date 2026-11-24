@@ -1,3 +1,4 @@
+import {loadSdkModel,type LoadedHandle} from "./lmstudio-load.cjs";
 import { checkInputBudget, invokeBudgeted, invokeJudge, invokePlanner } from "./token-budget.cjs";
 import { readProviderJson, parseProviderObject, providerChunks } from "./provider-response.cjs";
 import {httpGuidance, reportsTemplateFailure, templateAdvice} from "./provider-errors.cjs";
@@ -99,19 +100,17 @@ async function loadVerified(key:string):Promise<ModelLoadReceipt> {
   }
   const current=nativeSelection(catalog,key);
   if (current.instances.length) return {status:"already-loaded",instanceId:current.instances[0].id};
-  let acknowledged:string|undefined;
+  if(catalog.some(m=>m.instances.some(i=>i.id===key)))
+    throw Error("Another LM Studio model is using this instance name. Choose a different model or rename that instance in LM Studio, then refresh Local runtimes.");
+  let acknowledged:LoadedHandle|undefined;
   try {
-    const response=await request("lmstudio","/api/v1/models/load",{method:"POST",
-      headers:{"Content-Type":"application/json"},body:JSON.stringify({model:key}),signal:AbortSignal.timeout(120000)});
-    const body=await readProviderJson(response,64_000);
-    if (body.status==="loaded" && body.type==="llm") acknowledged=modelId(body.instance_id);
-  } catch(error) {
-    if (error instanceof ProviderRejectedError) throw error;
-    // A lost acknowledgement can follow a successful load. Only read inventory from here.
+    acknowledged=await loadSdkModel(key);
+  } catch {
+    // The SDK may lose the acknowledgement after loading. Only inventory reads follow.
   }
   try {
     const refreshed=nativeSelection(await nativeInventory(),key);
-    const instance=acknowledged ? refreshed.instances.find(i=>i.id===acknowledged) : refreshed.instances[0];
+    const instance=acknowledged ? refreshed.instances.find(i=>acknowledged.modelKey===key && i.id===acknowledged.identifier) : refreshed.instances[0];
     if (instance) return {status:"loaded",instanceId:instance.id};
   } catch { /* The request may have succeeded while the server became unreachable. */ }
   return {status:"unconfirmed"};

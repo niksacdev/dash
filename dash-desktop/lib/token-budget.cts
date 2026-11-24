@@ -1,19 +1,10 @@
+import {lmClient} from "./lmstudio-client.cjs";
 import { createHash } from "node:crypto";
-import type { LLM, LLMNamespace, LMStudioClient, LLMRespondOpts } from "@lmstudio/sdk";
+import type { LLM, LLMNamespace, LLMRespondOpts } from "@lmstudio/sdk";
 import {reportsTemplateFailure, templateAdvice} from "./provider-errors.cjs";
 import { ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, isRecord, type Candidate, type ChatTurn, type InferenceResult, type InvokeOptions,
   type OutputSchema, type TokenCheck, type TokenReceipt } from "./runtime-types.cjs";
 
-let client: Promise<LMStudioClient> | undefined;
-function lmClient(): Promise<LMStudioClient> {
-  client ??= import("@lmstudio/sdk").then(({ LMStudioClient }) => new LMStudioClient({
-    baseUrl:"ws://127.0.0.1:1234",
-    // The SDK logger defaults to console and can receive the provider's raw errors.
-    logger:{info(){},debug(){},warn(){console.warn("LM Studio SDK warning. Check Local runtimes.");},
-      error(){console.error("LM Studio SDK error. Check Local runtimes and server activity.");}},
-  }));
-  return client;
-}
 type ModelHandle = Pick<LLM, "identifier" | "applyPromptTemplate" | "countTokens" | "getContextLength" | "respond">;
 const loadedModels = async (): Promise<ModelHandle[]> => (await lmClient()).llm.listLoaded();
 

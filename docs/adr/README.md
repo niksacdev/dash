@@ -48,6 +48,8 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0025 · Industry grader catalogue](0025-industry-grader-catalogue.md) | Accepted | Nik requested industry icons, descriptions and details, direct version, test and run actions, and a separate personal collection. | [Operator guide](../reader/src/graders.md) |
 | 2026-11-24 | [0026 · Reuse grader planning](0026-reuse-grader-planning.md) | Proposed | Reuse the reviewed objective, metric and prompt workflow when authoring a grader. | [Workflow](../reviews/grader-library.md) |
 | 2026-11-24 | [0026 · Reuse grader planning](0026-reuse-grader-planning.md) | Accepted | Nik requested the same optimization and success-metric logic, an inspectable rubric and a separate explanation of grading decisions. | [Operator guide](../reader/src/graders.md) |
+| 2026-11-24 | [0027 · Explicit local SDK loading](0027-lm-studio-sdk-load.md) | Proposed | Reuse the pinned LM Studio SDK for manual model loading and verify instance identity in native inventory. | [Provider](../../dash-desktop/lib/providers.cts) |
+| 2026-11-24 | [0027 · Explicit local SDK loading](0027-lm-studio-sdk-load.md) | Accepted | Nik requested using the SDK for local model management. Each explicit load has a bounded SDK connection so a later refresh cannot send a queued load. | [Model guide](../reader/src/models.md) |
 
 ## Maintaining the history
 
