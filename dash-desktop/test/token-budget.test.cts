@@ -60,6 +60,7 @@ function fixture(t: TestContext) {
     context: 1024,
     respond(chat, options) {
       calls.push({method:"respond", chat, options});
+      options.onPromptProcessingProgress?.(0.5,{cachedTokenCount:0,totalPromptTokenCount:40,processedPromptTokenCount:20,unprocessedPromptTokenCount:20});
       assert.ok(options.onPredictionFragment);
       options.onPredictionFragment({content:"hidden",tokensCount:1,containsDrafted:false,isStructural:false,reasoningType:"reasoning"});
       options.onPredictionFragment({content:"WO-402",tokensCount:3,containsDrafted:false,isStructural:false,reasoningType:"none"});
@@ -122,12 +123,15 @@ test("unsupported tokenizer, unloaded instance and canceled preflight never gene
 test("planning constrains generation on the loaded instance and forwards the stage cancellation signal", async t => {
   const f = fixture(t);
   const signal = new AbortController().signal;
-  const r = await f.invokePlanner(candidate, messages, { maxTokens: 400, signal, structured: schema });
+  const observed:unknown[]=[];
+  const r = await f.invokePlanner(candidate, messages, { maxTokens: 400, signal, structured: schema, onPlanningProgress:update=>observed.push(update) });
+  assert.deepEqual(observed,[{phase:"processing-prompt",percent:50},{phase:"generating",approximateOutputTokens:3}]);
   assert.equal(r.output, "WO-402");
   assert.equal(f.calls.length, 1);
   assert.equal(responseSchema(responseCall(f.calls,0).options), schema);
   assert.equal(responseCall(f.calls,0).options.signal, signal);
   assert.equal(responseCall(f.calls,0).options.reasoningBudget, 0);
+  assert.equal(responseCall(f.calls,0).options.enableThinking, false);
   await assert.rejects(f.invokePlanner(candidate, messages, { maxTokens: 400, signal: AbortSignal.abort(), structured: schema }), { name: "AbortError" });
   assert.equal(f.calls.length, 1);
 });

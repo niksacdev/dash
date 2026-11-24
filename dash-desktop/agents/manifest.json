@@ -138,8 +138,8 @@
     },
     {
       "id": "workflow-metric-auditor",
-      "version": 1,
-      "path": "prompts/workflow-metric-auditor.md"
+      "version": 2,
+      "path": "prompts/workflow-metric-auditor-v2.md"
     }
   ]
 }

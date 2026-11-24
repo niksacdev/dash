@@ -1,4 +1,5 @@
 import { z } from "opik";
+import type {MeasureOption} from "./measure-graders.cjs";
 import {decodeAgentPin} from "../agents/registry.cjs";
 import { decisionConfig, observationSchema, protocolSchema, fallbackAttemptSchema, type DecisionConfig } from "./decision-model.cjs";
 import type { ScoredPack, CaseRow } from "./run-types.cjs";
@@ -9,7 +10,7 @@ export const graderType = z.enum(["contains", "exact", "field", "trajectory", "j
 export type GraderMethod = z.infer<typeof graderType>;
 export type JudgeMethod = "judge" | "opik";
 export const rubricOrigin = z.object({
-  kind: z.literal("approved-outcome"), promptId: z.string(), promptFamilyId: z.string(), promptVersion: z.number().int(),
+  kind: z.literal("approved-outcome"), promptId: z.string(), promptFamilyId: z.string(), promptVersion: z.number().int(), measure:z.string().min(1).max(2000).optional(),
 });
 export type RubricOrigin = z.infer<typeof rubricOrigin>;
 const judgeModel = z.object({
@@ -81,8 +82,10 @@ export type GraderDefinition = DefinitionFields & (
   | {type:"decision"; judgeId?:null; decision:DecisionConfig; requiredEvidence?:z.infer<typeof evidenceRequirement>[]}
   | {type:"catalog";ruleKey?:string;ruleVersion?:number;judgeId?:null}
   | {type:"opik-metric";metricKey:OpikMetricKey;judgeId?:string|null}
-  | {type:Exclude<GraderMethod,"decision"|"catalog"|"opik-metric">; judgeId?:string|null}
+  | {type:"opik"; judgeId?:string|null; requiredEvidence?:z.infer<typeof evidenceRequirement>[]}
+  | {type:Exclude<GraderMethod,"decision"|"catalog"|"opik-metric"|"opik">; judgeId?:string|null}
 );
 export interface QuickGraderChoices {
+  measures:MeasureOption[];
   automatic:GraderSpec[];recommended:(GraderSpec & {reason:string})[];available:GraderSpec[];generated:GraderDefinition|null;judges:LocalCandidate[];
 }

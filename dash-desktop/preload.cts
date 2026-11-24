@@ -25,12 +25,22 @@ function isUsage(value:unknown):value is PlanningUsage {
     "estimatedCostUsd" in value && (value.estimatedCostUsd === null || (typeof value.estimatedCostUsd === "number" &&
     Number.isFinite(value.estimatedCostUsd) && value.estimatedCostUsd >= 0));
 }
+function validPlanningProgress(value:unknown):boolean {
+  if (!value || typeof value!=="object" || !("phase" in value)) return false;
+  if (value.phase==="processing-prompt" && "percent" in value)
+    return typeof value.percent==="number" && Number.isInteger(value.percent) && value.percent>=0 && value.percent<=100;
+  return value.phase==="generating" && "approximateOutputTokens" in value && typeof value.approximateOutputTokens==="number" &&
+    Number.isSafeInteger(value.approximateOutputTokens) && value.approximateOutputTokens>=0;
+}
 function isPlanningEvent(value:unknown):value is UiPlanningEvent {
   return typeof value==="object" && value!==null &&
-    "mode" in value && (value.mode==="quick" || value.mode==="dataset") &&
+    "mode" in value && (value.mode==="quick" || value.mode==="dataset" || value.mode==="grader") &&
     "requestId" in value && typeof value.requestId==="string" &&
     "queryId" in value && typeof value.queryId==="string" &&
     "provider" in value && ["openai","lmstudio","ollama"].some(p=>p===value.provider) &&
+    Object.entries(value).every(([key,v]) => !["startedAt","elapsedMs","discoveryMs","firstTokenMs","tokensPerSecond"].includes(key) ||
+      (typeof v==="number" && Number.isFinite(v) && v>=0)) &&
+    (!("progress" in value) || validPlanningProgress(value.progress)) &&
     (!("usage" in value) || isUsage(value.usage)) &&
     (!("revision" in value) || value.revision === null || typeof value.revision === "string") &&
     (!("reason" in value) || typeof value.reason === "string") &&

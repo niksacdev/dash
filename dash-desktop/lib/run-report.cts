@@ -226,11 +226,12 @@ export function analyzeOutputs({ manifest, results, assessments }:Pick<RunData,"
   };
 }
 
-function comparison(status:string, analysis:ReturnType<typeof analyzeOutputs>, guardFalseAccepts:boolean):{verdict:RunReport["verdict"];summary:string;winnerId?:string} {
+function comparison(status:string, analysis:ReturnType<typeof analyzeOutputs>, guardFalseAccepts:boolean,unscoredMeasures:number):{verdict:RunReport["verdict"];summary:string;winnerId?:string} {
   const {caseCount,candidates}=analysis;
   const metrics=analysis.metrics.filter(metric=>!metric.informational);
   if (status !== "completed") return { verdict: "incomplete", summary: "The run ended with status " + status + ". Available case evidence is shown below." };
   if (!metrics.length) return { verdict: "ungraded", summary: analysis.metrics.length ? "Only response diagnostics were recorded. A business verdict requires a quality rubric." : "The run has no pinned grading rubric. Its responses are available for inspection." };
+  if(unscoredMeasures>0)return {verdict:"incomplete",summary:unscoredMeasures+" approved "+(unscoredMeasures===1 ? "measure was" : "measures were")+" left unscored. Compare the available grades below."};
   if (!caseCount || !candidates.length || metrics.some(m => m.pairedCases !== caseCount))
     return { verdict: "incomplete", summary: "Some candidate cases have no comparable score. Inspect rubric coverage and the case reasons." };
   if (candidates.length === 1) return { verdict: "single", summary: candidates[0].label + " was assessed on " + caseCount + (caseCount === 1 ? " case." : " cases.") };
@@ -257,7 +258,7 @@ export function buildReport(run:RunData):RunReport|null {
   const currentPolicy=!!run.manifest.graders?.some(g=>g.type==="catalog" && g.library?.automatic && isInformationalRule(g.ruleKey));
   const policy=currentPolicy ? "Compare the mean score on each business rubric, with equal weight for every case. A winner requires a completed two-candidate run with every business grade present, at least one lead, and no losses. Response diagnostics are informational. In a scored domain scenario the leading candidate must have zero false accepts across all cases." : decisionRule;
   return { version: 1, reporter: { name: "Report agent", method: "deterministic" },
-    winnerId: null, ...comparison(run.status, analysis, currentPolicy), decisionRule:policy, ...analysis };
+    winnerId: null, ...comparison(run.status,analysis,currentPolicy,run.manifest.measureGraders?.filter(row=>row.graderId===null).length ?? 0), decisionRule:policy, ...analysis };
 }
 
 export class RunReports {

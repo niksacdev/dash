@@ -39,7 +39,7 @@ interface UiWorkflow {
   mode:UiMode; objective:string; metrics:string; domain:string; inputCap:string; outputCap:string;
   datasetId:string; parentId:string|null; sourceRunId:string|null; draft:UiDraft|null; approved:UiApproved|null;
   reviewPrompt:string; reviewMetrics:string; suggestion:UiSuggestion|null; chosenMetrics:string|null; criteria:string;
-  busy:string; error:string; activity?:{requestId:string; calls:UiPlanningAttempt[]}; variant?:boolean; caseJudgeId?:string;
+  busy:string; error:string; activity?:{requestId:string; startedAt?:number; calls:UiPlanningAttempt[]}; variant?:boolean; caseJudgeId?:string;
 }
 interface UiDesignInput extends UiTokenCaps {
   mode:UiMode; requestId?:string; objective:string; metrics:string; domain?:string; datasetId?:string; parentId?:string; sourceRunId?:string;
@@ -62,9 +62,13 @@ type UiGraderSave = UiGraderDefinition & ({intent:"create"}|{intent:"derive"|"re
 interface UiGraderRun {id:string;title:string;created:string}
 interface UiGraderOptions {hasReferences?:boolean;automatic:UiGrader[];available:UiGrader[]}
 interface UiGrader extends UiGraderDefinition {library?:UiGraderLibrary;ruleKey?:string;ruleVersion?:number;id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
-interface UiQuickOptions extends UiGraderOptions {recommended:UiGrader[];generated:UiGraderDefinition|null;judges:UiModel[]}
-interface UiQuickPlan {options:UiQuickOptions|null; saved:Set<string>; enabled:boolean;designed:boolean;
- criteria:string;judgeId:string;threshold:number|string;error:string;sequence:number}
+interface UiQuickMeasure {metric:string;criterion:string|null;generated:UiGraderDefinition|null;reason:string|null}
+type UiMeasureAssignment = {metric:string;kind:"skip"} | {metric:string;kind:"saved";graderId:string} |
+  {metric:string;kind:"rubric";judgeId:string;threshold:number;criteria:string;evidence:"task-answer"|"reference"};
+interface UiPinnedMeasure {metric:string;criterion:string|null;graderId:string|null;graderVersion:number|null;reason:string|null}
+interface UiQuickOptions extends UiGraderOptions {recommended:UiGrader[];measures:UiQuickMeasure[];generated:UiGraderDefinition|null;judges:UiModel[]}
+interface UiMeasureEditor {choice:string;judgeId:string;threshold:string;criteria:string;evidence:"task-answer"|"reference";edited:boolean}
+interface UiQuickPlan {options:UiQuickOptions|null;saved:Set<string>;designed:boolean;measures:Map<string,UiMeasureEditor>;error:string;sequence:number}
 interface UiDatasetCaseSource {datasetId:string; datasetName:string; datasetVersion:string; caseId:string; scenarioId:string; scenarioVersion:string; contractHash:string}
 interface UiAssessment {datasetCase?:UiDatasetCaseSource;opikMetric?:{metricKey:UiOpikMetricKey;nativeScore:number;direction:"higher-is-better"|"higher-is-risk"};decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
 interface UiScore {pass:boolean;ready?:boolean;falseAccept?:boolean;review?:boolean;reasons:string[]}
@@ -73,7 +77,7 @@ interface UiResult {gradingError?:string;candidateId:string;caseId:string;dispat
   trace?:unknown;guardrail?:UiGuardrail|null;inputBudget?:{tokens:number;cap:number|null;source:string}|null}
 interface UiRunSummary {id:string;mode:UiMode;status:string;title:string;created:string;fixture:boolean|number;industry?:string|null;datasetId?:string|null}
 interface UiManifest {
-  id:string;approvedPromptId?:string|null;created:string;mode:UiMode;fixture:boolean;title:string;graders:UiGrader[];approvedPrompt?:UiApproved|null;
+  id:string;approvedPromptId?:string|null;created:string;mode:UiMode;fixture:boolean;title:string;measureGraders?:UiPinnedMeasure[];graders:UiGrader[];approvedPrompt?:UiApproved|null;
   prompt?:string|null;promptHash?:string;datasetId:string|null;datasetVersion?:string|null;split?:string|null;industry?:string|null;
   policyHash?:string|null;caseSetHash?:string;caseIds:string[];pack:UiPack|null;candidates:UiModel[];error?:string;
   tokenBudget?:UiTokenCaps;guardrailFailure?:UiGuardrail|null;invocations?:{candidateId:string;adapter:string;template?:string|null}[];
@@ -92,20 +96,22 @@ interface UiState {generalGraderDefaults:string[];opikLibraryTemplates:readonly 
 interface UiLaneBudget {candidateId?:string;status:"pending"|"verified"|"blocked"|"unverified";message?:string;inputTokens?:number|null;contextTokens?:number|null;outputReserve?:number|null}
 interface UiStartRun extends UiTokenCaps {
  mode:UiMode;datasetId:string|null;candidateIds:string[];graderIds:string[];animation:boolean;approvedPromptId?:string;parentId?:string;caseId?:string;
- allowHostedDecision?:true;datasetScorer?:string;caseJudgeId?:string;outcomeRubric?:{criteria:string;judgeId:string;threshold:number;type:"opik"|"judge"};
+ allowHostedDecision?:true;datasetScorer?:string;caseJudgeId?:string;measureGraders?:UiMeasureAssignment[];outcomeRubric?:{criteria:string;judgeId:string;threshold:number;type:"opik"|"judge"};
 }
 type UiDatasetCaseTest = {grader:string;datasetId:string;caseId:string;output:string};
 type UiGradeRequest = UiDatasetCaseTest | ({grader:string;allowHostedDecision?:true} & ({run:string;index:number} | {evidence:{input:string;output:string;reference:unknown;trajectory?:unknown[]}}));
-type UiDesignGraderRequest = {promptId:string;target?:"response"|"agent"} | {objective:string;metrics:string;domainId?:string;target:"response"|"agent";datasetId?:string};
+type UiDesignGraderRequest = {requestId?:string} & ({promptId:string;target?:"response"|"agent"} | {objective:string;metrics:string;domainId?:string;target:"response"|"agent";datasetId?:string});
 interface PlanningUsage {
   inputTokens:number|null; outputTokens:number|null; estimatedCostUsd:number|null;
 }
 interface UiPlanningAttempt {
+  startedAt?:number; elapsedMs?:number; discoveryMs?:number; firstTokenMs?:number; tokensPerSecond?:number;
+  progress?:{phase:"processing-prompt";percent:number}|{phase:"generating";approximateOutputTokens:number};
   stage:string; model:string; provider?:string; revision?:string|null; attempt?:number;
   status:"running"|"succeeded"|"failed"|"canceled"; reason?:string; requestId?:string; queryId?:string; usage?:PlanningUsage;
 }
 interface UiPlanningEvent extends UiPlanningAttempt {
-  mode:UiMode; requestId:string; queryId:string; provider:string; attempt:number;
+  mode:UiMode|"grader"; requestId:string; queryId:string; provider:string; attempt:number;
 }
 interface DashBridge {
  loadLocalModel(key:string):Promise<{status:"already-loaded"|"loaded";instanceId:string}|{status:"unconfirmed"}>;

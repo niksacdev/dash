@@ -350,6 +350,7 @@ export class Bench {
     graderIds = [],
     allowHostedDecision = false,
     outcomeRubric,
+    measureGraders,
     animation = true,
   }:StartRun) {
     if (this.modelLoading) throw Error("Wait for the LM Studio model load to finish before starting a run.");
@@ -365,6 +366,8 @@ export class Bench {
       new Set(candidateIds).size !== candidateIds.length
     )
       throw Error(mode === "quick" ? "Choose two different models for the starting line." : "Select one or two distinct candidates.");
+    if(measureGraders!==undefined && (mode!=="quick" || outcomeRubric!=null))
+      throw Error("Use measure mappings on an approved Quick compare prompt without a combined outcome rubric.");
     const all = [...this.servers.flatMap((s) => s.models), ...this.endpoints.list(), replayCandidate];
     const candidates = candidateIds.map((id) => {
       const c = all.find((x) => x.id === id);
@@ -532,7 +535,17 @@ export class Bench {
       if(!approved)throw Error("Choose an approved Quick compare prompt.");
       this.db.exec("BEGIN IMMEDIATE");
       try {
-        manifest.graders = this.graders.resolveQuick(approved, manifest.graders, outcomeRubric, this.servers.flatMap(s => s.models));
+        const models=this.servers.flatMap(s=>s.models);
+        if(measureGraders===undefined)manifest.graders=this.graders.resolveQuick(approved,manifest.graders,outcomeRubric,models);
+        else {
+          const resolved=this.graders.resolveMeasureGraders(approved,manifest.graders,measureGraders,models);
+          manifest.graders=resolved.graders;
+          manifest.measureGraders=resolved.mappings;
+          if(manifest.graders.some(g=>g.type==="decision" && g.decision.provider==="openrouter")){
+            if(allowHostedDecision!==true)throw Error("Confirm the OpenRouter decision grader and the evidence it will receive for this run.");
+            manifest.hostedDecisionApproved=true;
+          }
+        }
         insertRun();
         this.db.exec("COMMIT");
       } catch (error) {
@@ -746,7 +759,7 @@ export class Bench {
             for (const scorer of m.graders || []) {
               if (signal.aborted) break;
               if (rec.error && !scorer.library?.automatic) continue;
-              const evidence = graderEvidence(m,row,rec,scorer.type === "catalog");
+              const evidence = graderEvidence(m,row,rec,scorer.type === "catalog",scorer.id);
               await this.graders.record(scorer,evidence,
                 {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
               job.revision++;

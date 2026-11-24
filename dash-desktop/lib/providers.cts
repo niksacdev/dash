@@ -244,13 +244,13 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
     },
   };
 }
-export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, onText, apiKey, inputBudget, planning, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
+export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, onText, apiKey, inputBudget, planning, onPlanningProgress, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
   if (inputBudget != null)
     return invokeBudgeted(candidate, messages, { inputBudget, maxTokens, signal, structured, onText });
   if (judging && candidate.provider === "lmstudio")
     return invokeJudge(candidate, messages, { maxTokens, signal, structured });
   if (planning && candidate.provider === "lmstudio")
-    return invokePlanner(candidate, messages, { maxTokens, signal, structured });
+    return invokePlanner(candidate, messages, { maxTokens, signal, structured, onPlanningProgress });
   if (structured && candidate.provider === "lmstudio" && candidate.nativeChat && messages.length === 2 && messages[0].role === "system" && messages[1].role === "user")
     return nativeDataset(candidate, messages, signal, maxTokens);
   const native = candidate.provider === "ollama";

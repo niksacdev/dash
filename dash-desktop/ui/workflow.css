@@ -104,7 +104,7 @@ aside {overflow-y:auto}
 .wf-approved .wf-version-actions {display:inline-flex}
 .wf-page .wf-new {margin-left:8px}
 
-#wf-activity {border:1px solid var(--border);border-inline-start:3px solid var(--accent);border-radius:8px;background:var(--surface-soft);padding:14px 18px;margin:12px 0;min-width:0}
+#wf-activity,.gd-activity {border:1px solid var(--border);border-inline-start:3px solid var(--accent);border-radius:8px;background:var(--surface-soft);padding:14px 18px;margin:12px 0;min-width:0}
 #wf-cancel-design {margin-top:12px}
 .ai-query {min-width:0;color:var(--ink)}
 .ai-query-head,.ai-usage,.ai-usage div,.ai-pulse {display:flex;align-items:center}

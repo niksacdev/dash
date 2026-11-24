@@ -120,6 +120,7 @@ function gradeDesignerView(scope:string,workspace=false,open=workspace) {
   return start+
     '<div class="gd-content">'+(workspace?gradeDesignerScopeSelector(!!(d.busy || d.planner?.busy)):'')+
     '<fieldset class="gd-fields" '+(d.busy?'disabled':'')+'>'+gradeDesignerPreparation(scope,d,workspace)+
+    graderActivitySection(d)+
     (d.error?'<p role="alert" class="wf-error">'+esc(d.error)+'</p>':'')+
     (d.hasPlan?'<section class="gd-proposals" aria-label="Proposed graders"><h3>'+
       (d.checks.length ? (d.checks.length===1 ? "Review the proposed grader" : "Review "+d.checks.length+" proposed graders") : emptyHeading)+'</h3>'+
@@ -148,17 +149,22 @@ function activeDatasetGraderScope() {
   const p=workflows.dataset.approved;
   return p ? "prompt:"+p.id : "dataset:"+(dataset()?.id || "");
 }
-// Remember only saved version IDs. Planning text stays in the current renderer.
+// Persist saved version IDs and positions in an immutable prompt. Planning text stays in the renderer.
 function readGraderAttachment(scope:string) {
   try {
     const saved:unknown=JSON.parse(localStorage.getItem("dash.attachedGraders.v1."+scope) || "null");
     if (!isRecord(saved) || !Array.isArray(saved.ids)) return null;
     const known=new Set((state.graders || []).map(g=>g.id));
-    return {ids:saved.ids.filter((id:unknown):id is string=>typeof id==="string" && known.has(id)),generic:!!saved.generic};
+    const mapped=new Map<number,string|null>();
+    if (Array.isArray(saved.mapped)) for (const row of saved.mapped) {
+      if (isRecord(row) && typeof row.index==="number" && Number.isInteger(row.index) &&
+          row.index>=0 && row.index<8 && (row.id===null || typeof row.id==="string")) mapped.set(row.index,row.id);
+    }
+    return {mapped,ids:saved.ids.filter((id:unknown):id is string=>typeof id==="string" && known.has(id)),generic:!!saved.generic};
   } catch {return null;}
 }
-function writeGraderAttachment(scope:string,ids:Iterable<string>,generic=false) {
-  try {localStorage.setItem("dash.attachedGraders.v1."+scope,JSON.stringify({ids:[...ids],generic}));}
+function writeGraderAttachment(scope:string,ids:Iterable<string>,generic=false,mapped?:{index:number;id:string|null}[]) {
+  try {localStorage.setItem("dash.attachedGraders.v1."+scope,JSON.stringify({ids:[...ids],generic,...(mapped && {mapped})}));}
   catch { /* Selections remain in the current workspace session. */ }
 }
 function retainedGraderIds(selected:Iterable<string>,approved:UiEditableGrader[]) {
@@ -185,8 +191,22 @@ function attachDesignedGraders(scope:string,ids:string[],definitions:UiEditableG
   if (scope.startsWith("prompt:") && rec && "mode" in rec && rec.mode==="quick") {
     const plan=quickGradingPlans.get(rec.id);
     if (!plan) return;
-    plan.enabled=false;
-    plan.designed=true;
+    definitions.forEach((check,index)=>{
+      const measures=check.measures ?? [],id=ids[index];
+      if (measures.length===1 && id) {
+        const metric=measures[0],row=plan.measures.get(metric);
+        if (row && plan.options?.measures.some(m=>m.metric===metric && m.criterion && !m.reason)) {
+          row.choice="saved:"+id;row.edited=true;selected.delete(id);
+        }
+      }
+      // A shared check has one additional score. Its measures have no independent grades.
+      if (measures.length>1) for (const metric of measures) {
+        const row=plan.measures.get(metric);
+        if (row && !row.edited) {row.choice="skip";row.edited=true;}
+      }
+    });
+    rememberQuickGraders(plan,rec.id);
+    return;
   }
   if (scope.startsWith("dataset:") && rec && "pack" in rec && rec.pack==="reference") datasetScorerChoices.set(rec.id,"selected-graders");
   writeGraderAttachment(scope,selected);
@@ -274,12 +294,36 @@ document.addEventListener("change",e=>{
     }
   }
 });
+const graderPlanningRequests = new Map<string,UiGraderDraft>();
+function graderActivitySection(d:UiGraderDraft) {
+  if (d.busy !== "design" && !d.activity?.calls.length) return "";
+  const progress = '<span data-gd-progress role="status" class="visually-hidden"></span><div data-gd-query>' +
+    planningActivityBody(d, "Finding a grader design model…") + '</div>';
+  return d.busy === "design"
+    ? '<section class="gd-activity" aria-label="Grader design activity">'+progress+'</section>'
+    : '<details class="gd-activity"><summary>Grader design activity</summary>'+progress+'</details>';
+}
+function updateGraderActivity(event:UiPlanningEvent) {
+  const d=graderPlanningRequests.get(event.requestId);
+  if (!d) return;
+  const panel=Array.from(document.querySelectorAll<HTMLElement>("[data-gd-scope]")).find(el=>
+    graderDesignDrafts.get((el.hasAttribute("data-gd-workspace")?"workspace/":"run/")+el.dataset.gdScope) === d);
+  updatePlanningActivity(d,event,panel?.querySelector<HTMLElement>("[data-gd-query]") ?? null,
+    panel?.querySelector<HTMLElement>("[data-gd-progress]") ?? null);
+}
 async function proposeGraderChecks(scope:string,d:UiGraderDraft) {
   const promptId=d.planner?.approved?.id ?? (scope.startsWith("prompt:")?scope.slice(7):undefined);
   const request:UiDesignGraderRequest=promptId ? {promptId,target:d.target} : {objective:d.objective.trim(),metrics:d.metrics.trim(),
     target:d.target,...(scope.startsWith("dataset:")?{datasetId:scope.slice(8)}:d.industry==="Cross-industry"?{}:{domainId:d.industry})};
   if ("objective" in request && !request.objective) throw Error("Describe the task you want to evaluate.");
-  const result=await api.designGraders(request);
+  const requestId=crypto.randomUUID();
+  d.activity={requestId,startedAt:Date.now(),calls:[]};
+  graderPlanningRequests.set(requestId,d);
+  let result:UiGraderDesign;
+  try {
+    result=await api.designGraders({...request,requestId});
+    if (result.planningAttempts) d.activity.calls=result.planningAttempts;
+  } finally { graderPlanningRequests.delete(requestId); }
   const judges=gradeDesignerLocalJudges();
   const preferred=judges.find(m=>m.loaded && m.provider===result.designer?.provider && m.model===result.designer.model) || judges.find(m=>m.loaded);
   d.editableMethods=result.editableMethods;

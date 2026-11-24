@@ -3,6 +3,7 @@ import type {ScenarioContract, EvidenceCoverage} from "./outcome-contracts.cjs";
 export const auditRow = z.object({
   metric:z.string().trim().min(1).max(2000), criterion:z.string().trim().min(1).max(2000),
   status:z.enum(["proposed","needs-evidence","external"]),
+  evidenceBasis:z.enum(["task-answer","reference","undetermined"]).optional(),
   evidence:z.string().trim().min(1).max(700), method:z.string().trim().min(1).max(700), reason:z.string().trim().min(1).max(700),
 });
 export type MetricAudit = z.infer<typeof auditRow>;
@@ -10,9 +11,9 @@ export const persistedAudit = z.array(auditRow).max(16);
 export const rationaleSchema = z.object({original:z.string().max(12000),addition:z.string().max(24000),reason:z.string().min(1).max(800)});
 export type PromptRationale = z.infer<typeof rationaleSchema>;
 export const metricsAuditSchema = {type:"object",properties:{audit:{type:"array",minItems:1,maxItems:8,items:{
-  type:"object",additionalProperties:false,required:["metric","criterion","status","evidence","method","reason"],properties:{
+  type:"object",additionalProperties:false,required:["metric","criterion","status","evidence","evidenceBasis","method","reason"],properties:{
     metric:{type:"string",maxLength:180},criterion:{type:"string",maxLength:300},status:{type:"string",enum:["proposed","needs-evidence","external"]},
-    evidence:{type:"string",maxLength:240},method:{type:"string",maxLength:240},reason:{type:"string",maxLength:240},
+    evidenceBasis:{type:"string",enum:["task-answer","reference","undetermined"]},evidence:{type:"string",maxLength:240},method:{type:"string",maxLength:240},reason:{type:"string",maxLength:240},
   }}}},required:["audit"],additionalProperties:false};
 const externalOutcome=/\b(?:ROI|return on investment|(?:money|dollars?|hours?|minutes?|time|costs?) saved|(?:revenue|profit|sales) (?:growth|increase|gain|uplift)|(?:realized|realised|actual|annual) savings|(?:reduce[ds]?|lower|cut|saving|savings? in) (?:operating costs?|costs?|(?:analyst|handling|review) (?:time|hours)|downtime|scrap)|(?:investor confidence|employee morale|brand reputation|customer satisfaction|plant downtime|scrap reduction|stock returns?|market share))\b/i;
 const genericTerms=new Set("a the candidate model business overall answer response its is high good better output task meet meets achieve achieves fulfill fulfills satisfy satisfies quality correctness accurate accuracy successful success requirement requirements objective outcome correct complete metric score pass rate as expected improve improves improved of goal goals".split(" "));

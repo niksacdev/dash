@@ -165,7 +165,7 @@ function modelPicker(mode:UiMode, caseCount=0) {
     '<div id="roster-groups">'+rosterGroups(mode)+'</div></section></section>';
 }
 function setupQuick() {
-  return '<form id="setup" class="compare-console">'+modelPicker("quick")+gradeDesignerView("prompt:"+workflows.quick.approved?.id)+quickGradePicker()+'</form>'+endpointForm()+hostingLegend();
+  return '<form id="setup" class="compare-console">'+quickGradePicker()+modelPicker("quick")+gradeDesignerView("prompt:"+workflows.quick.approved?.id)+'</form>'+endpointForm()+hostingLegend();
 }
 function updateGrid(picker:HTMLElement) {
   const mode = picker?.dataset.pickerMode;

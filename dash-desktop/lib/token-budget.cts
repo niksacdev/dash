@@ -9,10 +9,10 @@ type ModelHandle = Pick<LLM, "identifier" | "applyPromptTemplate" | "countTokens
 const loadedModels = async (): Promise<ModelHandle[]> => (await lmClient()).llm.listLoaded();
 
 interface CheckedInput { model: ModelHandle; fingerprint: string; disableThinking: boolean }
-type CallOptions = Pick<InvokeOptions, "structured" | "onText" | "signal"> & { maxTokens: number };
+type CallOptions = Pick<InvokeOptions, "structured" | "onText" | "signal" | "onPlanningProgress"> & { maxTokens: number };
 interface PredictionOptions {
   limit: AbortSignal; maxTokens: number; structured?: OutputSchema | null; onText?: (text: string) => void;
-  disableThinking?: boolean; expectedTokens?: number; progress?: () => void;
+  disableThinking?: boolean; expectedTokens?: number; progress?: () => void; onPlanningProgress?: InvokeOptions["onPlanningProgress"];
 }
 class InputCapError extends ProviderPreflightError {
   constructor(message: string, readonly inputTokens: number, readonly contextTokens?: number) { super(message); }
@@ -140,29 +140,40 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     }
   }
 
-  async function invokePlanner(candidate: Candidate, messages: ChatTurn[], { maxTokens, signal, structured }: CallOptions): Promise<InferenceResult> {
+  async function invokePlanner(candidate: Candidate, messages: ChatTurn[], { maxTokens, signal, structured, onPlanningProgress }: CallOptions): Promise<InferenceResult> {
     signal.throwIfAborted();
     if (!structured) throw Error("The planning stage requires a response schema.");
     const models = await sdkCall(listLoaded, signal, "DASH could not read the loaded LM Studio models. Check the local server and refresh Local runtimes.");
     const model = models.find(item => item.identifier === candidate.model);
     if (!model) throw new ProviderPreflightError(`Load ${candidate.model} in LM Studio before preparing a prompt.`);
-    return predict(model, candidate, messages, { limit: signal, maxTokens, structured });
+    return predict(model, candidate, messages, { limit: signal, maxTokens, structured, disableThinking:candidate.reasoningOff === true, onPlanningProgress });
   }
 
-  async function predict(model: ModelHandle, candidate: Candidate, messages: ChatTurn[], { limit, maxTokens, structured, onText, disableThinking = false, expectedTokens, progress }: PredictionOptions): Promise<InferenceResult> {
+  async function predict(model: ModelHandle, candidate: Candidate, messages: ChatTurn[], { limit, maxTokens, structured, onText, disableThinking = false, expectedTokens, progress, onPlanningProgress }: PredictionOptions): Promise<InferenceResult> {
     checkPreparationSignal(limit);
     const start = performance.now();
     let output = "", firstTokenMs: number | null = null;
+    let approximateOutputTokens = 0;
     const options: LLMRespondOpts = {
       signal: limit, temperature: 0, maxTokens, contextOverflowPolicy: "stopAtLimit",
-      onPromptProcessingProgress: progress,
+      onPromptProcessingProgress(value) {
+        progress?.();
+        if (onPlanningProgress && Number.isFinite(value) && value >= 0 && value <= 1)
+          onPlanningProgress({phase:"processing-prompt",percent:Math.round(value*100)});
+      },
       onPredictionFragment(fragment) {
         progress?.();
         if (fragment.reasoningType && fragment.reasoningType !== "none") return;
         if (!fragment.content) return;
         firstTokenMs ??= Math.round(performance.now() - start);
-        output += fragment.content;
-        onText?.(output);
+        if (onPlanningProgress) {
+          if (Number.isSafeInteger(fragment.tokensCount) && fragment.tokensCount >= 0) approximateOutputTokens += fragment.tokensCount;
+          onPlanningProgress({phase:"generating",approximateOutputTokens});
+        }
+        if (onText) {
+          output += fragment.content;
+          onText(output);
+        }
       },
     };
     if (disableThinking) options.enableThinking = false;
