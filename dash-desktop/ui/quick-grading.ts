@@ -3,7 +3,7 @@
 const quickGradingPlans = new Map<string,UiQuickPlan>();
 function newQuickGradingPlan(id:string):UiQuickPlan {
   const attachment=readGraderAttachment("prompt:"+id);
-  return {options:null,saved:new Set(attachment?.ids),designed:!!attachment && !attachment.generic,measures:new Map(),error:"",sequence:0};
+  return {options:null,saved:new Set(attachment?.ids),designed:!!attachment && !attachment.generic,measures:new Map(),error:"",recovery:"retry",sequence:0};
 }
 function rememberQuickGraders(plan:UiQuickPlan,id=workflows.quick.approved?.id) {
   if (!id) return;
@@ -21,15 +21,49 @@ function quickGradingRows(options:UiQuickOptions):UiQuickMeasure[] {
   if (options.measures.length || !options.generated) return options.measures;
   return [{metric:"Combined outcome rubric",criterion:null,generated:options.generated,reason:null}];
 }
+// Old runners returned the complete catalogue without any per-measure assignment support.
+function graderReplyFormat(reply:unknown,approved:UiApproved):"current"|"legacy"|"invalid" {
+  if (!isRecord(reply)) return "invalid";
+  for (const list of [reply.available,reply.automatic,reply.recommended,reply.judges]) {
+    if (!Array.isArray(list) || !list.every(item=>isRecord(item) && typeof item.id==="string")) return "invalid";
+  }
+  if (!(reply.generated===null || isRecord(reply.generated))) return "invalid";
+  if (!Object.hasOwn(reply,"measures")) return "legacy";
+  const pairs=approved.metricCriteria ?? approved.metricAudit;
+  const expected=pairs ? approved.metrics : [];
+  if (!Array.isArray(reply.measures) || reply.measures.length!==expected.length) return "invalid";
+  const aligned=reply.measures.every((row,index)=>{
+    const metric=expected[index],criterion=pairs?.find(pair=>pair.metric===metric)?.criterion ?? null;
+    return isRecord(row) && row.metric===metric && row.criterion===criterion &&
+      (row.reason===null || typeof row.reason==="string") && (row.generated===null || isRecord(row.generated));
+  });
+  return aligned?"current":"invalid";
+}
+function quickGraderFailure(plan:UiQuickPlan) {
+  if (plan.recovery!=="restart") return readFailure("Couldn’t load graders",plan.error,"Retry");
+  const quit=state.device.startsWith("darwin")?"Quit DASH with ⌘Q":"Quit DASH completely";
+  return '<section class="wf-error spacer" role="alert" data-qc-restart><strong>Restart DASH to choose graders</strong>'+
+    '<p>Your approved prompt is saved. The running app does not support this screen’s grader requests.</p>'+
+    '<p>Copy any unsaved rubric edits. '+quit+', reopen it, then return to Quick compare.</p></section>';
+}
 async function loadQuickGrading(approved:UiApproved|null) {
   if (!approved) return;
   const plan=quickGradingPlans.get(approved.id) || newQuickGradingPlan(approved.id);
   quickGradingPlans.set(approved.id,plan);
   const sequence=++plan.sequence;
   try {
+    if (typeof api.quickGraderOptions!=="function") {
+      plan.recovery="restart";plan.error="Restart DASH to choose graders.";return;
+    }
     const options=await api.quickGraderOptions(approved.id);
     if (sequence!==plan.sequence) return;
-    if (!Array.isArray(options.measures)) throw Error("Reopen the updated DASH app to map approved measures to graders.");
+    const format=graderReplyFormat(options,approved);
+    if (format==="legacy") {
+      plan.recovery="restart";
+      plan.error="Restart DASH to choose graders.";
+      return;
+    }
+    if (format==="invalid") throw Error("The grader list was incomplete. Retry to load the saved versions for this prompt.");
     const remembered=readGraderAttachment("prompt:"+approved.id)?.mapped;
     for (const [index,row] of quickGradingRows(options).entries()) {
       const judge=row.generated?.judgeId || "";
@@ -51,8 +85,14 @@ async function loadQuickGrading(approved:UiApproved|null) {
         evidence:recovered?.evidence ?? (row.generated?.requiredEvidence?.includes("reference") ? "reference":"task-answer"),edited:!!recovered || saved!==undefined
       });
     }
-    plan.options=options;plan.error="";
-  } catch (error) {if(sequence===plan.sequence) plan.error=errorText(error);}
+    plan.options=options;plan.error="";plan.recovery="retry";
+  } catch (error) {
+    if(sequence!==plan.sequence) return;
+    const reason=errorText(error);
+    const missing=staleDesktopMethod(error) || reason.startsWith("This action is unavailable in the running version of DASH.");
+    plan.recovery=missing?"restart":"retry";
+    plan.error=missing?"Restart DASH to choose graders.":reason;
+  }
 }
 function quickGradePlan() {return quickGradingPlans.get(workflows.quick.approved?.id || "");}
 
@@ -179,7 +219,8 @@ function quickAdditionalVersions(plan:UiQuickPlan,options:UiQuickOptions) {
 function quickGradePicker() {
   const plan=quickGradePlan(),options=plan?.options;
   const heading='<div class="qc-section-title"><h2>Graders</h2>'+chooseQuickGradersLink()+'</div>';
-  if (!plan || !options || plan.error) return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+heading+'<p role="status">'+esc(plan?.error || "Loading grading options…")+'</p><button type="button" data-qc-reload>Reload grading options</button></section>';
+  if (!plan || !options || plan.error) return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+heading+
+    (plan?.error?quickGraderFailure(plan):'<p role="status">Loading grading options…</p>')+'</section>';
   const missing=[...plan.saved].some(id=>!options.available.some(g=>g.id===id));
   return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+heading+
     '<h3 class="qc-line-label">Approved measures</h3>'+
@@ -209,7 +250,6 @@ document.addEventListener("click",async e=>{
     if (row?.generated && editor) {editor.criteria=row.generated.criteria;rememberQuickLineup();await render();}
     return;
   }
-  if (e.target.closest("[data-qc-reload]")) {await render();return;}
   const remove=e.target.closest<HTMLButtonElement>("[data-qc-extra-remove]");
   if(remove?.dataset.qcExtraRemove) {
     const plan=quickGradePlan();

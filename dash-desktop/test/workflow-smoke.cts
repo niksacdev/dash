@@ -13,6 +13,7 @@ import {opikJudgeRequest} from "./opik-judge-fixture.cjs";
 import {decodeApprovedPrompt} from "../lib/outcome-contracts.cjs";
 import {decodeManifest} from "../lib/run-decode.cjs";
 import power = require("../lib/power.cjs");
+import {Bench} from "../lib/bench.cjs";
 
 const profile = mkdtempSync(path.join(os.tmpdir(), "dash-workflow-smoke-"));
 app.setPath("userData", profile);
@@ -626,6 +627,51 @@ async function smoke() {
       await click('#appearance input[value="'+original+'"] + span');
     }
   }
+  // Reproduce an old main process and a failed read through the production preload interface.
+  const readOptions=Bench.prototype.quickGraderOptions;
+  let replyMode:"legacy"|"missing-handler"|"invalid"|"empty"|"wrong-grader"|"unreadable"|"current"="legacy";
+  const optionProbe=mock.method(Bench.prototype,"quickGraderOptions",function(this:Bench,id:string){
+    if(replyMode==="missing-handler") throw Error("No handler registered for 'dash:quickGraderOptions'");
+    if(replyMode==="unreadable") throw Error("The grader read was interrupted.");
+    const reply=readOptions.call(this,id);
+    if(replyMode==="legacy") Reflect.deleteProperty(reply,"measures");
+    if(replyMode==="invalid") Reflect.set(reply,"measures",null);
+    if(replyMode==="empty") {reply.measures=[];reply.generated=null;}
+    if(replyMode==="wrong-grader") Reflect.set(reply,"automatic",[null]);
+    return reply;
+  });
+  const picker='#qc-grading a[href^="#graders/quick/"]';
+  try {
+    await click(picker);
+    await wait(()=>exists("[data-qc-restart]"),"Known old grader reply offers a complete restart");
+    assert.equal(await exists('[data-act="retry-read"]'),false);
+    assert.equal(await exists(".qc-chooser"),false);
+    replyMode="missing-handler";
+    await click('nav[aria-label="Quick comparison setup"] a[href="#compare"]');
+    await wait(()=>exists("#qc-grading [data-qc-restart]"),"An unregistered IPC handler requires restart from setup");
+    assert.ok(await js("document.querySelector('#setup .go-button').disabled"));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM runs").get()?.n,0);
+    replyMode="invalid";
+    await click(picker);
+    const retry='[data-read-error] [data-act="retry-read"]';
+    await wait(()=>exists(retry),"Incomplete contemporary payload can retry");
+    assert.equal(await exists("[data-qc-restart]"),false);
+    for (const malformed of ["empty","wrong-grader"] as const) {
+      await js("document.querySelector('[data-read-error]').setAttribute('data-previous-read','')");
+      replyMode=malformed;await click(retry);
+      await wait(()=>exists('[data-read-error]:not([data-previous-read]) [data-act="retry-read"]'),"Dropped measures and broken grader records keep the draft blocked");
+      assert.equal(await exists(".qc-chooser"),false);
+    }
+    replyMode="unreadable";await click(retry);
+    await wait(()=>js("document.querySelector('[data-read-error]')?.textContent.includes('read was interrupted')"),"Failed reads keep the actual error");
+    replyMode="current";await click(retry);
+    await wait(()=>exists(".qc-chooser"),"Retry recovers this draft in place");
+    await click('nav[aria-label="Quick comparison setup"] a[href="#compare"]');
+    await wait(()=>exists(controls(rowB,"choice")),"Recovered previous measure mapping");
+    assert.equal(await text("document.querySelector("+q(controls(rowB,"choice"))+").value"),"saved:"+markerGrader);
+    assert.ok(await js("document.querySelectorAll('#quick-models [data-remove]').length===2"));
+    assert.equal(await js("document.querySelector('#setup .go-button').disabled"),false);
+  } finally {optionProbe.mock.restore();}
   // Enter from the active setup, retain both lane IDs across reload, and attach through the real catalogue.
   await fill(controls(rowB,"choice"),"skip");
   const scopedLibrary="#graders/quick/"+first.id;

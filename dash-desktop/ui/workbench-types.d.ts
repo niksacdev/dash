@@ -36,7 +36,7 @@ interface UiPrompt extends UiTokenCaps, UiReviewEvidence {
   planningAttempts?:UiPlanningAttempt[];
 }
 interface UiDraft extends UiPrompt {draftId:string}
-interface UiApproved extends UiPrompt {id:string; version:number; familyId:string}
+interface UiApproved extends UiPrompt {id:string; version:number; familyId:string;metricCriteria?:{metric:string;criterion:string}[]}
 interface UiSuggestion extends UiReviewEvidence {id:string; planningAttempts?:UiPlanningAttempt[]; domain:string; metrics:string[]; criteria:string[]; criteriaReview?:UiPlanningReview}
 interface UiWorkflow {
   mode:UiMode; objective:string; metrics:string; domain:string; inputCap:string; outputCap:string;
@@ -73,7 +73,7 @@ type UiMeasureAssignment = {metric:string;kind:"skip"} | {metric:string;kind:"sa
 interface UiPinnedMeasure {metric:string;criterion:string|null;graderId:string|null;graderVersion:number|null;reason:string|null}
 interface UiQuickOptions extends UiGraderOptions {recommended:UiGrader[];measures:UiQuickMeasure[];generated:UiGraderDefinition|null;judges:UiModel[]}
 interface UiMeasureEditor {choice:string;judgeId:string;threshold:string;criteria:string;evidence:"task-answer"|"reference";edited:boolean}
-interface UiQuickPlan {options:UiQuickOptions|null;saved:Set<string>;designed:boolean;measures:Map<string,UiMeasureEditor>;error:string;sequence:number}
+interface UiQuickPlan {options:UiQuickOptions|null;saved:Set<string>;designed:boolean;measures:Map<string,UiMeasureEditor>;error:string;recovery:"retry"|"restart";sequence:number}
 interface UiDatasetCaseSource {datasetId:string; datasetName:string; datasetVersion:string; caseId:string; scenarioId:string; scenarioVersion:string; contractHash:string}
 interface UiAssessment {datasetCase?:UiDatasetCaseSource;opikMetric?:{metricKey:UiOpikMetricKey;nativeScore:number;direction:"higher-is-better"|"higher-is-risk"};decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
 interface UiScore {pass:boolean;ready?:boolean;falseAccept?:boolean;review?:boolean;reasons:string[]}

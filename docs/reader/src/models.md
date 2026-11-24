@@ -34,6 +34,8 @@ For **Suggest Metrics** and prompt drafting, use a loaded LFM3 chat model. If Pl
 2. Select **Choose graders**. Use **Add to comparison** to attach a saved version to both answers. Use **Choose measure** when you want its score attached to a particular approved measure. For an earnings question, that could be a saved grader for the requested GAAP figure. **Back to Quick compare** returns to the same prompt and starting line.
 3. Review the two models and pinned graders, then select **Run evaluation**. During the run, watch the response and assessment counts. In the report, read the two answers and the score for each approved measure.
 
+If **Restart DASH to choose graders** appears, your approved prompt is still in the catalogue. Copy any unsaved rubric edits, quit the app completely (⌘Q on macOS), reopen DASH, and return to **Quick compare**. Opening the launcher while DASH is still running brings the same process forward. A temporary read error offers **Retry** on the current comparison. If no saved grader matches, **Review proposed rubrics** opens any available run rubrics. **Design a grader for this prompt** lets you save a reusable version.
+
 ![Example Quick setup showing an approved Manufacturing task, two selected model lanes, mapped graders and the evaluation launch control](quick-evaluation-setup.png)
 
 ## Read AI planning activity
