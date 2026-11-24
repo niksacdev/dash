@@ -102,16 +102,8 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     assert.equal(await js("Promise.all(Array.from(document.querySelectorAll('.dash-emblem, .brand img'), img => img.decode())).then(() => document.querySelectorAll('.dash-emblem, .brand img').length)"), 2);
 
 
-    const artLoaded = await js(`(async () => {
-      const background = getComputedStyle(document.querySelector('.capability-reel'), '::before').backgroundImage;
-      const asset = background.match(/url\\("([^"]+)"\\)/)?.[1];
-      if (!asset || new URL(asset).pathname.split('/').pop() !== 'scarlet-circuit.jpg') return false;
-      const image = new Image();
-      image.src = asset;
-      await image.decode();
-      return image.naturalWidth > 0 && image.naturalHeight > 0;
-    })()`);
-    assert.equal(artLoaded, true, "The actual banner artwork must load");
+    assert.equal(await js("document.querySelector('.capability-reel').dataset.visual"), "objective");
+    assert.ok(await js("document.querySelector('.flow-diagram').getAttribute('aria-label').includes('GAAP')"));
     await send("Emulation.setEmulatedMedia", {features:[{name:"prefers-reduced-motion",value:"reduce"}]});
     await checkControlColors();
     await screenshot("overview-light.png");

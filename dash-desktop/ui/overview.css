@@ -68,14 +68,13 @@ body:has(.overview) .desk > header .button {
   content: "";
   pointer-events: none;
 }
-.capability-reel::before {
+.capability-reel:where([data-visual="race"])::before {
   clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%);
   background:
     linear-gradient(0deg, #17161d6b, transparent 46%),
     url("assets/scarlet-circuit.jpg") 64% 52% / cover no-repeat;
   mask-image: linear-gradient(105deg, transparent 2%, #0005 32%, #000 78%);
   opacity: .86;
-  transition: opacity 350ms ease-out;
 }
 .capability-reel::after {
   width: calc(var(--cut) + 2px);
@@ -135,7 +134,7 @@ body:has(.overview) .desk > header .button {
 @media (prefers-reduced-motion: reduce) {
   .capability-controls [data-carousel="playback"] { display: none; }
 }
-.capability-slide, .capability-copy {
+.capability-slide, .capability-standard {
   display: grid;
   align-items: start;
 }
@@ -143,9 +142,6 @@ body:has(.overview) .desk > header .button {
 .industry-view { visibility: hidden; }
 .capability-reel[data-visual="industries"] .capability-standard { visibility: hidden; }
 .capability-reel[data-visual="industries"] .industry-view { visibility: visible; }
-.capability-reel[data-visual="industries"]::before {
-  opacity: 0;
-}
 .industry-examples {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -174,7 +170,7 @@ body:has(.overview) .desk > header .button {
 .industry-examples strong, .industry-examples small { display: block; }
 .industry-examples strong { color: var(--track-paper); font-size: 12px; }
 .industry-examples small { margin-top: 3px; color: #e0d4d8; font-size: 11px; }
-.capability-sizer, .capability-frame { grid-area: 1 / 1; }
+.capability-sizer, .capability-live { grid-area: 1 / 1; }
 .capability-sizer { visibility: hidden; }
 .capability-context {
   margin: 0;
@@ -198,7 +194,38 @@ body:has(.overview) .desk > header .button {
   0%, 100% { opacity: 0; }
   3%, 97% { opacity: 1; }
 }
-.banner-track { display: grid; gap: 2px; margin-top: 10px; }
+.capability-illustration {
+  display: grid;
+  align-items: center;
+}
+.capability-sizer::after { content: ""; display: block; }
+.capability-sizer::after, .capability-illustration {
+  height: clamp(62px, 7cqw, 82px);
+  margin-top: 9px;
+}
+.capability-sizer[data-visual="race"]::after, .capability-reel[data-visual="race"] .capability-illustration { height: 52px; }
+.flow-diagram { display: block; width: 100%; height: 100%; min-width: 0; }
+.flow-diagram .diagram-value { font: 600 14px/1 "Helvetica Neue", Arial, sans-serif; fill: var(--track-paper); }
+.flow-diagram .diagram-key { font: 600 10px/1 var(--mono); letter-spacing: .06em; fill: #dcccd0; }
+.diagram-paper { fill: #26242e; stroke: #c0a9b2; stroke-width: 1.2; stroke-linejoin: round; }
+.diagram-rule, .diagram-wire, .diagram-alert, .diagram-return, .diagram-sweep {
+  fill: none; stroke-linejoin: round; stroke-linecap: round;
+}
+.diagram-rule { stroke: #d8c9d1; stroke-width: 1.3; }
+.diagram-wire, .diagram-return { stroke: #a3bbc3; stroke-width: 1.25; }
+.diagram-return { stroke-dasharray: 3 4; }
+.diagram-port { fill: #b2d8dd; }
+.diagram-alert { stroke: #ffaea5; stroke-width: 1.6; }
+.diagram-sweep { stroke: #dcf6f7; stroke-width: 2; stroke-dasharray: 12 112; opacity: 0; }
+.capability-reel[data-playing="true"] .diagram-sweep {
+  animation: diagram-signal 2.4s ease-in-out .35s 1 both;
+}
+@keyframes diagram-signal {
+  0% { stroke-dashoffset: 12; opacity: 0; }
+  18%, 70% { opacity: .85; }
+  100% { stroke-dashoffset: -100; opacity: 0; }
+}
+.banner-track { display: grid; gap: 2px; }
 .banner-track > div {
   display: grid;
   grid-template-columns: clamp(112px, 28%, 140px) minmax(0, 1fr);
@@ -392,7 +419,7 @@ a.overview-run:hover { background: var(--selected); }
   .capability-reel { padding: 9px var(--inset) 13px; }
   .capability-reel::before { clip-path: none; }
   .capability-reel::after { inset: 0 auto 0 0; width: 2px; clip-path: none; }
-  .banner-track { margin-top: 8px; }
+
 }
 @container (max-width: 560px) {
   .timing-strip { padding-inline: var(--inset); display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }

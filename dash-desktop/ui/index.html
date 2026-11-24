@@ -111,6 +111,59 @@
       </header>
       <main id="screen" tabindex="-1"></main>
     </div>
+    <template id="diagram-objective">
+      <svg class="flow-diagram" viewBox="0 0 360 72" role="img" aria-label="Example objective: extract earnings per share. Suggested checks: GAAP basis and fiscal period." preserveAspectRatio="xMinYMid meet">
+        <path class="diagram-paper" d="M2 6h108l14 14v44H2z"/>
+        <path class="diagram-rule" d="M110 6v14h14"/>
+        <text class="diagram-key" x="14" y="28">OBJECTIVE</text>
+        <text class="diagram-value" x="14" y="50">Extract EPS</text>
+        <path class="diagram-wire" d="M124 39h21q8 0 14-6l4-4q4-4 10-4h17m-45 14q8 0 14 6l4 4q4 4 10 4h17"/>
+        <circle class="diagram-port" cx="190" cy="25" r="3"/><circle class="diagram-port" cx="190" cy="53" r="3"/>
+        <text class="diagram-key" x="204" y="11">SUGGESTED CHECKS</text>
+        <text class="diagram-value" x="204" y="31">GAAP basis</text>
+        <text class="diagram-value" x="204" y="59">Fiscal period</text>
+        <path class="diagram-sweep" pathLength="100" d="M124 39h21q8 0 14-6l4-4q4-4 10-4h17"/>
+      </svg>
+    </template>
+    <template id="diagram-grading">
+      <svg class="flow-diagram" viewBox="0 0 360 72" role="img" aria-label="Each dataset case produces an answer. The grader checks it against the rubric to produce a case score." preserveAspectRatio="xMinYMid meet">
+        <g class="diagram-paper">
+          <rect x="4" y="12" width="35" height="24" rx="3"/><rect x="9" y="8" width="35" height="24" rx="3"/><rect x="14" y="4" width="35" height="24" rx="3"/>
+        </g>
+        <path class="diagram-rule" d="M21 12h18m-18 7h11"/>
+        <path class="diagram-wire" d="M53 20h44m-5-4 5 4-5 4m60-4h39m-5-4 5 4-5 4m58-4h40m-5-4 5 4-5 4"/>
+        <path class="diagram-paper" d="M109 5h31q3 0 3 3v19q0 3-3 3h-20l-9 7v-7h-2q-3 0-3-3V8q0-3 3-3z"/>
+        <path class="diagram-rule" d="M114 14h20m-20 7h14"/>
+        <rect class="diagram-paper" x="199" y="4" width="35" height="31" rx="4"/>
+        <path class="diagram-rule" d="m205 14 2 2 4-5m3 3h13m-22 9 2 2 4-5m3 3h13"/>
+        <path class="diagram-paper" d="M291 4h24l9 9v23h-33z"/><path class="diagram-rule" d="M315 4v9h9m-26 14v-5m6 5V17m6 10v-7"/>
+        <g class="diagram-value"><text x="2" y="58">Case</text><text x="100" y="58">Answer</text><text x="193" y="58">Rubric</text><text x="270" y="58">Case score</text></g>
+        <path class="diagram-sweep" pathLength="100" d="M53 20h42m58 0h38m55 0h38"/>
+      </svg>
+    </template>
+    <template id="diagram-report">
+      <svg class="flow-diagram" viewBox="0 0 360 72" role="img" aria-label="Example earnings case. Expected basis: GAAP. Returned basis: adjusted. The case fails the basis check." preserveAspectRatio="xMinYMid meet">
+        <path class="diagram-rule" d="M2 6h190M2 35h190M2 65h190"/>
+        <text class="diagram-key" x="5" y="25">EXPECTED</text><text class="diagram-value" x="90" y="26">GAAP</text>
+        <text class="diagram-key" x="5" y="55">RETURNED</text><text class="diagram-value" x="90" y="56">Adjusted</text>
+        <path class="diagram-wire" d="M195 19h7q5 0 5 6v4q0 6 7 6h12m-31 16h7q5 0 5-6v-4q0-6 7-6"/>
+        <circle class="diagram-alert" cx="238" cy="35" r="8"/><path class="diagram-alert" d="M238 31v5m0 3v.2"/>
+        <text class="diagram-key" x="254" y="26">CASE VERDICT</text>
+        <text class="diagram-value" x="254" y="47">Basis mismatch</text>
+        <path class="diagram-sweep" pathLength="100" d="M195 51h7q5 0 5-6v-4q0-6 7-6h12"/>
+      </svg>
+    </template>
+    <template id="diagram-hardware">
+      <svg class="flow-diagram" viewBox="0 0 360 72" role="img" aria-label="Planned hardware loop: sample a sensor, observe the agent response, record it, and sample again." preserveAspectRatio="xMinYMid meet">
+        <path class="diagram-wire" d="M69 18h51m-5-4 5 4-5 4m113-4h53m-5-4 5 4-5 4"/>
+        <path class="diagram-rule" d="M4 19h9l5-10 8 23 9-27 6 14h14"/>
+        <rect class="diagram-paper" x="145" y="5" width="40" height="25" rx="4"/><path class="diagram-rule" d="M151 12h7m4 0h15m-26 10h21m-32-10h5m-5 10h5m40-10h5m-5 10h5"/>
+        <rect class="diagram-paper" x="303" y="5" width="37" height="26" rx="3"/><path class="diagram-rule" d="M310 12h23m-23 6h17m-17 6h20"/>
+        <g class="diagram-value"><text x="3" y="48">Sensor</text><text x="116" y="48">Agent response</text><text x="285" y="48">Case log</text></g>
+        <path class="diagram-return" d="M321 54v7q0 4-5 4H33q-5 0-5-4v-7m-4 4 4-4 4 4"/>
+        <path class="diagram-sweep" pathLength="100" d="M321 54v7q0 4-5 4H33q-5 0-5-4v-7"/>
+      </svg>
+    </template>
     <div id="msg" role="status" hidden></div>
   </body>
 </html>

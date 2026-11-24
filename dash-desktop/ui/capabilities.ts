@@ -1,9 +1,6 @@
 "use strict";
 
 const modelGrid = ["Open Source", "Frontier Labs", "FineTuned"];
-const domainAgentGrid = ["Financial expert", "Financial implementer", "Output analyzer"];
-const inspectionGrid = ["Manufacturing expert", "Manufacturing implementer", "Report agent"];
-
 const industryTitle = "Run domain-specific use cases";
 const industryExamples = [
   { domain: "Financial Services", decision: "Verify reported EPS", image: "financial" },
@@ -11,19 +8,22 @@ const industryExamples = [
   { domain: "Automotive", decision: "Planned · vehicle testing", image: "automotive" },
 ];
 
-const scenes = [
-  { context: "Business outcome", title: "Start with the decision",
-    detail: "Describe the job in one sentence. A domain expert suggests success criteria you can edit.", lanes: domainAgentGrid },
-  { context: "Quick compare", title: "Give two models the same task",
-    detail: "Send one approved prompt to local or hosted models. Compare their answers against the same rubric.", lanes: modelGrid },
-  { context: "Domain scenarios", title: industryTitle, visual: "industries",
-    detail: "Check whether earnings per share are reported or adjusted. Flag parts that fall outside the drawing’s tolerances.", lanes: domainAgentGrid },
-  { context: "Grading · Opik experiments", title: "Score a whole set of cases",
-    detail: "Grade a versioned dataset against expert references or your rubric. Compare candidates in Opik.", lanes: modelGrid },
-  { context: "Run report", title: "See what supports the verdict",
-    detail: "Inspect the case scores alongside response time, token use and measured device power.", lanes: modelGrid },
-  { context: "Planned · Hardware in the loop", title: "Test on connected hardware",
-    detail: "Evaluate how agents respond to signals from a physical device.", lanes: inspectionGrid },
+type CapabilityVisual = "objective" | "race" | "industries" | "grading" | "report" | "hardware";
+interface CapabilityScene { context: string; title: string; detail: string; visual: CapabilityVisual }
+
+const scenes: readonly CapabilityScene[] = [
+  { visual: "objective", context: "Business outcome", title: "Start with the decision",
+    detail: "Describe the job. Your domain expert suggests checks you can edit before a run." },
+  { visual: "race", context: "Quick compare", title: "Compare and benchmark multiple models",
+    detail: "Choose two models per run. Compare their answers to the same prompt against one rubric." },
+  { visual: "industries", context: "Domain scenarios", title: industryTitle,
+    detail: "Check whether earnings per share are reported or adjusted. Flag parts that fall outside the drawing’s tolerances." },
+  { visual: "grading", context: "Dataset grading", title: "Score a whole set of cases",
+    detail: "Apply a rubric to each answer in a dataset version. Compare the results in Opik when synced." },
+  { visual: "report", context: "Run report · Example", title: "See what supports the verdict",
+    detail: "Trace a case score to its grader’s reason. Review latency, tokens and available power readings alongside it." },
+  { visual: "hardware", context: "Planned · Hardware in the loop", title: "Test on connected hardware",
+    detail: "Replay a sensor reading through an agent and record its response for evaluation." },
 ];
 const reducedBannerMotion = matchMedia("(prefers-reduced-motion: reduce)");
 let currentScene = 0;
@@ -42,16 +42,27 @@ function outcomeTrack() {
     ).join("") + '</ol></section>';
 }
 
-function capabilityCopy(scene: (typeof scenes)[number]) {
+function capabilityCopy(scene: CapabilityScene) {
   return '<h2>' + esc(scene.title) + '</h2><p class="capability-detail">' + esc(scene.detail) + '</p>';
+}
+
+function capabilityIllustration(visual: CapabilityVisual): string {
+  if (visual === "industries") return "";
+  if (visual === "race") {
+    const lanes = modelGrid.map(name => '<div><small>' + esc(name) +
+      '</small><span>' + svg("car", "banner-car") + '</span></div>').join("");
+    return '<div class="banner-track" aria-hidden="true">' + lanes + '</div>';
+  }
+  const template = document.getElementById("diagram-" + visual);
+  if (!(template instanceof HTMLTemplateElement)) throw new Error("Missing Overview diagram: " + visual);
+  return template.innerHTML;
 }
 
 function bannerCapabilities() {
   const scene = scenes[currentScene];
-  const sizers = scenes.map(item => '<div class="capability-sizer" aria-hidden="true">' +
+  const sizers = scenes.filter(item => item.visual !== "industries").map(item =>
+    '<div class="capability-sizer" aria-hidden="true" data-visual="' + item.visual + '">' +
     capabilityCopy(item) + '</div>').join("");
-  const lanes = scene.lanes.map(name => '<div><small>' + esc(name) +
-    '</small><span>' + svg("car", "banner-car") + '</span></div>').join("");
   const button = (action: string, label: string, icon: string) => '<button type="button" data-carousel="' + action +
     '" aria-label="' + label + '" title="' + label + '" aria-controls="dash-capability-slide"><span aria-hidden="true">' +
     icon + '</span></button>';
@@ -61,14 +72,14 @@ function bannerCapabilities() {
       '</strong><small>' + esc(decision) + '</small></figcaption></figure>').join("") + '</div></div>';
   const position = (currentScene + 1) + " / " + scenes.length;
   return '<section class="capability-reel" aria-roledescription="carousel" aria-label="DASH overview" data-scene="' +
-    currentScene + '" data-visual="' + (scene.visual ?? "race") + '" data-playing="' + playing + '"><div class="capability-toolbar"><p class="capability-context">' +
+    currentScene + '" data-visual="' + scene.visual + '" data-playing="' + playing + '"><div class="capability-toolbar"><p class="capability-context">' +
     esc(scene.context) + '</p><div class="capability-controls">' +
     button("previous", "Previous slide", "←") + '<span class="capability-position" aria-hidden="true">' + position + '</span>' +
     button("next", "Next slide", "→") + button("playback", playing ? "Pause slideshow" : "Play slideshow", "") +
     '</div></div><div class="capability-slide" id="dash-capability-slide" role="group" aria-roledescription="slide" aria-label="' +
-    (currentScene + 1) + ' of ' + scenes.length + '"><div class="capability-standard"><div class="capability-copy"><div class="capability-frame">' +
-    capabilityCopy(scene) + '</div>' + sizers + '</div><div class="banner-track" aria-hidden="true">' +
-    lanes + '</div></div>' + gallery + '</div><span class="capability-announcement" role="status" aria-atomic="true"></span></section>';
+    (currentScene + 1) + ' of ' + scenes.length + '"><div class="capability-standard"><div class="capability-live"><div class="capability-frame">' +
+    capabilityCopy(scene) + '</div><div class="capability-illustration">' +
+    capabilityIllustration(scene.visual) + '</div></div>' + sizers + '</div>' + gallery + '</div><span class="capability-announcement" role="status" aria-atomic="true"></span></section>';
 }
 
 function setPlaying(reel: HTMLElement, value: boolean) {
@@ -87,7 +98,7 @@ function moveScene(reel: HTMLElement, direction: number, manual: boolean) {
   const scene = scenes[currentScene];
   const number = currentScene + 1;
   reel.dataset.scene = String(currentScene);
-  reel.dataset.visual = scene.visual ?? "race";
+  reel.dataset.visual = scene.visual;
   const context = reel.querySelector(".capability-context");
   const frame = reel.querySelector(".capability-frame");
   const position = reel.querySelector(".capability-position");
@@ -95,7 +106,8 @@ function moveScene(reel: HTMLElement, direction: number, manual: boolean) {
   if (frame) frame.innerHTML = capabilityCopy(scene);
   if (position) position.textContent = number + " / " + scenes.length;
   reel.querySelector(".capability-slide")?.setAttribute("aria-label", number + " of " + scenes.length);
-  reel.querySelectorAll(".banner-track small").forEach((label, i) => { label.textContent = scene.lanes[i]; });
+  const illustration = reel.querySelector(".capability-illustration");
+  if (illustration) illustration.innerHTML = capabilityIllustration(scene.visual);
   const announcement = reel.querySelector(".capability-announcement");
   if (manual && announcement) {
     announcement.textContent = "Slide " + number + " of " + scenes.length + ". " + scene.title;
