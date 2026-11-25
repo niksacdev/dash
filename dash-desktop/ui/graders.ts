@@ -17,24 +17,28 @@ const catalogSections:readonly {scope:UiGraderScope;title:string}[]=[
   {scope:"general",title:"General"},{scope:"industry",title:"Industry"},{scope:"customer",title:"My graders"},
 ];
 let datasetGradingChoices:UiGraderOptions|null=null;
-type DatasetGradingRead = {options:UiGraderOptions|null;message:string;restart:boolean};
-let datasetGradingRead:DatasetGradingRead={options:null,message:"Loading dataset grading options.",restart:false};
+type DatasetGradingRead = {snapshot:string|null;pending?:true;options:UiGraderOptions|null;message:string;restart:boolean};
+function pendingDatasetGrading(snapshot:string|null):DatasetGradingRead {
+  return {snapshot,pending:true,options:null,message:"Checking graders for this dataset snapshot…",restart:false};
+}
+let datasetGradingRead=pendingDatasetGrading(null);
 async function fetchDatasetGrading(snapshot:string):Promise<DatasetGradingRead> {
   try {
     const options=await api.datasetGraderOptions(snapshot);
     if(!isRecord(options) || ![options.automatic,options.available].every(list=>Array.isArray(list) && list.every(g=>isRecord(g) && typeof g.id==="string")))
       throw Error("The dataset grader list was incomplete.");
-    if(options.scoringVersion!==1)return {options:null,message:"Restart DASH to verify scoring coverage for this dataset.",restart:true};
-    return {options,message:"",restart:false};
+    if(options.scoringVersion!==1)return {snapshot,options:null,message:"Restart DASH to verify scoring coverage for this dataset.",restart:true};
+    return {snapshot,options,message:"",restart:false};
   } catch(error) {
     const restart=staleDesktopMethod(error) || errorText(error).startsWith("This action is unavailable in the running version of DASH.");
-    return {options:null,restart,message:restart?"Restart DASH to verify scoring coverage for this dataset.":errorText(error)};
+    return {snapshot,options:null,restart,message:restart?"Restart DASH to verify scoring coverage for this dataset.":errorText(error)};
   }
 }
 function applyDatasetGrading(read:DatasetGradingRead) {
   datasetGradingRead=read;datasetGradingChoices=read.options;
 }
 function datasetGradingFailure() {
+  if(datasetGradingRead.pending)return '<p role="status" data-pending-dataset-graders>'+esc(datasetGradingRead.message)+'</p>';
   if(!datasetGradingRead.restart)return readFailure("Couldn’t load dataset graders",datasetGradingRead.message,"Retry");
   return '<section class="wf-error spacer" role="alert" data-dataset-grading-restart><strong>Restart DASH to choose graders</strong>'+
     '<p>Your dataset setup is saved. Quit DASH completely, reopen it and return to Dataset run to verify scoring coverage.</p></section>';

@@ -170,7 +170,7 @@ function runGraderContext():RunGraderContext|null {
   const p=quickLibraryPrompt(),plan=p && quickGradingPlans.get(p.id);
   if(p && plan?.options && !plan.error)return {mode:"quick",prompt:p,plan,options:plan.options};
   const snapshot=libraryDataset();
-  return snapshot && datasetGradingChoices?{mode:"dataset",snapshot,scope:activeDatasetGraderScope(),options:datasetGradingChoices}:null;
+  return snapshot && datasetGradingRead.snapshot===snapshot.id && datasetGradingChoices?{mode:"dataset",snapshot,scope:activeDatasetGraderScope(),options:datasetGradingChoices}:null;
 }
 function graderUnavailable(context:RunGraderContext,g:UiGrader) {
   if(context.mode==="quick")return quickLibraryUnavailable(g,context.options);
@@ -193,7 +193,8 @@ function runChooserPage() {
   if(!context){
     const prompt=quickLibraryPrompt(),plan=prompt && quickGradingPlans.get(prompt.id);
     const mode=route?.mode==="dataset"?"dataset":"quick";
-    if(mode==="dataset" && libraryDataset() && !datasetGradingChoices)return runChooserBanner(mode,datasetGradingFailure());
+    const snapshot=mode==="dataset" && libraryDataset();
+    if(snapshot && !datasetGradingChoices)return runChooserBanner(mode,'<div><h2>'+esc(snapshot.metadata.family)+' · '+esc(snapshot.version)+'</h2>'+datasetGradingFailure()+'</div>');
     return runChooserBanner(mode,plan?.error?quickGraderFailure(plan):'<div role="status"><h2>Evaluation setup unavailable</h2><p>Return to setup to choose an available '+(mode==="dataset"?"dataset snapshot":"approved prompt")+'.</p></div>');
 
   }
