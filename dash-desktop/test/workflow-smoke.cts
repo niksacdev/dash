@@ -1844,7 +1844,15 @@ async function smoke() {
       inputOnly=await referenceSnapshot("Input-only catalog QA",[onlyInput]);
       mixed=await referenceSnapshot("Mixed rubric QA",[onlyInput,{...onlyInput,case_id:"catalog-rubric",rubric:"Credit a response that cites the lot identifier."}]);
     }finally{pickFile.mock.restore();}
-    await route("new");await fill("#pack","reference");await fill("#ds",literalEmpty);
+    await route("new");await wait(()=>exists("#pack"),"Choose another scenario in Dataset run");
+    const packHandoff=await js(`(()=>{
+      const select=document.querySelector('#pack');select.value='manufacturing';select.dispatchEvent(new Event('change',{bubbles:true}));
+      const snapshot=document.querySelector('#ds').value,expected='#graders/dataset/'+encodeURIComponent(snapshot);
+      return [!!snapshot,document.querySelector('[data-run-choose-graders]').hash===expected,document.querySelector('#env a[href^="#graders"]').hash===expected,
+        JSON.parse(localStorage.getItem('dash.dataset-setup.v1')).snapshot===snapshot,document.querySelector('[data-picker-submit=dataset]').disabled];
+    })()`);
+    assert.deepEqual(packHandoff,[true,true,true,true,true],"A scenario change immediately selects and checks its first snapshot");
+    await fill("#pack","reference");await fill("#ds",literalEmpty);
     await wait(()=>js("document.querySelector('[name=datasetScorer]')?.value==='exact-reference'"),"Literal empty JSON uses exact matching");
     const sourceOptions=Bench.prototype.datasetGraderOptions;
     let releaseLate:()=>void=()=>{},held=false;
@@ -1894,13 +1902,55 @@ async function smoke() {
     await click(selectedGrader(decisionDefault));
     assert.equal(calls.length,callsBeforePicker,"Opening, cancelling, attaching and returning cannot contact the candidate or judge");
     assert.equal(runCount(),runsBeforePicker);
-    await fill("#ds",wrongField);
-    await openDatasetGraderCatalogue(wrongField);
+    // Hold every request for B, including a reload, so the handoff cannot depend on IPC speed.
+    let allowSnapshotRead=()=>{},pendingReads=0;
+    const snapshotGate=new Promise<void>(resolve=>{allowSnapshotRead=resolve;});
+    const probe=mock.method(Bench.prototype,"datasetGraderOptions",function(this:Bench,id:string){
+      const options=sourceOptions.call(this,id);
+      if(id!==wrongField)return options;
+      pendingReads++;return snapshotGate.then(()=>options);
+    });
+    const newPicker="#graders/dataset/"+encodeURIComponent(wrongField);
+    try{
+      await wait(()=>exists('[data-run-restore="'+decisionDefault+'"]'),"The previous snapshot exposes its own grader restore action");
+      const handoff=await js(`(()=>{
+        const select=document.querySelector('#ds');select.value=${q(wrongField)};
+        select.dispatchEvent(new Event("change",{bubbles:true}));
+        const choose=document.querySelector('[data-run-choose-graders]');
+        const sidebar=document.querySelector('#env a[href^="#graders"]');
+        const receipt=JSON.parse(localStorage.getItem('dash.dataset-setup.v1'));
+        const observed=[choose.hash,sidebar.hash,receipt.snapshot,document.querySelector('[data-picker-submit=dataset]').disabled,
+          !!document.querySelector('[data-run-restore]'),datasetGradingChoices===null];
+        document.querySelector('#dataset-run-form').requestSubmit();
+        choose.click();return observed;
+      })()`);
+      assert.deepEqual(handoff,[newPicker,newPicker,wrongField,true,false,true],"Switch binds both links and the draft to B and disarms A before the next event");
+      await wait(()=>js("!!document.querySelector('.qc-return a') && location.hash==="+q(newPicker)),"B offers Back while its grader read is pending");
+      await wait(()=>exists(".qc-return [data-pending-dataset-graders]"),"Pending is distinct from a missing snapshot");
+      assert.match(await text("document.querySelector('.qc-return').textContent"),/Missing expected field/);
+      await wait(()=>Promise.resolve(pendingReads>0),"The new snapshot’s grader read is in flight");
+      assert.equal(await exists('.qc-chooser [data-quick-extra]'),false);
+      await click(".qc-return a");
+      await wait(()=>js("document.querySelector('#ds')?.value==="+q(wrongField)),"Back opens B while reads are held");
+      assert.equal(await js("document.querySelector("+q(datasetGo)+").disabled"),true);
+      await click('#env a[href="'+newPicker+'"]');
+      await wait(()=>exists(".qc-return a"),"The sidebar reopens B");
+      const reloaded=once(win.webContents,"did-finish-load");
+      win.webContents.reload();await reloaded;
+      await wait(()=>exists(".qc-return [data-pending-dataset-graders]"),"Reload restores the same pending catalogue");
+      assert.equal(await text("location.hash"),newPicker);
+      assert.equal(runCount(),runsBeforePicker);assert.equal(calls.length,callsBeforePicker);
+    }finally{allowSnapshotRead();probe.mock.restore();}
+    await wait(()=>exists(".qc-chooser"),"B receives its own eligibility after the read completes");
     const nestedCard='[data-grade-version="'+fieldGrader+'"]';
     await reveal(nestedCard);
     assert.equal(await exists(nestedCard+" [data-quick-extra]"),false,"A missing expected field prevents attachment");
     assert.match(await text("document.querySelector("+q(nestedCard)+").textContent"),/reported\.eps.*0 of 1/);
     await click(".qc-return a");await wait(()=>exists(datasetGo),"Return to the snapshot with a missing expected field");
+    await route("graders/dataset/missing-synthetic-snapshot");
+    await wait(()=>js("document.querySelector('.qc-return')?.textContent.includes('Evaluation setup unavailable')"),"A different or missing snapshot cannot borrow the active draft");
+    assert.equal(await exists(".qc-return [data-pending-dataset-graders],.qc-chooser"),false);
+    await click(".qc-return a");await wait(()=>js("document.querySelector('#ds')?.value==="+q(wrongField)),"Missing-snapshot recovery returns to the actual draft");
     await fill("#ds",inputOnly);
     await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('without a reference')"),"Structural checks alone cannot grade an input-only case");
     assert.equal(await js("document.querySelector('#dataset-run-form .go-button').disabled"),true);

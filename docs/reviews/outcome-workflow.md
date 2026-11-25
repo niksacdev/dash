@@ -117,7 +117,7 @@ Independent critique called out three misleading signals to avoid. Serial dispat
 
 ## Use the same starting line for a prompt and a dataset
 
-An operator selects two candidates for a Manufacturing inspection, checks the automatic response diagnostics and attaches a saved quality grader. On either run path, the automatic checks and selected graders are visible, and **Design graders** is available directly below the automatic checks. Opening the catalogue, removing a grader or choosing Back keeps the draft's models and scoring choices. Reopening the Dataset draft restores the snapshot and optional prompt variant. Dispatch pins the selected grader revision for both candidates. Both run modes open the same result view with each candidate's score against that revision.
+An operator selects two candidates for a Manufacturing inspection, checks the automatic response diagnostics and attaches a saved quality grader. On either run path, the automatic checks and selected graders are visible, and **Design graders** is available directly below the automatic checks. Opening the catalogue, removing a grader or choosing Back keeps the draft's models and scoring choices. Reopening the Dataset draft restores the snapshot and optional prompt variant. Dispatch pins the selected grader revision for both candidates. Both run modes open the same result view with each candidate's score against that revision. Switch from a snapshot with verified facts to one missing a required field and immediately open Choose graders. Even with a delayed catalogue read, the picker and Back link must refer to the new snapshot. The preceding snapshot’s eligible grader cannot be attached or dispatched.
 
 ## Recover a comparison with a missing business score
 

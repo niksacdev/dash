@@ -891,7 +891,7 @@ async function render(discardEdits=false) {
         '<a href="#' +
         (key==="graders" && (route==="compare" || route==="new" || runLibraryRoute())?runLibraryPath(runLibraryRoute()?.mode ?? (route==="new"?"dataset":"quick")):key) +
         '" ' +
-        (key === navRoute ? 'aria-current="page"' : "") +
+        (key==="graders"?'data-workspace-graders ':"")+(key === navRoute ? 'aria-current="page"' : "") +
         ">" +
         svg(ico + "-i") +
         esc(label) +
@@ -915,6 +915,9 @@ async function render(discardEdits=false) {
       case "new":{
         if(missingDatasetSetup){html='<section class="panel" role="status"><h2>Saved dataset setup unavailable</h2><p>The pinned snapshot or prompt version is missing.</p><button type="button" data-new-dataset-setup>Start a new dataset setup</button></section>';break;}
         const selected=workflows.dataset.approved?.datasetId ?? dataset()?.id;
+        if(datasetGradingRead.snapshot!==selected)applyDatasetGrading(pendingDatasetGrading(selected ?? null));
+        if(currentDatasetScope!==activeDatasetGraderScope())rememberDatasetSetup();
+        if(replacing && datasetGradingRead.pending){paintWorkspace(screen,workflowPage("dataset"),false);renderedLocation=place;}
         const choices=selected ? await fetchDatasetGrading(selected) : null;
         if(seq!==token)return;
         if(choices)applyDatasetGrading(choices);
@@ -940,6 +943,8 @@ async function render(discardEdits=false) {
         }
         if(runLibraryRoute()?.mode==="dataset") {
           const snapshot=libraryDataset();
+          if(snapshot && datasetGradingRead.snapshot!==snapshot.id)applyDatasetGrading(pendingDatasetGrading(snapshot.id));
+          if(replacing && snapshot && datasetGradingRead.pending){screen.innerHTML=runChooserPage();renderedLocation=place;}
           const choices=snapshot?await fetchDatasetGrading(snapshot.id):null;
           if(seq!==token)return;
           if(choices)applyDatasetGrading(choices);
@@ -973,15 +978,15 @@ async function render(discardEdits=false) {
       (el) => el.textContent,
     );
     const decision=navigationDecisionResult;
-    if(!replacing && decision) {
+    if(renderedLocation===place && decision) {
       const left=await decision;
       // The original action owns the destination. Reconcile the latest held paint on Stay
       // or after an action that leaves the operator on this page.
       if(seq===token && visibleHash===place && (!left || location.hash===place))await render(discardEdits);
       return;
     }
+    paintWorkspace(screen,html,renderedLocation===place && !discardEdits);
     renderedLocation=place;
-    paintWorkspace(screen,html,!replacing && !discardEdits);
     if(route==="graders")applyCatalogFilter();
     if (route==="compare")scheduleBudgetPreview();
     if (route==="compare" || route==="new")focusReturnedQuickControl();
@@ -1029,10 +1034,23 @@ document.addEventListener("change", (e) => {
     location.hash = "developer/" + encodeURIComponent(t.value);
     return;
   }
-  if (t.id === "pack") {
-    packId = t.value;
-    datasetId = "";
-  } else if (t.id === "ds") datasetId = t.value;
+  if (t.id==="pack" || t.id==="ds") {
+    if(t.id==="pack"){packId=t.value;datasetId="";}else datasetId=t.value;
+    if(trail()[0]==="new" && t.form?.id==="dataset-run-form") {
+      const snapshot=dataset();
+      if(snapshot){
+        datasetId=snapshot.id;workflows.dataset.datasetId=snapshot.id;
+        applyDatasetGrading(pendingDatasetGrading(snapshot.id));
+        rememberDatasetSetup();
+        const sidebar=document.querySelector<HTMLAnchorElement>("[data-workspace-graders]");
+        if(sidebar)sidebar.setAttribute("href","#"+runLibraryPath("dataset"));
+        // A same-tick click, including a keyboard submit, must target the new draft.
+        // Preserve independently edited forms such as the endpoint configuration.
+        paintWorkspace($("#screen"),workflowPage("dataset"),true);
+        document.getElementById(t.id)?.focus({preventScroll:true});
+      }
+    }
+  }
   else if (t.id === "baseline") baseline = t.value;
   else if (t.id === "baselineCandidate") baselineCandidate = t.value;
   else if (t.id === "currentCandidate") currentCandidate = t.value;

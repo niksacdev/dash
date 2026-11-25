@@ -56,7 +56,7 @@ function datasetGraderEvidenceIssue(grader:UiGrader,options:UiGraderOptions|null
   return "";
 }
 function referenceScoringIssue() {
-  if(!datasetGradingChoices || datasetGradingChoices.scoringVersion!==1)return datasetGradingRead.message || "Restart DASH to verify scoring coverage for this dataset.";
+  if(datasetGradingRead.snapshot!==dataset()?.id || !datasetGradingChoices || datasetGradingChoices.scoringVersion!==1)return datasetGradingRead.message || "Restart DASH to verify scoring coverage for this dataset.";
   const d=dataset();
   if(!d)return "";
   const selected=datasetGradeSelection(activeDatasetGraderScope());
