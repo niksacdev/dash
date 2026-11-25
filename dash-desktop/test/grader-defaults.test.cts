@@ -77,7 +77,7 @@ test("a reference-free default can score input-only cases while rubric and refer
   };
   assert.throws(()=>run(plain),/available evidence/);
   const grounding=bind("hallucination");
-  assert.throws(()=>run(plain),/available evidence/);
+  assert.throws(()=>run(plain),/0 of 1 have one/);
   b.setGeneralGraderDefault(grounding,false);
   const relevance=bind("answer-relevance");
   assert.throws(()=>run(rubrics),/case-level rubrics/);

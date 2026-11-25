@@ -59,7 +59,7 @@ for (const key of ["answer-relevance", "usefulness", "hallucination", "moderatio
 test("Hallucination leaves absent references unscored before inference and accepts structured reference facts", async () => {
   const judge = new SyntheticJudge({score:1, reason:"The answer contradicts the inspection record."});
   for (const missing of [undefined, null, "  ", {}, [], {fact:null}, [null, ""]]) {
-    await assert.rejects(scoreOpikMetric("hallucination", {...evidence, reference:missing}, judge), /case reference/);
+    await assert.rejects(scoreOpikMetric("hallucination", {...evidence, reference:missing}, judge), /No expected answer was supplied/);
   }
   assert.equal(judge.prompts.length, 0);
   const grade = await scoreOpikMetric("hallucination", {...evidence, reference:{lot:"LOT-17", passed:false}}, judge);

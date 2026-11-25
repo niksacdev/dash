@@ -61,13 +61,20 @@ export interface RunManifest {
 }
 export type CurrentManifest = RunManifest & {tokenBudget:{inputCap:number|null;outputCap:number|null}};
 export interface RunData {status:RunStatus;manifest:RunManifest;results:RunResult[];assessments:RecordedAssessment[];partial:RunPartial|null}
-export interface RunDetail extends RunData {liveUsageVersion?:1;report:RunReport|null;liveRevision:number|null}
+export interface RunDetail extends RunData {hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;report:RunReport|null;liveRevision:number|null}
 export interface StartRun {
   mode:RunMode; candidateIds:string[]; datasetId?:string; caseId?:string; parentId?:string;
   approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[]; allowHostedDecision?:boolean;
-  inputCap?:number|null; outputCap?:number|null; measureGraders?:MeasureGraderRequest; outcomeRubric?:unknown; animation?:boolean;
+  expectedAnswer?:string; inputCap?:number|null; outputCap?:number|null; measureGraders?:MeasureGraderRequest; outcomeRubric?:unknown; animation?:boolean;
 }
 export function isRecord(value:unknown):value is Record<string,unknown> {return !!value && typeof value==="object" && !Array.isArray(value);}
+export function jsonField(value:unknown,path:string):unknown {
+  for (const key of path.split(".")) {
+    if (!isRecord(value) || !Object.hasOwn(value,key)) return undefined;
+    value=value[key];
+  }
+  return value;
+}
 export function stringValue(value:unknown,label="text"):string {
   if(typeof value!=="string") throw Error("Invalid "+label+".");
   return value;

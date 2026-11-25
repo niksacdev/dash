@@ -85,3 +85,9 @@
 .navigation-decision h2 {margin-top:0}
 .navigation-decision form>div {display:flex;gap:.6rem;flex-wrap:wrap}
 .navigation-decision button[value=leave] {color:var(--ink);background:var(--surface-soft);border-color:var(--control-border)}
+
+.qc-expected {margin-block:1rem;padding:1rem;border:1px solid var(--border);border-radius:.5rem}
+.qc-expected label {font-weight:700}
+.qc-expected p {margin:.35rem 0}
+.qc-expected small {display:block;margin-bottom:.5rem}
+.qc-expected textarea {width:100%}

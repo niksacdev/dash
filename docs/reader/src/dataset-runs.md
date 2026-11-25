@@ -2,6 +2,8 @@
 
 Choose this workflow when you want to ask the same questions again after changing a model, prompt or grader. One run can use one or two candidates.
 
+When a grader needs an expected answer, setup checks coverage across the selected snapshot. Each row supplies its own verified answer or facts. Complete missing rows in a new dataset version, or select a grader whose rule can be applied to the task and response alone.
+
 ## Run a bundled scenario
 
 1. Open **Dataset run**. Choose **Earnings release capture** for financial extraction or **Incoming inspection triage** for manufacturing, then verify the dataset snapshot and split.

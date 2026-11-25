@@ -65,7 +65,7 @@ In **Quick compare → Language model examples**, choose the work product you wa
 
 You can bring other work in this form. A maintenance handoff might summarize the symptoms in a technician’s notes and identify an open repair ticket. A supplier-quality review could draft a question about a material certificate’s missing lot number. In Financial Services, compare how two candidates attribute a change in guidance to the correct speaker, or turn an unresolved earnings-call question into a research follow-up. Supply the source text and decide what a reviewer could actually verify.
 
-A **Dataset run** uses each row’s input and the scenario’s output contract. Its optional **Dataset objective** describes the repeated task. A native decision grader such as D1 can score a candidate’s answer with a yes/no question and the required evidence. [Choose a decision example](graders.md#try-an-industry-decision-example)
+A **Dataset run** uses each row’s input and the scenario’s output contract. Its optional **Dataset objective** describes the repeated task. A native decision grader such as D1 can score a candidate’s answer with a yes/no question and the required evidence. If the grader needs a known correct answer, Quick compare asks for it before GO. Both candidates receive the approved task, and the grader can check their replies against the same verified facts. [Choose a decision example](graders.md#try-an-industry-decision-example)
 
 ## Inspect a proposed measure
 

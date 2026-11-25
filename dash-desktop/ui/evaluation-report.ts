@@ -73,7 +73,7 @@ function quickMeasureScores(run:UiRunDetail,report:UiReport) {
       (row.reason?'<small>'+esc(row.reason)+'</small>':'')+(metric?reportEvidence(run.manifest.id,index):'');
     return [measure,...report.candidates.map(c=>{
       const value=scores?.find(v=>v.candidateId===c.id);
-      if (!value || value.score==null) return '<strong>Unscored</strong>'+(value?.reason?'<small>'+esc(value.reason)+'</small>':'');
+      if (!value || value.score==null) return '<strong>Unscored</strong>'+(value?.reason?'<small>'+esc(gradingExplanation(value.reason))+'</small>':'');
       const verdict=value.decision?.status==="review"?"Review":value.pass==null?"Unscored":value.pass?"Passed":"Below threshold";
       return '<strong>'+esc(value.score)+' / 1</strong><small>'+esc(verdict)+'</small>';
     })];
@@ -126,7 +126,7 @@ document.addEventListener("toggle",e=>{
     const evidence=receipt?.actualModel ? '<small>'+esc(transport)+switchDetail+' · served '+esc(receipt.actualModel)+' · P(yes) '+esc(receipt.probabilityYes)+'</small>' : switchDetail ? '<small>'+esc(transport)+switchDetail+' · no verified response</small>' : '';
     return [index==null?esc(c.caseId):link(esc(c.caseId),"run/"+encodeURIComponent(run.manifest.id)+"/"+index,"link"),
       esc(labels.get(v.candidateId) || v.candidateId), esc(scorePercent(v.score)),
-      receipt?.status==="review"?"Review":v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.reason || "")+(nativeEvidence?"<br>"+nativeEvidence:"")+(evidence?"<br>"+evidence:"")];
+      receipt?.status==="review"?"Review":v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.pass==null?gradingExplanation(v.reason || ""):v.reason || "")+(nativeEvidence?"<br>"+nativeEvidence:"")+(evidence?"<br>"+evidence:"")];
   }));
   const target = details.querySelector("div");
   if (!target) return;

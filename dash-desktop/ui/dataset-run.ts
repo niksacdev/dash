@@ -29,24 +29,49 @@ function caseJudgePicker(w:UiWorkflow) {
 
 const datasetScorerChoices=new Map<string,string>();
 function datasetScoringMethod(d:UiDataset) {
-  return datasetScorerChoices.get(d.id) || (d.casesWithoutReference || readGraderAttachment("dataset:"+d.id)?.ids.length ? "selected-graders" : "case-judge");
+  const chosen=datasetScorerChoices.get(d.id);
+  if (chosen) return chosen;
+  if (readGraderAttachment("dataset:"+d.id)?.ids.length) return "selected-graders";
+  const withoutGuidance=datasetGradingChoices?.casesWithoutGuidance ?? d.casesWithoutReference;
+  if (!withoutGuidance) return "case-judge";
+  if (!d.casesWithRubric && datasetGradingChoices?.literalAnswerCount===d.count) return "exact-reference";
+  return "selected-graders";
+}
+function datasetGraderEvidenceIssue(grader:UiGrader,options:UiGraderOptions|null,total:number) {
+  if (grader.type==="trajectory" || grader.requiredEvidence?.includes("trajectory"))
+    return "This grader needs recorded agent actions. Use Test one output and supply the agent steps.";
+  if (!needsGraderReference(grader)) return "";
+  const field=referenceFieldFor(grader);
+  if (field && !options?.fieldCoverage) return "Restart DASH to check whether each expected answer contains the JSON field "+field+".";
+  const count=field ? (options?.fieldCoverage && Object.hasOwn(options.fieldCoverage,field) ? options.fieldCoverage[field] : 0) : options?.expectedAnswerCount;
+  if (count===undefined && options?.hasReferences!==false)
+    return "Restart DASH to verify how many cases have expected answers for this grader.";
+  const requirement=field ? "an expected JSON answer containing the field "+field : "an expected answer";
+  if ((count ?? 0)<total) return grader.name+" needs "+requirement+" for every case. "+(count ?? 0)+" of "+total+
+    " have one. Add the missing answers in a new dataset version, remove the grader, or disable its automatic use in Graders.";
+  return "";
 }
 function referenceScoringIssue() {
   const d=dataset();
-  if(!d || pack()?.kind!=="reference" || workflows.dataset.approved)return "";
-  const method=datasetScoringMethod(d);
-  if(method==="exact-reference")return d.casesWithoutReference || d.casesWithRubric ? "Exact matching needs a reference answer on every case and no case rubrics." : "";
-  if(method==="case-judge")return d.casesWithoutReference ? "Some cases have no reference or rubric. Use saved graders with their own criteria." : "";
+  if(!d)return "";
   const selected=datasetGradeSelection(activeDatasetGraderScope());
   const explicitlySelected=(datasetGradingChoices?.available || []).filter(g=>selected.has(g.id));
   const graders=[...(datasetGradingChoices?.automatic || []),...explicitlySelected];
+  for (const grader of graders) {
+    const issue=datasetGraderEvidenceIssue(grader,datasetGradingChoices,d.count);
+    if (issue) return issue;
+  }
+  if (pack()?.kind!=="reference" || workflows.dataset.approved)return "";
+  const method=datasetScoringMethod(d);
+  const withoutGuidance=datasetGradingChoices?.casesWithoutGuidance ?? d.casesWithoutReference;
+  if(method==="exact-reference")return (datasetGradingChoices?.literalAnswerCount ?? d.count-d.casesWithoutReference)<d.count || d.casesWithRubric ?
+    "Exact matching needs an expected answer on every case and no case rubrics." : "";
+  if(method==="case-judge")return withoutGuidance ? "Some cases have neither an expected answer nor a scoring rule. Choose a saved grader with its own criteria." : "";
   const meaningful=graders.filter(g=>!(g.type==="catalog" && ["response-present","completion","json-valid"].includes(g.ruleKey || "")));
   if(d.casesWithRubric && !explicitlySelected.some(g=>g.type==="judge" || (g.type==="opik" && (g.evidenceView ?? "case")==="case") ||
     (g.type==="decision" && (g.decisionView ?? "case")==="case")))
     return "Choose a rubric-aware judge to score the case-specific instructions.";
-  if(d.casesWithoutReference && !meaningful.some(g=>g.type==="opik" && g.requiredEvidence?.length ?
-    !g.requiredEvidence.includes("trajectory") && datasetGradingChoices?.hasReferences :
-    g.type!=="field" && g.type!=="trajectory" && g.metricKey!=="hallucination" && !g.requiredEvidence?.length))
+  if(withoutGuidance && !meaningful.some(g=>g.type==="field" || (!needsGraderReference(g) && g.type!=="trajectory" && !g.requiredEvidence?.includes("trajectory"))))
     return "Choose a grader that can score the input and response without a reference, such as Opik Usefulness.";
   return meaningful.length ? "" : "Choose a saved grader or enable a compatible cross-industry grader in the library.";
 }
@@ -59,7 +84,7 @@ function updateDatasetGradingControls() {
 function datasetRunPage(w:UiWorkflow) {
   const d=dataset(), scenario=pack(), reference=scenario?.kind==="reference";
   if (!d || !scenario) return '<section class="wf-page"><h1>Dataset run</h1>'+link("Import a dataset →","datasets")+'</section>';
-  const method=datasetScoringMethod(d),issue=referenceScoringIssue();
+  const method=datasetScoringMethod(d);
   const error=w.error?'<p class="wf-error" role="alert">'+esc(w.error)+'</p>':'';
   return '<section class="wf-page"><div class="wf-title"><h1>Dataset run</h1></div>'+error+
     '<form id="dataset-run-form" class="wf-panel"><h2>Evaluate saved cases</h2>'+pickers()+
@@ -72,7 +97,7 @@ function datasetRunPage(w:UiWorkflow) {
       opt("selected-graders","Use saved graders",method)+opt("exact-reference","Match the reference exactly",method)+'</select></label>'+
       (method==="case-judge" ? caseJudgePicker(w) : '') :
       '<div class="wf-options"><strong>Scenario grader</strong><p>'+esc(scenario.scorer)+' · '+esc(scenario.metrics.join(" · "))+'</p></div>')+
-    graderPicker()+(reference?'<p id="dataset-scoring-issue" role="status" class="wf-hint" '+(issue?'':'hidden')+'>'+esc(issue)+'</p>':'')+
+    graderPicker()+
     '<details class="wf-options"><summary>Token limits</summary><div class="cols">'+
     '<label class="field"><span>Max input tokens</span><input name="inputCap" type="number" min="1" max="1000000" value="'+esc(w.inputCap)+'" placeholder="Automatic"></label>'+
     '<label class="field"><span>Max output tokens</span><input name="outputCap" type="number" min="1" max="1000000" value="'+esc(w.outputCap)+'" placeholder="Automatic"></label></div></details>'+

@@ -127,7 +127,7 @@ test("hosted consent and required evidence are checked per operation before any 
   assert.match(noTrace.reason,/observed agent trajectory/);
   for (const reference of [null,"   "]) {
     const noRef=await graders.assess(g,{...sample,reference},offline,signal(),true);
-    assert.match(noRef.reason,/reference answer/);
+    assert.match(noRef.reason,/No expected answer was supplied/);
   }
   assert.equal(calls.length,0);
   const accepted=await graders.record(g,sample,{},offline,signal(),true);

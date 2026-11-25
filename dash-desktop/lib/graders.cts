@@ -10,8 +10,9 @@ import { Contains, ExactMatch, GEval, OpikBaseModel, z } from "opik";
 import {DecisionDispatchError,evaluateDecision,listLocalDecisionModels,type DecisionProtocol,type DecisionConfig} from "./decision-model.cjs";
 import {catalogRules,scoreCatalogRule} from "./grader-catalog.cjs";
 import {hasEvidence,opikLibraryTemplates,opikMetricKey,scoreOpikMetric} from "./opik-library.cjs";
-import { hash } from "./packs.cjs";
-import {AssessmentStorageError,GradingIssue} from "./grading-errors.cjs";
+import { hash,packField } from "./packs.cjs";
+import {parseFieldRule} from "./grader-types.cjs";
+import {AssessmentStorageError,GradingIssue,missingExpectedAnswer} from "./grading-errors.cjs";
 import { ProviderFailure,isRecord,type LocalCandidate,type ModelCandidate,type RuntimeAdapters,type ChatTurn } from "./runtime-types.cjs";
 import {type DatasetCaseSource,type GraderProducer,rubricEvidenceView,graderEvidenceView,graderRequiredEvidence,requiredEvidence,decisionSettings,graderType,savedGrader,storedAssessment,type GraderLibrary,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
 import type {ApprovedPrompt} from "./outcome-workflow.cjs";
@@ -21,7 +22,6 @@ function readJson(value:unknown):unknown {
   if(typeof value!=="string")throw Error("Invalid stored grading record.");
   return JSON.parse(value);
 }
-const referenceRule=z.object({outputField:z.string().regex(/^[\w.-]+$/),referenceField:z.string().regex(/^[\w.-]+$/)});
 const python=path.resolve(__dirname,"../../.opik-venv/bin/python");
 const pythonBridge=path.join(__dirname,"opik_judge.py");
 const legacyEngineUnavailable="This grader revision requires the historical Python Opik G-Eval bridge. Restore its local environment or save a new grader revision to use the installed TypeScript SDK.";
@@ -95,21 +95,14 @@ const text=(v:unknown,n:number,required=true)=>{
   if(typeof v!=="string" || v.length>n || (required&&!v.trim()))throw Error("A grader field is empty or too long.");
   return v.trim();
 };
-function lookup(obj:unknown,field:string):unknown {
-  for(const part of field.split(".")){
-    if(!isRecord(obj)||!Object.hasOwn(obj,part))return undefined;
-    obj=obj[part];
-  }
-  return obj;
-}
 const checks={
   field:(g:GraderSpec,e:GraderEvidence)=>{
-    const {outputField,referenceField}=referenceRule.parse(readJson(g.criteria));
-    const ref=lookup(e.reference,referenceField);
-    if(ref===undefined)throw new GradingIssue("Missing reference field "+referenceField);
+    const {outputField,referenceField}=parseFieldRule(g.criteria);
+    const ref=packField(e.reference,referenceField);
+    if(ref===undefined)throw new GradingIssue("The expected answer needs the JSON field "+referenceField+" to score this check.");
     let obj:unknown;
     try{obj=JSON.parse(e.output);}catch{return false;}
-    return isDeepStrictEqual(lookup(obj,outputField),ref);
+    return isDeepStrictEqual(packField(obj,outputField),ref);
   },
   trajectory:(g:GraderSpec,e:GraderEvidence)=>{
     if (!e.trajectory) throw new GradingIssue("No candidate tool trajectory was provided for this response.");
@@ -191,9 +184,8 @@ function disclosedEvidence(e:GraderEvidence) {
 }
 
 function quickCompatible(grader:GraderSpec, judges:LocalCandidate[]) {
-  if (grader.library?.scenario || grader.type==="catalog" || (grader.type==="opik-metric" && grader.metricKey==="hallucination")) return false;
-  if (grader.type === "decision") return !grader.requiredEvidence?.length;
-  if (grader.type==="opik" && grader.requiredEvidence?.length)return false;
+  if (grader.library?.scenario || grader.type==="catalog" || graderRequiredEvidence(grader).includes("trajectory")) return false;
+  if (grader.type === "decision") return true;
   if (grader.type === "contains" || grader.type === "exact") return true;
   if (!judgeTypes.has(grader.type) || (grader.type === "opik" && !sdkEnabled())) return false;
   const current = judges.find(m => m.id === grader.judge?.id);
@@ -335,7 +327,7 @@ export class Graders {
       connected ? (intent ? pinnedJudge(connected) : connected) : previous) : null;
     if(wantsJudge&&!judge)throw Error("Choose a connected local judge model.");
     if((type==="opik" || type==="opik-metric")&&!sdkEnabled())throw Error("The local Opik SDK is unavailable.");
-    if(type==="field")referenceRule.parse(readJson(criteria));
+    if(type==="field")parseFieldRule(criteria);
     if (type==="catalog" && (source?.type!=="catalog" || criteria!==source.criteria ||
         (input.ruleKey!==undefined && input.ruleKey!==source.ruleKey) ||
         (input.ruleVersion!==undefined && input.ruleVersion!==source.ruleVersion)))
@@ -487,7 +479,7 @@ export class Graders {
           throw new GradingIssue("Allow this operation to send grading evidence to OpenRouter first.");
         requireTaskEvidence(g,e);
         if (g.requiredEvidence?.includes("reference") && !hasEvidence(e.reference))
-          throw new GradingIssue("This decision criterion requires a reference answer. The case has none.");
+          throw new GradingIssue(missingExpectedAnswer);
         if (g.requiredEvidence?.includes("trajectory") && !Array.isArray(e.trajectory))
           throw new GradingIssue("This decision criterion requires an observed agent trajectory. The case has none.");
         const result=await evaluateDecision(g.decision,g.threshold,g.criteria,disclosedEvidence(e),signal,g.decisionView);
@@ -509,7 +501,7 @@ export class Graders {
           trajectory:passed?"The required actions occurred in order.":"One or more required actions were missing or out of order."})[g.type];
       } else if(g.type==="opik") {
         requireTaskEvidence(g,e);
-        if(g.requiredEvidence?.includes("reference") && !hasEvidence(e.reference))throw new GradingIssue("This rubric requires a case reference. The case is unscored.");
+        if(g.requiredEvidence?.includes("reference") && !hasEvidence(e.reference))throw new GradingIssue(missingExpectedAnswer);
         if(g.requiredEvidence?.includes("trajectory") && !Array.isArray(e.trajectory))throw new GradingIssue("This rubric requires an observed agent trajectory. The case is unscored.");
         if (g.opikEngine===undefined) {
           ({value,reason}=await opikScore({model:g.judge.model,provider:g.judge.provider,rubric:g.criteria,evidence:disclosedEvidence(e)},signal));

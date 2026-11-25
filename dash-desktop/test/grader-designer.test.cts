@@ -250,7 +250,7 @@ test("reference-dependent semantic rubric preserves the success measure and neve
   const grader=bench.graders.get(id);
   const evidence={input:"Cite GAAP EPS",output:"Adjusted EPS was 0.85",reference:null};
   const missing=await bench.graders.assess(grader,evidence,adapters,new AbortController().signal);
-  assert.equal(missing.pass,null);assert.equal(missing.value,null);assert.match(missing.reason,/requires a case reference/);assert.equal(judgeCalls,0);
+  assert.equal(missing.pass,null);assert.equal(missing.value,null);assert.match(missing.reason,/No expected answer was supplied/);assert.equal(judgeCalls,0);
   const failed=await bench.graders.assess(grader,{...evidence,reference:"GAAP EPS was 0.74."},adapters,new AbortController().signal);
   assert.equal(failed.value,0,failed.reason);assert.equal(failed.pass,false);assert.ok(judgeCalls>0);
 });

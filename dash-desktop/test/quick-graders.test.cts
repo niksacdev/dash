@@ -58,7 +58,7 @@ async function setup(t:TestContext,paired=false) {
   await bench.refresh();
   const draft = await bench.designPrompt({mode:"quick",domain:"Financial Services",objective:paired ? "Extract GAAP EPS and cite the reporting period. The release states June GAAP EPS 1.24 and adjusted EPS 1.80." : "Extract GAAP EPS from the earnings release."});
   const approved = bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
-  const start = (extra:Pick<StartRun,"graderIds"|"outcomeRubric"|"measureGraders">) => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
+  const start = (extra:Pick<StartRun,"graderIds"|"outcomeRubric"|"measureGraders"|"expectedAnswer">) => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
   function save(name:string, change:Partial<GraderDefinition> = {}) {
     return bench.graders.save({name,type:"contains",category:"Extraction",threshold:1,criteria:"GAAP",industry:"Financial Services",...change},models);
   }
@@ -97,6 +97,7 @@ test("the approved outcome rubric runs separately for both candidates and pins i
   const legacyBasis=options.measures[0].generated;
   assert.ok(legacyBasis?.type==="opik");
   assert.deepEqual(legacyBasis.requiredEvidence,["reference"]);
+  assert.throws(()=>start({measureGraders:options.measures.map(m=>({metric:m.metric,kind:"rubric",judgeId:models[2].id,threshold:1}))}),/expected answer/i);
   const runId = start({outcomeRubric});
   await present(bench.active).done;
   const {manifest,assessments,status} = bench.detail(runId);
@@ -193,20 +194,40 @@ test("Quick pins an independent revision per approved measure and scores both an
   assert.equal(bench.detail(id).report?.verdict,"mixed");
 });
 
-test("Quick retains missing reference and skipped measures without claiming an overall winner",async t=>{
+test("Quick collects private expected facts before dispatch, scores both lanes and preserves intentional skips",async t=>{
   const {bench,approved,models,judgeCalls,start,save}=await setup(t,true);
   const saved=save("Reusable source check",{criteria:"GAAP"});
-  const id=start({graderIds:[saved],measureGraders:[{metric:epsMetric,kind:"saved",graderId:saved},
-    {metric:periodMetric,kind:"rubric",judgeId:models[2].id,threshold:1,evidence:"reference"}]});
+  const measureGraders:NonNullable<StartRun["measureGraders"]>=[
+    {metric:epsMetric,kind:"saved",graderId:saved},
+    {metric:periodMetric,kind:"rubric",judgeId:models[2].id,threshold:1,evidence:"reference"}];
+  const expectedAnswer="Verified by QA: June was the reporting period. Private marker EVID-371.";
+  const before=bench.graders.list().length;
+  for (const absent of [undefined,"  "]) assert.throws(()=>start({graderIds:[saved],measureGraders,expectedAnswer:absent}),/expected answer/i);
+  assert.equal(bench.graders.list().length,before);
+  assert.equal(bench.list().runs.length,0);
+  assert.equal(Boolean(bench.active),false);
+  assert.equal(judgeCalls.length,0);
+  const id=start({graderIds:[saved],measureGraders,expectedAnswer});
   await present(bench.active).done;
   const run=bench.detail(id);
-  assert.equal(run.report?.verdict,"incomplete");
   const pinned=present(run.manifest.measureGraders);
-  const missing=run.assessments.filter(a=>a.graderId===pinned[1].graderId);
-  assert.equal(missing.length,2);
-  assert.ok(missing.every(a=>a.value===null && a.pass===null && /reference/.test(a.reason)));
-  assert.equal(judgeCalls.length,0);
+  assert.equal(run.hasQuickExpectedAnswer,true);
+  assert.equal(bench.quickExpectedAnswer(id),expectedAnswer);
+  const checked=run.assessments.filter(a=>a.graderId===pinned[1].graderId);
+  assert.deepEqual(checked.map(a=>a.pass),[false,true]);
+  assert.deepEqual(judgeCalls.map(c=>c.reference),[expectedAnswer,expectedAnswer]);
+  assert.equal(JSON.stringify(run).includes(expectedAnswer),false);
+  assert.equal(JSON.stringify(bench.exportRun(id)).includes(expectedAnswer),false);
   assert.equal(run.assessments.filter(a=>a.graderId===saved).length,2);
+  const savedRef=present(pinned[1].graderId);
+  assert.ok(bench.quickGraderOptions(approved.id).available.some(g=>g.id===savedRef));
+  assert.throws(()=>start({graderIds:[savedRef]}),/expected answer/i);
+  const otherId=start({expectedAnswer:"Expert verified May.",measureGraders:[{metric:epsMetric,kind:"rubric",judgeId:models[2].id,threshold:1,evidence:"task-answer"},{metric:periodMetric,kind:"saved",graderId:savedRef}]});
+  await present(bench.active).done;
+  assert.equal(bench.exportRun(otherId).manifest.caseSetHash,bench.exportRun(id).manifest.caseSetHash);
+  assert.equal(bench.quickExpectedAnswer(otherId),"Expert verified May.");
+  assert.equal(judgeCalls.filter(c=>c.reference==="Expert verified May.").length,2);
+  assert.equal(judgeCalls.filter(c=>c.reference==null).length,2);
   const skippedId=start({measureGraders:[{metric:epsMetric,kind:"saved",graderId:saved},{metric:periodMetric,kind:"skip"}]});
   await present(bench.active).done;
   const skipped=bench.detail(skippedId);

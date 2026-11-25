@@ -3,20 +3,11 @@ import * as path from "node:path";
 import {createHash} from "node:crypto";
 import {isDeepStrictEqual} from "node:util";
 import {validateCase} from "./evaluation-cases.cjs";
-import {isRecord,isCaseRow,isScenarioPack,objectValue,stringValue,errorMessage,jsonText} from "./run-types.cjs";
+import {jsonField as field,isRecord,isCaseRow,isScenarioPack,objectValue,stringValue,errorMessage,jsonText} from "./run-types.cjs";
 import type {ScoredPack,ScenarioPack,DatasetCase,CaseRow} from "./run-types.cjs";
 
 export const hash = (value:unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
-function field(obj:unknown, key:string):unknown {
-  return key
-    .split(".")
-    .reduce<unknown>(
-      (v, k) =>
-        isRecord(v) && Object.hasOwn(v, k) ? v[k] : undefined,
-      obj,
-    );
-}
 function decimal(value:unknown) {
   if (typeof value !== "string" || !/^-?\d+(?:\.\d+)?$/.test(value))
     return undefined;

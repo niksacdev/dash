@@ -1,4 +1,4 @@
-import {GradingIssue} from "./grading-errors.cjs";
+import {GradingIssue,missingExpectedAnswer} from "./grading-errors.cjs";
 import { AnswerRelevance, Hallucination, Moderation, OpikBaseModel, Usefulness, z, type EvaluationScoreResult } from "opik";
 import type { GraderEvidence } from "./grader-types.cjs";
 
@@ -96,7 +96,7 @@ export async function scoreOpikMetric(key: OpikMetricKey, evidence: GraderEviden
         break;
       case "hallucination": {
         const reference = evidence.reference;
-        if (!hasEvidence(reference)) throw new GradingIssue("Hallucination requires a nonempty case reference for grounding.");
+        if (!hasEvidence(reference)) throw new GradingIssue(missingExpectedAnswer);
         const context = Array.isArray(reference)
           ? reference.filter(hasEvidence).map(item => evidenceText(item, "case reference"))
           : [evidenceText(reference, "case reference")];

@@ -389,6 +389,9 @@ async function smoke() {
     assert.equal(await js("document.querySelector('#setup .go-button').disabled"),true);
     await click('[data-remove="ollama/qa-short-context"]');
     await click('[data-model="ollama/'+models.ollama+'"]');
+    await wait(()=>js("document.querySelector('#qc-expected-answer')?.checkVisibility()"),"Structured run asks for grader evidence");
+    assert.equal(await js("document.querySelector('#setup .go-button').disabled"),true);
+    await fill("#qc-expected-answer","Verified lot K7 disposition is review. Grader-only example 37.");
     await click("#setup .go-button");
     await wait(()=>exists(".wf-structure-result"),"Per-model JSON conformance");
     const summary=await text("document.querySelector('.wf-structure-result').innerText");
@@ -653,7 +656,12 @@ async function smoke() {
   const controls=(selector:string,field:string)=>selector+' [data-qc-field="'+field+'"]';
   await wait(() => exists(controls(rowA,"criteria")), "Grader for each approved measure");
   assert.equal(await text("document.querySelector("+q(controls(rowA,"choice"))+").value"),"rubric");
-  assert.match(await text("document.querySelector("+q(rowA)+").textContent"),/Unscored in Quick compare/);
+  assert.ok(await js("document.querySelector('#qc-expected-answer').checkVisibility()"));
+  assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/Add the expected answer/);
+  await fill("#qc-expected-answer","Synthetic fact for the selected graders only.");
+  assert.ok(!(await text("JSON.stringify(localStorage)")).includes("Synthetic fact for the selected graders only."));
+  assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/2 of 2 measures ready/);
+  await fill("#qc-expected-answer","");
   assert.match(await text("document.querySelector("+q(controls(rowA,"criteria"))+").value"),/inspection|lots/i);
   assert.match(await text("document.querySelector("+q(rowB)+").textContent"),/required disposition/);
   await click(rowA+" .qc-assignment > summary");
@@ -680,6 +688,12 @@ async function smoke() {
   assert.ok(await js("!!(document.querySelector('#quick-models').compareDocumentPosition(document.querySelector('#qc-grading')) & Node.DOCUMENT_POSITION_FOLLOWING)"),"Choose models before configuring quality checks");
   assert.equal(await text("document.querySelector('#qc-launch-state').textContent"),"Ready to evaluate both answers.");
   assert.ok(await js("document.querySelectorAll('#setup button[type=submit]').length===1"),"One evaluation launch action");
+  await fill(controls(rowA,"evidence"),"reference");
+  await wait(()=>js("document.querySelector('#setup .go-button').disabled && document.querySelector('#qc-expected-answer').checkVisibility()"),"Reference grader blocks both lanes");
+  await fill("#qc-expected-answer","S1 requires a signed recheck.");
+  assert.equal(await js("document.querySelector('#setup .go-button').disabled"),false);
+  await fill(controls(rowA,"evidence"),"task-answer");
+  assert.equal(await js("document.querySelector('#qc-expected-answer').disabled"),true);
   await verifyPendingGraderDesign("#setup","prompt:"+first.id);
   if(process.env.DASH_QUICK_PREVIEW_DIR) {
     const original=await text("document.documentElement.dataset.appearance");
@@ -707,12 +721,13 @@ async function smoke() {
   }
   // Reproduce an old main process and a failed read through the production preload interface.
   const readOptions=Bench.prototype.quickGraderOptions;
-  let replyMode:"legacy"|"missing-handler"|"invalid"|"empty"|"wrong-grader"|"unreadable"|"current"="legacy";
+  let replyMode:"legacy"|"prior-release"|"missing-handler"|"invalid"|"empty"|"wrong-grader"|"unreadable"|"current"="legacy";
   const optionProbe=mock.method(Bench.prototype,"quickGraderOptions",function(this:Bench,id:string){
     if(replyMode==="missing-handler") throw Error("No handler registered for 'dash:quickGraderOptions'");
     if(replyMode==="unreadable") throw Error("The grader read was interrupted.");
     const reply=readOptions.call(this,id);
     if(replyMode==="legacy") Reflect.deleteProperty(reply,"measures");
+    if(replyMode==="prior-release") Reflect.deleteProperty(reply,"expectedAnswerVersion");
     if(replyMode==="invalid") Reflect.set(reply,"measures",null);
     if(replyMode==="empty") {reply.measures=[];reply.generated=null;}
     if(replyMode==="wrong-grader") Reflect.set(reply,"automatic",[null]);
@@ -742,10 +757,16 @@ async function smoke() {
     }
     replyMode="unreadable";await click(retry);
     await wait(()=>js("document.querySelector('[data-read-error]')?.textContent.includes('read was interrupted')"),"Failed reads keep the actual error");
-    replyMode="current";await click(retry);
+    replyMode="prior-release";await click(retry);
     await wait(()=>exists(".qc-chooser"),"Retry recovers this draft in place");
     await click('nav[aria-label="Quick comparison setup"] a[href="#compare"]');
     await wait(()=>exists(controls(rowB,"choice")),"Recovered previous measure mapping");
+    await fill(controls(rowA,"evidence"),"reference");
+    await fill("#qc-expected-answer","Verified Q2 figure.");
+    assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/Quit and reopen DASH/);
+    assert.equal(await js("document.querySelector('#setup .go-button').disabled"),true);
+    await fill(controls(rowA,"evidence"),"task-answer");
+    replyMode="current";
     assert.equal(await text("document.querySelector("+q(controls(rowB,"choice"))+").value"),"saved:"+markerGrader);
     assert.ok(await js("document.querySelectorAll('#quick-models [data-remove]').length===2"));
     assert.equal(await js("document.querySelector('#setup .go-button').disabled"),false);
@@ -1114,6 +1135,17 @@ async function smoke() {
     }finally{wc.debugger.detach();}
 
     win.setContentSize(1280,850);
+    const gridTracks=(selector:string)=>js("getComputedStyle(document.querySelector("+q(selector)+")).gridTemplateColumns.split(' ').length");
+    const generalGrid='[data-catalog-scope="general"] > .gc-grid';
+    const templateGrid='[data-catalog-scope="general"] .gc-templates .gc-grid';
+    await wait(()=>js("innerWidth>1000"),"Desktop-width grader collections");
+    assert.ok(Number(await gridTracks(generalGrid))>=2,"General grader families are side by side");
+    assert.ok(Number(await gridTracks(templateGrid))>=2,"Native metric templates share the grid");
+    const groundingTemplate='.gc-template:has([data-grade-template="hallucination"])';
+    await click(groundingTemplate+" [data-grader-details]");
+    assert.match(await text("document.querySelector("+q(groundingTemplate+" .gc-detail-body")+").innerText"),/supporting facts/);
+    assert.match(await text("document.querySelector("+q(groundingTemplate+" .gc-rule-text")+").innerText"),/subtracts the Opik hallucination score from one/);
+    await click(groundingTemplate+" [data-grader-details]");
     const runCount=()=>Number(db.prepare("SELECT count(*) n FROM runs").get()?.n);
     const manualCount=()=>Number(db.prepare("SELECT count(*) n FROM assessments WHERE run IS NULL").get()?.n);
     const shippedId=(key:string)=>z.string().parse(db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.ruleKey')=? AND json_extract(spec,'$.library.scope')!='customer'").get(key)?.id);
@@ -1331,8 +1363,9 @@ async function smoke() {
     }
     const manualStart=manualCount();
     await provideSample(localId,"Hold lot B.","");
-    await wait(()=>manualCount()===manualStart+1,"Missing required evidence recorded");
-    await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('Unscored')"),"Unscored evidence shown");
+    assert.equal(await js("document.querySelector('#grade-sample [name=reference]').validity.valueMissing"),true);
+    assert.match(await text("document.querySelector('#expected-answer-help').innerText"),/verified|correct response/);
+    assert.equal(manualCount(),manualStart);
     assert.equal(localQuestions.length,0);
     let releaseSample=()=>{};
     sampleGate=new Promise<void>(resolve=>{releaseSample=resolve;});
@@ -1351,13 +1384,13 @@ async function smoke() {
     await wait(()=>js("document.querySelector('#grade-sample[aria-busy=false]') && document.querySelector('#grade-sample-scores').textContent.includes('P(yes) 0.92')"),"Pending score finishes without replacing the workspace");
     assert.equal(await text("document.querySelector('#grade-create [name=name]').value"),"Another grader draft");
     assert.equal(await js("document.querySelectorAll('[data-grade-test]:disabled').length"),0);
-    assert.equal(manualCount(),manualStart+2);
+    assert.equal(manualCount(),manualStart+1);
     assert.match(await text("document.querySelector('#screen table').innerText"),/Alternate model used/);
     assert.equal(localQuestions.length,1);
     assert.match(localQuestions[0],/Current drawing calls for a hold/);
     await provideSample(localId,"UNCERTAIN: hold for reinspection.","Current drawing calls for a hold.");
     await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('Abstained · unscored')"),"Uncertain decision excluded from numeric scores");
-    assert.equal(manualCount(),manualStart+3);
+    assert.equal(manualCount(),manualStart+2);
     const failureFixture=new DatabaseSync(path.join(profile,"dash.sqlite"));
     try{
       failureFixture.exec("CREATE TRIGGER fail_sample_save BEFORE INSERT ON assessments WHEN NEW.run IS NULL BEGIN SELECT RAISE(ABORT,'Synthetic sample store unavailable'); END");
@@ -1388,7 +1421,7 @@ async function smoke() {
       await js("document.querySelector('#grade-sample').reset();true");
       assert.ok(await js("Array.from(document.querySelectorAll('#grade-sample textarea,#grade-sample select')).every(el=>el.value==='')"),"Reset cannot restore discarded sample data or its selected grader");
       assert.equal(localQuestions.length,attempts+1,"Returning or discarding does not retry the model");
-      assert.equal(manualCount(),manualStart+3);
+      assert.equal(manualCount(),manualStart+2);
     }finally{try{failureFixture.exec("DROP TRIGGER IF EXISTS fail_sample_save");}finally{failureFixture.close();}}
     await click('[data-revise="'+localId+'"]');
     await wait(()=>js("document.querySelector('#grade-create [name=decision-model]').value==="+q(primaryAlias)),"Pinned model in the revision editor");
@@ -1405,7 +1438,7 @@ async function smoke() {
     await wait(()=>exists("#grade-sample"),"Saved grader versions after reload");
     await js("window.consentPrompts=[];window.allowNextDecision=false;window.confirm=s=>{window.consentPrompts.push(s);const answer=window.allowNextDecision;window.allowNextDecision=false;return answer};true");
     await provideSample(hostedId,"Hold lot B.","Current drawing calls for a hold.");
-    assert.equal(manualCount(),manualStart+3);
+    assert.equal(manualCount(),manualStart+2);
     assert.equal(hostedGrades,0);
     const confirmation=await text("window.consentPrompts.at(-1)");
     const notices=z.array(z.string()).parse(await js("(() => { const g=state.graders.find(g=>g.id==="+q(hostedId)+"); return ['answer-only','task-answer','case'].map(view=>{hostedDecisionConsent([{...g,decisionView:view}],'test');return window.consentPrompts.at(-1);}); })()"));
@@ -1430,6 +1463,12 @@ async function smoke() {
     ]){
       const beforeWrites=manualCount();
       const beforeRequests:number=localQuestions.length;
+      if (!example.reference) {
+        const error=await text("window.dash.assess("+q({grader:localId,evidence:{input:sampleTask,output:example.output,reference:{answer:" "}}})+").then(()=>'',error=>error.message)");
+        assert.match(error,/Enter an expected answer/);
+        assert.equal(manualCount(),beforeWrites);assert.equal(localQuestions.length,beforeRequests);
+        continue;
+      }
       await provideSample(localId,example.output,example.reference,sampleTask);
       await wait(()=>manualCount()===beforeWrites+1,"Inspection sample assessment saved");
       await wait(()=>exists('#grade-sample[aria-busy=false]'),"Inspection sample ready");
@@ -1533,6 +1572,17 @@ async function smoke() {
     await click("#grade-create button.yellow");
     await wait(()=>loadVersion(alias,2),"Customer method revision");
     const v2=z.string().parse(loadVersion(alias,2));
+    const personalCard='[data-catalog-scope="customer"] > .gc-grid > .gc-family > [data-grade-version="'+v2+'"]';
+    await wait(()=>exists(personalCard),"The exact saved revision is visible in the personal grid");
+    await click(personalCard+" [data-grader-details]");
+    assert.equal(await text("document.querySelector("+q(personalCard+" .gc-rule-text")+").innerText"),"QA");
+    assert.match(await text("document.querySelector("+q(personalCard+" .gc-detail-body")+").innerText"),/case-sensitive/);
+    assert.ok(Number(await gridTracks('[data-catalog-scope="customer"] > .gc-grid'))>=2,"My Graders uses the same desktop card grid");
+    win.setContentSize(390,720);
+    await wait(()=>js("innerWidth<=400"),"Narrow catalogue layout");
+    for(const grid of [generalGrid,templateGrid,'[data-catalog-scope="customer"] > .gc-grid'])assert.equal(await gridTracks(grid),1);
+    assert.ok(await js("document.documentElement.scrollWidth<=innerWidth+1"),"An expanded personal scoring rule fits at phone width");
+    win.setContentSize(1280,850);
     const lineage=()=>z.array(z.object({id:z.string(),library:z.object({scope:z.string(),familyId:z.string(),parentRevisionId:z.string().optional()})})).parse(
       [v1,v2].map(id=>JSON.parse(z.string().parse(db.prepare("SELECT spec FROM graders WHERE id=?").get(id)?.spec))));
     const [fork,revision]=lineage();
@@ -1644,7 +1694,9 @@ async function smoke() {
       const metadata={industry:"Manufacturing",family:name,category:"QA",tags:[],source:"Synthetic smoke",changeNote:"",parentId:null};
       return text("window.dash.import('reference').then(draft=>window.dash.commitImport(draft.token,"+q(metadata)+"))");
     }
-    let inputOnly:string, mixed:string;
+    const fieldGrader=await text("window.dash.saveGrader("+q({name:"Nested reported EPS",industry:"Cross-industry",category:"Numbers",
+      type:"field",threshold:1,criteria:JSON.stringify({outputField:"eps",referenceField:"reported.eps"})})+")");
+    let inputOnly:string, mixed:string, literalEmpty:string, wrongField:string;
     try{
       await route("datasets");await fill("#catalog-pack","reference");
       const chooseFile='[data-act=import]',importForm="#catalog-import",family=importForm+" [name=family]";
@@ -1670,10 +1722,18 @@ async function smoke() {
       const savedImport=await js("window.dash.dataset(location.hash.split('/')[1]).then(d=>({family:d.metadata.family,cases:d.rows.map(row=>row.case_id)}))");
       assert.deepEqual(savedImport,{family:"Synthetic B family",cases:["row-b"]});
 
+      literalEmpty=await referenceSnapshot("Literal empty results",[{...onlyInput,reference:[]}]);
+      wrongField=await referenceSnapshot("Missing expected field",[{...onlyInput,reference:{adjusted:0.85}}]);
       inputOnly=await referenceSnapshot("Input-only catalog QA",[onlyInput]);
       mixed=await referenceSnapshot("Mixed rubric QA",[onlyInput,{...onlyInput,case_id:"catalog-rubric",rubric:"Credit a response that cites the lot identifier."}]);
     }finally{pickFile.mock.restore();}
-    await route("new");await fill("#pack","reference");await fill("#ds",inputOnly);
+    await route("new");await fill("#pack","reference");await fill("#ds",literalEmpty);
+    await wait(()=>js("document.querySelector('[name=datasetScorer]')?.value==='exact-reference'"),"Literal empty JSON uses exact matching");
+    await fill("#ds",wrongField);
+    const nestedControl='[name=custom-grader][value="'+fieldGrader+'"]';
+    await wait(()=>js("document.querySelector("+q(nestedControl)+")?.disabled===true"),"JSON grader unavailable when the named field is missing");
+    assert.match(await text("document.querySelector("+q(nestedControl)+").closest('label').textContent"),/reported\.eps.*0 of 1/);
+    await fill("#ds",inputOnly);
     await wait(()=>js("document.querySelector('#dataset-scoring-issue')?.innerText.includes('without a reference')"),"Structural checks alone cannot grade an input-only case");
     assert.equal(await js("document.querySelector('#dataset-run-form .go-button').disabled"),true);
     const endpointModel="#endpoint-form [name=model]";
@@ -1686,11 +1746,11 @@ async function smoke() {
     const referenceOnly='[data-grade-version="'+localId+'"] [data-use-version]';
     await reveal(referenceOnly+" [data-grade-test]");await click(referenceOnly+" [data-grade-test]");
     assert.equal(await js("document.querySelector('#grade-sample [data-sample-evidence]').open"),true);
-    assert.match(await text("document.querySelector('#grade-sample [data-sample-evidence] summary').textContent"),/needs a reference answer/);
+    assert.match(await text("document.querySelector('#grade-sample [data-sample-evidence] summary').textContent"),/needs an expected answer/);
     await reveal(referenceOnly+" [data-grade-run]");await click(referenceOnly+" [data-grade-run]");
     await fill(referenceOnly+" [data-grade-snapshot]",inputOnly);
     await click(referenceOnly+" [data-grade-continue]");
-    await wait(()=>js("document.querySelector("+q(referenceOnly+" [role=alert]")+")?.textContent.includes('held-out reference')"),"Unscorable snapshot explains missing reference");
+    await wait(()=>js("document.querySelector("+q(referenceOnly+" [role=alert]")+")?.textContent.includes('needs an expected answer')"),"Unscorable snapshot explains missing reference");
     assert.equal(await js("location.hash"),"#graders");
     assert.equal(await js("JSON.parse(localStorage.getItem("+q("dash.attachedGraders.v1.dataset:"+inputOnly)+") || '{}').ids?.includes("+q(localId)+") || false"),false);
     await click(referenceOnly+" [data-grade-cancel]");
@@ -1707,6 +1767,32 @@ async function smoke() {
     assert.ok(semantic.graders.some(g=>g.type==="opik-metric" && g.id===relevance));
     const grade=await js("window.dash.detail("+q(semantic.id)+").then(r=>r.assessments.find(a=>a.graderId==="+q(relevance)+").value)");
     assert.equal(grade,.9);
+
+    // A saved answer from an input-only case can be tested without a second candidate request.
+    await route("run/"+semantic.id+"/0");
+    await wait(()=>exists("#grade-case"),"Saved response ready");
+    const originalOutput=await text("current.results[0].output");
+    const originalCalls=calls.length;
+    await fill("#grade-case [name=grader]",localId);
+    assert.match(await text("document.querySelector('#grade-case [data-grade-case-help]').textContent"),/no expected answer/);
+    const beforeCaseTest=manualCount();
+    await click("#grade-case button");
+    await wait(()=>exists("#grade-sample-panel[open]"),"Held-out answer requested in the existing test");
+    assert.equal(await text("document.querySelector('#grade-sample [name=output]').value"),originalOutput);
+    assert.equal(await js("document.querySelector('#grade-sample [name=reference]').required"),true);
+    assert.equal(calls.length,originalCalls);
+    assert.equal(manualCount(),beforeCaseTest);
+    await fill("#grade-sample [name=grader]",fieldGrader);
+    await fill("#grade-sample [name=reference]",JSON.stringify({adjusted:0.85}));
+    await click("#grade-sample [type=submit]");
+    await wait(()=>js("document.querySelector('#grade-sample [data-action-error]')?.textContent.includes('reported.eps')"),"A missing JSON path prompts for that field in the existing test");
+    assert.equal(manualCount(),beforeCaseTest);
+    await click("[data-sample-clear]");
+    await route("run/"+native.id+"/0");
+    await wait(()=>exists("#grade-case"),"Case with existing scenario evidence ready");
+    await fill("#grade-case [name=grader]",fieldGrader);
+    assert.match(await text("document.querySelector('#grade-case [data-grade-case-help]').textContent"),/reported\.eps/);
+    assert.equal(await text("document.querySelector('#grade-case button').textContent"),"Add expected answer and test");
 
     // Five explicit graders fit within the selection limit. Automatic defaults make nine saved pins.
     const scenarioGraders=["inspection-drawing","inspection-reading","inspection-disposition","inspection-handoff"].map(shippedId);

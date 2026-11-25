@@ -64,6 +64,8 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0036 · Observe live candidate usage](0036-live-candidate-usage.md) | Proposed | Deliver provider observations during the same evaluation attempt through the existing progress cursor. | [Acceptance scenario](../reviews/outcome-workflow.md#observe-candidate-usage-during-dispatch) |
 | 2026-11-25 | [0035 · Sampled request energy](0035-request-energy.md) | Accepted | Record whole-device energy and sampled time for measured requests. | [#42](https://github.com/niksacdev/dash/pull/42) |
 | 2026-11-25 | [0036 · Observe live candidate usage](0036-live-candidate-usage.md) | Accepted | Show candidate progress from the active provider and preserve its final token receipt. | [#44](https://github.com/niksacdev/dash/pull/44) |
+| 2026-11-25 | [0037 · Grader expected answers](0037-grader-expected-answers.md) | Proposed | Require expected answers before dispatch and expose the applicable rule during grader selection. | [Acceptance scenario](../reviews/grader-library.md#review-a-scoring-rule-and-supply-its-expected-answer) |
+| 2026-11-25 | [0037 · Grader expected answers](0037-grader-expected-answers.md) | Accepted | Nik requested asking for required grading facts before use, consistent catalogue cards and a visible rubric. | [Grader guide](../reader/src/graders.md#what-counts-as-an-expected-answer) |
 
 ## Maintaining the history
 

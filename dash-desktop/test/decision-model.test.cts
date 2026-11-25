@@ -395,7 +395,7 @@ test("reviewed binary grading pins a discovered model separately from the design
   const revisedId=b.graders.save({intent:"revise",sourceGraderId:id,decision:{...cfg,model},decisionView:"case",requiredEvidence:["reference"]},[]);
   const revised=b.graders.get(revisedId);assert.equal(revised.version,2);
   const missing=await b.graders.assess(revised,{input:"Grade this",output:"Lot A.",reference:null},adapters,signal());
-  assert.equal(missing.value,null);assert.match(missing.reason,/reference/);assert.equal(observed.length,3);
+  assert.equal(missing.value,null);assert.match(missing.reason,/No expected answer was supplied/);assert.equal(observed.length,3);
   await b.graders.assess(revised,{input:"Grade this",output:"Lot A.",reference:marker,rubric:"Check lot and action"},adapters,signal());
   assert.deepEqual(observed.at(-1)?.state,{input:"Grade this",output:"Lot A.",reference:marker,rubric:"Check lot and action"});
   const answerOnlyId=b.graders.save({intent:"revise",sourceGraderId:revisedId,decisionView:"answer-only",requiredEvidence:[]},[]);

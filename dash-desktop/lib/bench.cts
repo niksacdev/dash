@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {z} from "zod";
 import {randomUUID} from "node:crypto";
 import * as os from "node:os";
-import {loadPacks,parseDataset,grade,hash} from "./packs.cjs";
+import {loadPacks,parseDataset,grade,hash,packField} from "./packs.cjs";
 import {Catalog} from "./catalog.cjs";
 import * as providers from "./providers.cjs";
 import {OutcomeWorkflow,contractHash} from "./outcome-workflow.cjs";
@@ -25,6 +25,7 @@ import {errorMessage,isCaseRow,jsonText,stringValue,statusValue} from "./run-typ
 import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
 import {ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, ProviderRejectedError} from "./runtime-types.cjs";
 import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate,ModelLoadReceipt} from "./runtime-types.cjs";
+import {graderRequiredEvidence,parseFieldRule,requireAssessmentEvidence} from "./grader-types.cjs";
 import {AssessmentStorageError} from "./grading-errors.cjs";
 const datasetCaseTest = z.strictObject({
   grader:z.string().min(1).max(200),datasetId:z.string().min(1).max(200),
@@ -66,10 +67,13 @@ const systemPrompt = (pack:ScoredPack) =>
   JSON.stringify(pack.outputSchema) +
   "\nReturn only the raw JSON object. Start with { and end with }. Omit Markdown code fences, labels, comments and surrounding prose.";
 
-function hasReference(value:unknown):boolean {
-  if (typeof value==="string") return !!value.trim();
-  if (value===null || value===undefined) return false;
-  return typeof value!=="object" || Object.keys(value).length>0;
+function countExpectedAnswers(rows:readonly CaseRow[],referenceField?:string):number {
+  let count=0;
+  for (const row of rows) {
+    const expected=row.reference ?? row.gold;
+    if (referenceField===undefined ? hasEvidence(expected) : packField(expected,referenceField)!==undefined) count++;
+  }
+  return count;
 }
 export class Bench {
   readonly db:DatabaseSync;
@@ -101,6 +105,7 @@ export class Bench {
           AND json_extract(record,'$.dispatchState')='pending';
       UPDATE runs SET status='interrupted' WHERE status IN ('running','queued');
       COMMIT;`);
+    this.db.exec("CREATE TABLE IF NOT EXISTS quick_expected_answers(run TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, answer TEXT NOT NULL)");
     this.reports = new RunReports(this.db);
     this.packs = loadPacks();
     for (const { pack, rows } of this.packs) if(pack.kind !== "reference")
@@ -171,7 +176,7 @@ export class Bench {
           pack: { id, title, description, system, outputSchema, metrics, scorer },
           coverage:{
             cases:snapshot.rows.length,
-            referenceCases:snapshot.rows.filter(row=>hasReference(row.reference) || hasReference(row.gold)).length,
+            referenceCases:countExpectedAnswers(snapshot.rows),
             rubricCases:snapshot.rows.filter(row=>row.rubric?.trim()).length,
           },
         };
@@ -226,10 +231,14 @@ export class Bench {
   private automaticGraders(structured:boolean) {
     return [...this.graders.automatic(structured), ...this.configuredGeneralGraders()];
   }
+  quickExpectedAnswer(runId:string):string|null {
+    const entry=this.db.prepare("SELECT answer FROM quick_expected_answers WHERE run=?").get(runId);
+    return entry ? stringValue(entry.answer,"saved expected answer") : null;
+  }
   quickGraderOptions(approvedPromptId:string) {
     const approved=this.workflow.get(approvedPromptId);
     const options = this.graders.quickOptions(approved, this.servers.flatMap(s => s.models));
-    return {...options, automatic:this.automaticGraders(!!approved.outputSchema)};
+    return {...options, expectedAnswerVersion:1 as const, automatic:this.automaticGraders(!!approved.outputSchema)};
   }
   graderDatasetIds(graderId:string):string[] {
     const grader=this.graders.get(graderId);
@@ -254,13 +263,20 @@ export class Bench {
     if(!row)throw Error("Choose a case from the selected dataset snapshot.");
     const datasetCase={datasetId,datasetName:dataset.name,datasetVersion:row.dataset_version,
       caseId,scenarioId:pack.id,scenarioVersion:pack.version,contractHash:contractHash(pack)};
-    return this.graders.record(grader,{input:row.input,reference:row.gold,output,caseContext:{pack,row}},
-      {caseId,datasetCase},this.adapters,AbortSignal.timeout(190000));
+    const evidence={input:row.input,reference:row.gold,output,caseContext:{pack,row}};
+    requireAssessmentEvidence(grader,evidence);
+    return this.graders.record(grader,evidence,{caseId,datasetCase},this.adapters,AbortSignal.timeout(190000));
   }
   datasetGraderOptions(datasetId:string) {
     const dataset = this.dataset(datasetId);
     const pack = this.pack(dataset.pack).pack;
-    return {hasReferences:dataset.rows.some(row=>hasEvidence(row.reference ?? row.gold)), automatic:this.automaticGraders(pack.outputSchema !== null), available:this.graders.list().filter(g=>this.graders.appliesToDataset(g,dataset.metadata.industry,pack.id))};
+    const expectedAnswerCount=countExpectedAnswers(dataset.rows);
+    const available=this.graders.list().filter(g=>this.graders.appliesToDataset(g,dataset.metadata.industry,pack.id));
+    const fields=new Set(available.filter(g=>g.type==="field").map(g=>parseFieldRule(g.criteria).referenceField));
+    const fieldCoverage=Object.fromEntries([...fields].map(field=>[field,countExpectedAnswers(dataset.rows,field)]));
+    return {expectedAnswerCount,fieldCoverage,literalAnswerCount:dataset.rows.filter(row=>row.reference!=null).length,
+      casesWithoutGuidance:dataset.rows.filter(row=>!hasEvidence(row.reference ?? row.gold) && !row.rubric).length,
+      hasReferences:expectedAnswerCount>0,automatic:this.automaticGraders(pack.outputSchema !== null),available};
   }
   graderRuns(id:string) {
     this.graders.get(id);
@@ -374,6 +390,7 @@ export class Bench {
     allowHostedDecision = false,
     outcomeRubric,
     measureGraders,
+    expectedAnswer,
     animation = true,
   }:StartRun) {
     if (this.modelLoading) throw Error("Wait for the LM Studio model load to finish before starting a run.");
@@ -391,6 +408,9 @@ export class Bench {
       throw Error(mode === "quick" ? "Choose two different models for the starting line." : "Select one or two distinct candidates.");
     if(measureGraders!==undefined && (mode!=="quick" || outcomeRubric!=null))
       throw Error("Use measure mappings on an approved Quick compare prompt without a combined outcome rubric.");
+    if (expectedAnswer!==undefined && (mode!=="quick" || typeof expectedAnswer!=="string" || !expectedAnswer.trim() || expectedAnswer.length>12000))
+      throw Error("For Quick compare, enter an expected answer or verified facts in 1 to 12,000 characters.");
+    const verifiedAnswer=expectedAnswer?.trim();
     const all = [...this.servers.flatMap((s) => s.models), ...this.endpoints.list(), replayCandidate];
     const candidates = candidateIds.map((id) => {
       const c = all.find((x) => x.id === id);
@@ -443,6 +463,23 @@ export class Bench {
       rows = [{ case_id: "prompt", input: { text: prompt } }];
     }
     const pinnedGraders = original?.graders ?? this.graders.select(graderIds);
+    const outputSchema=pack?.outputSchema ?? approved?.outputSchema;
+    const defaults = original ? [] : this.automaticGraders(!!outputSchema);
+    if (dataset) {
+      const applied=[...pinnedGraders,...defaults];
+      const coverage=new Map<string|undefined,number>();
+      for (const grader of applied) {
+        if (!graderRequiredEvidence(grader).includes("reference")) continue;
+        const field=grader.type==="field" ? parseFieldRule(grader.criteria).referenceField : undefined;
+        const labeled=coverage.get(field) ?? countExpectedAnswers(rows,field);
+        coverage.set(field,labeled);
+        const requirement=field ? "an expected JSON answer containing the field "+field : "an expected answer";
+        if (labeled<rows.length) throw Error(grader.name+" needs "+requirement+" for every selected case. "+
+          labeled+" of "+rows.length+" have one. Import a dataset version with the missing answers, remove the grader, or disable its automatic use in Graders.");
+      }
+      if (applied.some(g=>graderRequiredEvidence(g).includes("trajectory")))
+        throw Error("This grader needs recorded agent actions. Choose a model-response grader for this dataset, or supply agent steps in Test one output.");
+    }
     if (!original && dataset && pack) {
       const industry=dataset.metadata.industry, scenario=pack.id;
       if (pinnedGraders.some(g=>!this.graders.appliesToDataset(g,industry,scenario)))
@@ -451,29 +488,24 @@ export class Bench {
     const hostedDecision = pinnedGraders.some(g => g.type === "decision" && g.decision.provider === "openrouter");
     if (hostedDecision && allowHostedDecision !== true)
       throw Error("Confirm the OpenRouter decision grader and the evidence it will receive for this run.");
-    const outputSchema=pack?.outputSchema ?? approved?.outputSchema;
-    const defaults = original ? [] : this.automaticGraders(!!outputSchema);
     if (pack?.kind === "reference") {
       datasetScorer = original?.datasetScorer ?? datasetScorer ?? "selected-graders";
       if (!["selected-graders","exact-reference"].includes(datasetScorer)) throw Error("Choose a reference scoring method.");
-      if (datasetScorer === "exact-reference" && rows.some(r=>r.reference == null || r.rubric))
+      if (datasetScorer === "exact-reference" && rows.some(r=>r.reference==null || r.rubric))
         throw Error("Exact matching requires a reference on every case and no case rubric. Choose a rubric judge instead.");
       const selected = pinnedGraders;
       if (caseJudgeId && !original) {
-        if (rows.some(row=>row.reference == null && !row.rubric)) throw Error("Some cases supply only an input. Choose a saved grader with its own success criteria.");
+        if (rows.some(row=>!hasEvidence(row.reference) && !row.rubric)) throw Error("Some cases supply only an input. Choose a saved grader with its own success criteria.");
         if (datasetScorer !== "selected-graders") throw Error("Choose reference and rubric scoring to use a case judge.");
         const judge=this.servers.flatMap(s=>s.models).find(m=>m.id===caseJudgeId);
         selected.push(caseJudgeSpec(judge));
       }
-      const needsIndependentCriteria = rows.some(row=>row.reference == null && !row.rubric);
+      const needsIndependentCriteria = rows.some(row=>!hasEvidence(row.reference) && !row.rubric);
       const eligibleBusinessGrader = [...selected,...defaults].some(g=>{
         if (g.type==="catalog" && isInformationalRule(g.ruleKey)) return false;
-        if(g.type==="opik" && g.requiredEvidence?.length){
-          if(g.requiredEvidence.includes("trajectory"))return false; // This runner dispatches model responses.
-          return rows.some(row=>hasEvidence(row.reference ?? row.gold));
-        }
         if (!needsIndependentCriteria) return true;
-        if (g.type==="field" || g.type==="trajectory") return false;
+        if (g.type==="field") return true; // Each row's required field was checked above, including literal null.
+        if (g.type==="trajectory") return false;
         if (g.type==="decision") return !g.requiredEvidence?.length;
         return g.type!=="opik-metric" || !getOpikTemplate(g.metricKey).requiresReference;
       });
@@ -578,7 +610,13 @@ export class Bench {
             manifest.hostedDecisionApproved=true;
           }
         }
+        const needsExpectedAnswer=[...manifest.graders,...defaults].some(g=>graderRequiredEvidence(g).includes("reference"));
+        if (needsExpectedAnswer && !verifiedAnswer)
+          throw Error("Add an expected answer or verified facts in Graders before GO, or choose a grader that uses the task and model answer alone.");
+        if (!needsExpectedAnswer && verifiedAnswer)
+          throw Error("The selected graders do not use an expected answer. Refresh the grading setup before GO.");
         insertRun();
+        if (verifiedAnswer) this.db.prepare("INSERT INTO quick_expected_answers(run,answer) VALUES(?,?)").run(id,verifiedAnswer);
         this.db.exec("COMMIT");
       } catch (error) {
         this.db.exec("ROLLBACK");
@@ -807,6 +845,8 @@ export class Bench {
                 job.revision++;
               }
               const evidence = graderEvidence(m,row,rec,scorer.type === "catalog",scorer.id);
+              if (m.mode==="quick" && graderRequiredEvidence(scorer).includes("reference"))
+                evidence.reference=this.quickExpectedAnswer(m.id);
               await this.graders.record(scorer,evidence,
                 {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
               job.revision++;
@@ -884,7 +924,7 @@ export class Bench {
       assessments: this.graders.recorded(id),
       partial: this.active?.id === id ? this.active.partial : null,
     };
-    return {...detail,liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report:this.reports.get(detail)};
+    return {...detail,...(manifest.mode==="quick" && {hasQuickExpectedAnswer:!!this.db.prepare("SELECT 1 FROM quick_expected_answers WHERE run=?").get(id)}),liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report:this.reports.get(detail)};
   }
   exportRun(id:string) {
     const detail=this.detail(id);

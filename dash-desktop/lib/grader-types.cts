@@ -2,8 +2,8 @@ import { z } from "opik";
 import type {MeasureOption} from "./measure-graders.cjs";
 import {decodeAgentPin} from "../agents/registry.cjs";
 import { decisionConfig, observationSchema, protocolSchema, fallbackAttemptSchema, type DecisionConfig } from "./decision-model.cjs";
-import type { ScoredPack, CaseRow } from "./run-types.cjs";
-import {getOpikTemplate,opikMetricKey,opikMetricResult, type OpikMetricKey} from "./opik-library.cjs";
+import {jsonField,type ScoredPack,type CaseRow} from "./run-types.cjs";
+import {getOpikTemplate,hasEvidence,opikMetricKey,opikMetricResult, type OpikMetricKey} from "./opik-library.cjs";
 import type { LocalCandidate } from "./runtime-types.cjs";
 
 export const graderType = z.enum(["contains", "exact", "field", "trajectory", "judge", "opik", "decision", "catalog", "opik-metric"]);
@@ -63,6 +63,23 @@ export interface GraderEvidence {
   finishReason?:string|null; caseContext?:{pack:ScoredPack;row:CaseRow};
   trajectory?:readonly unknown[]; rubric?:string; sme_rationale?:string;
   evaluationBrief?:{objective:string;metrics:readonly string[];criteria:readonly string[]};
+}
+const fieldRule=z.object({outputField:z.string().regex(/^[\w.-]+$/),referenceField:z.string().regex(/^[\w.-]+$/)});
+export function parseFieldRule(criteria:string) {return fieldRule.parse(JSON.parse(criteria));}
+
+// An explicit Test or Grade action can ask for evidence before creating an assessment.
+export function requireAssessmentEvidence(grader:GraderSpec,evidence:GraderEvidence):void {
+  if (grader.type==="catalog" && grader.library?.scenario && !evidence.caseContext)
+    throw Error("Choose a labeled case from this grader’s industry dataset to test its scenario rule.");
+  const needs=graderRequiredEvidence(grader);
+  if (grader.type==="field") {
+    const {referenceField}=parseFieldRule(grader.criteria);
+    if (jsonField(evidence.reference,referenceField)===undefined)
+      throw Error("Enter an expected answer as JSON containing the field "+referenceField+" before grading.");
+  } else if (needs.includes("reference") && !hasEvidence(evidence.reference))
+    throw Error("Enter an expected answer before grading. Supply the correct answer or verified facts for this task in Test one output.");
+  if (needs.includes("trajectory") && !Array.isArray(evidence.trajectory))
+    throw Error("Enter the recorded agent steps in Test one output before using this grader.");
 }
 const datasetCaseSource = z.object({
   datasetId:z.string(),datasetName:z.string(),datasetVersion:z.string(),caseId:z.string(),
