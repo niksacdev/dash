@@ -127,7 +127,7 @@ function navigateAfterDecision(hash:string) {
 }
 let rollingBack=false;
 function navDiscardLabel(hash:string) {
-  return hash==="#compare" && quickLibraryRoute() ? "Discard and return to setup" : "Discard and leave";
+  return ((hash==="#compare" && runLibraryRoute()?.mode==="quick") || (hash==="#new" && runLibraryRoute()?.mode==="dataset")) ? "Discard and return to setup" : "Discard and leave";
 }
 document.addEventListener("click",async event=>{
   if (event.button!==0 || event.defaultPrevented || event.ctrlKey || event.shiftKey || event.metaKey || event.altKey || !(event.target instanceof Element)) return;

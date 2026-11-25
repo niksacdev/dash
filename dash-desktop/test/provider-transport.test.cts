@@ -5,7 +5,8 @@ import { configuration } from "../lib/opik-experiments.cjs";
 import { performance as runPerformance } from "../lib/performance.cjs";
 import { PlanningRoute } from "../lib/planner-routing.cjs";
 import { invoke } from "../lib/providers.cjs";
-import { ProviderPreflightError, ProviderRejectedError, type CompatibleCandidate, type LocalCandidate } from "../lib/runtime-types.cjs";
+import { Endpoints } from "../lib/endpoints.cjs";
+import { isCandidate, isRecord, ProviderPreflightError, ProviderRejectedError, type CompatibleCandidate, type LocalCandidate } from "../lib/runtime-types.cjs";
 import { inventory, present, reply, withoutPower } from "./runtime-fixtures.cjs";
 
 const hosted:CompatibleCandidate={provider:"compatible",kind:"model",id:"compatible/example",model:"example",
@@ -44,6 +45,118 @@ test("compatible completion consumes usage before DONE and releases an open stre
   assert.equal(result.telemetry.input_tokens,6);
   assert.equal(result.telemetry.output_tokens,1);
   assert.equal(held.canceled(),1);
+});
+
+test("compatible cache reads follow the same input receipt across split, corrected, or malformed usage frames",async t=>{
+  const initial = {prompt_tokens:12, prompt_tokens_details:{cached_tokens:7, cache_write_tokens:3}};
+  const cases: {frames:Record<string,unknown>[]; expected:number|null; samples:(number|null)[]}[] = [
+    {frames:[initial,{completion_tokens:4}], expected:7, samples:[7,7]},
+    {frames:[initial,{prompt_tokens:13,completion_tokens:4}], expected:null, samples:[7,null]},
+    {frames:[{prompt_tokens:12},{prompt_tokens_details:{cached_tokens:0}}], expected:0, samples:[0]},
+    {frames:[initial,{prompt_tokens_details:{cached_tokens:13}}], expected:null, samples:[7,null]},
+    {frames:[{prompt_tokens:12,prompt_tokens_details:{cache_write_tokens:8}}], expected:null, samples:[]},
+    {frames:[{prompt_tokens_details:{cached_tokens:4}}], expected:null, samples:[]},
+    {frames:[{prompt_tokens:12,prompt_tokens_details:{cached_tokens:1.5}}], expected:null, samples:[]},
+    {frames:[{prompt_tokens:12,prompt_tokens_details:{cached_tokens:Number.MAX_SAFE_INTEGER+1}}], expected:null, samples:[]},
+  ];
+  for (const {frames,expected,samples} of cases) {
+    const events = frames.map(usage=>"data: "+JSON.stringify({usage})+"\n").join("");
+    const stub = t.mock.method(globalThis,"fetch",async()=>new Response(events+"data: [DONE]\n"));
+    const observed: CandidateUsage[] = [];
+    const result = await invoke(hosted,[...prompt],{...options(),onCandidateUsage:reading=>observed.push(reading)});
+    assert.equal(result.telemetry.cached_input_tokens,expected);
+    assert.deepEqual(observed.flatMap(reading=>reading.cachedInputTokens===undefined ? [] : [reading.cachedInputTokens]),samples);
+    assert.equal(stub.mock.callCount(),1);
+    stub.mock.restore();
+  }
+});
+
+test("Ollama final receipt retains documented cache reads and distinguishes an older server's omitted counter",async t=>{
+  for (const cached of [undefined,0,5,7]) {
+    const event = {done:true, message:{content:"ready"}, eval_count:2, prompt_eval_count:6, prompt_eval_cached_count:cached};
+    const stub = t.mock.method(globalThis,"fetch",async()=>Response.json(event));
+    const observed:CandidateUsage[]=[];
+    const result = await invoke(ollama,[...prompt],{...options(),onCandidateUsage:event=>observed.push(event)});
+    const expected = cached!==undefined && cached<=6 ? cached : null;
+    assert.equal(result.telemetry.input_tokens,6);
+    assert.equal(result.telemetry.cached_input_tokens,expected);
+    assert.deepEqual(observed.flatMap(reading=>reading.cachedInputTokens===undefined ? [] : [reading.cachedInputTokens]),expected===null ? [] : [expected]);
+    assert.equal(stub.mock.callCount(),1);
+    stub.mock.restore();
+  }
+});
+
+test("a saved endpoint must still match the registered model and row identity",t=>{
+  const b=new Bench(":memory:",{discover:async()=>[],invoke},withoutPower);
+  t.after(()=>b.db.close());
+  const id=b.endpoints.save({model:"fixture-model",baseUrl:"https://fixture.example.invalid/v1",section:"Hosted",key:"synthetic"});
+  const original=present(b.endpoints.list()[0]);
+  const update=b.db.prepare("UPDATE model_endpoints SET definition=? WHERE id=?");
+  for(const delta of [{model:"renamed-fixture"},{id:"unrelated"}]){
+    update.run(JSON.stringify({...original,...delta}),id);
+    assert.throws(()=>b.endpoints.list(),/no longer matches its registered model and address/);
+  }
+  update.run(JSON.stringify(original),id);
+  assert.equal(b.endpoints.list()[0].needsKey,false);
+});
+
+test("OpenRouter caching is explicit, case-scoped, and revocable on the original endpoint",async t=>{
+  const b=new Bench(":memory:",{discover:async()=>[],invoke},withoutPower);
+  t.after(()=>b.db.close());
+  const draft={section:"Hosted",model:"anthropic/claude-sonnet-4.6",baseUrl:"https://openrouter.ai/api/v1",key:""};
+  const id=b.endpoints.save(draft);
+  const dataset=present(b.list().datasets.find(item=>item.pack==="earnings"));
+  const received:Record<string,unknown>[]=[];
+  const transport=t.mock.method(globalThis,"fetch",async (url:unknown,init:RequestInit)=>{
+    assert.equal(url,draft.baseUrl+"/chat/completions");
+    assert.equal(init.redirect,"error");
+    assert.ok(typeof init.body==="string");
+    const request:unknown=JSON.parse(init.body);
+    assert.ok(isRecord(request));
+    assert.equal(request.model,draft.model);
+    assert.equal(request.cache_control,undefined);
+    received.push(request);
+    return new Response('data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}\ndata: [DONE]\n');
+  });
+  async function run(datasetId:string, exact=false) {
+    received.length=0;
+    const runId=b.start({mode:"dataset",datasetId,candidateIds:[id],...(exact && {datasetScorer:"exact-reference"})});
+    await present(b.active).done;
+    const result=b.detail(runId);
+    assert.equal(received.length,result.manifest.caseIds.length);
+    return result;
+  }
+  const cold = await run(dataset.id);
+  assert.ok(received.length>1);
+  assert.deepEqual(received[0].messages,cold.results[0].dispatchedMessages);
+  assert.equal(b.endpoints.save({...draft,cacheScenarioInstructions:true}),id);
+  assert.equal(new Endpoints(b.db).list()[0].cacheScenarioInstructions,true);
+  assert.equal(b.endpoints.save(draft),id); // An older client updating a key preserves the choice.
+  const cached=await run(dataset.id);
+  for(const [i,request] of received.entries()){
+    const record=cached.results.find(row=>row.caseId===cached.manifest.caseIds[i]);
+    const turns=present(record?.dispatchedMessages);
+    assert.equal(turns[0].content,cached.manifest.effectiveSystem);
+    assert.deepEqual(request.messages,[{role:"system",content:[{type:"text",text:turns[0].content,
+      cache_control:{type:"ephemeral"}}]}, ...turns.slice(1)]);
+  }
+  const caseMessages=[{role:"system",content:"Private instructions specific to this case"},{role:"user",content:"read code"}];
+  const reference=b.import("reference","Synthetic reference",JSON.stringify({case_id:"q",dataset_version:"1",split:"development",
+    messages:caseMessages,reference:"{}"}));
+  await run(reference,true);
+  assert.deepEqual(received[0].messages,caseMessages);
+  assert.equal(b.endpoints.save({...draft,cacheScenarioInstructions:false}),id);
+  const updated=await run(dataset.id);
+  assert.deepEqual(received[0].messages,updated.results[0].dispatchedMessages);
+  const requests=transport.mock.callCount();
+  for(const override of [{endpoint:"https://openrouter.ai.example.invalid/api/v1"},{endpoint:"https://openrouter.ai/api/v2"},
+    {model:"openai/gpt-4.1"},{model:"anthropic/claude-sonnet-4.6:free"}]){
+    const candidate={...present(b.endpoints.list()[0]),cacheScenarioInstructions:true,...override};
+    assert.ok(isCandidate(candidate), "Historical candidate metadata remains readable");
+    assert.throws(()=>b.endpoints.save({...draft,model:candidate.model,baseUrl:candidate.endpoint,cacheScenarioInstructions:true}),/requires a supported/);
+    await assert.rejects(invoke(candidate,[...prompt],options()),ProviderPreflightError);
+  }
+  assert.equal(transport.mock.callCount(),requests);
 });
 
 test("Ollama retains the final text and usage and releases a still-open response",async t=>{

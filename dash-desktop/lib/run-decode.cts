@@ -2,7 +2,7 @@ import {z} from "opik";
 import {pinnedMeasure} from "./measure-graders.cjs";
 import {jsonText,isScenarioPack} from "./run-types.cjs";
 import type {RunManifest,RunResult,ScenarioPack} from "./run-types.cjs";
-import {isCandidate,type Candidate} from "./runtime-types.cjs";
+import {cachedInputTokenCount,isCandidate,type Candidate} from "./runtime-types.cjs";
 import {decodeGraderSpec} from "./graders.cjs";
 import {decodeApprovedPrompt} from "./outcome-workflow.cjs";
 
@@ -27,7 +27,7 @@ const candidate=z.preprocess(v=>{
 const manifest=z.object({format:num,id:str,created:str,title:str,mode:z.enum(["quick","dataset"]),fixture:z.boolean(),
   candidates:z.array(candidate),caseIds:z.array(str),pack:z.custom<ScenarioPack>(isScenarioPack).nullable(),
   graders:z.array(z.unknown().transform(decodeGraderSpec)).default([]),approvedPrompt:z.unknown().transform(v=>v==null?v:decodeApprovedPrompt(v)).optional(),
-  measureGraders:z.array(pinnedMeasure).max(8).optional(),taskAnswerDecisionGraderIds:z.array(z.string().min(1)).optional(),
+  inspectionOnly:z.literal(true).optional(),measureGraders:z.array(pinnedMeasure).max(8).optional(),taskAnswerDecisionGraderIds:z.array(z.string().min(1)).optional(),
   approvedPromptId:nullable.optional(),datasetScorer:z.enum(["scenario","selected-graders","exact-reference"]).nullable().optional(),
   prompt:nullable,effectiveSystem:nullable.optional(),objective:nullable.optional(),promptSource:str.optional(),tokenBudget:budget.optional(),
   datasetId:nullable,datasetMetadata:savedMetadata.partial({industry:true}).nullable().optional(),datasetVersion:nullable,split:nullable,industry:nullable.optional(),
@@ -43,8 +43,11 @@ const telemetry=z.object({
   latency_ms:num.optional(),first_token_ms:n.optional(),input_tokens:n.optional(),output_tokens:n.optional(),provider_first_token_ms:n.optional(),
   reasoning_tokens:n.optional(),tokens_per_second:n.optional(),load_ms:n.optional(),model_instance_id:nullable.optional(),load_ns:n.optional(),
   prompt_ns:n.optional(),generation_ns:n.optional(),runtime_stop_reason:str.optional(),reasoning_control:str.optional(),reasoning_content_present:z.boolean().optional(),
-  device_power:power.nullable().optional(),
-}).passthrough();
+  device_power:power.nullable().optional(),cached_input_tokens:z.unknown().optional(),
+}).passthrough().transform(({cached_input_tokens,...rest})=>{
+  if (cached_input_tokens===undefined) return rest;
+  return {...rest,cached_input_tokens:cachedInputTokenCount(rest.input_tokens,cached_input_tokens)};
+});
 export type StoredPower=z.infer<typeof power>;
 const result=z.object({candidateId:str,caseId:str,output:nullable,error:nullable,gradingError:str.optional(),
   structuredOutputCheck:z.object({valid:z.boolean(),message:str}).optional(),

@@ -45,7 +45,7 @@ test("the Quick preview checks both lanes before dispatch rechecks the current c
   assert.ok(preview.every(l=>l.status==="verified" && l.inputTokens===31 && l.outputReserve===64));
   assert.equal(calls.filter(c=>!c.options.planning).length,0);
   contextTokens=64;
-  const run=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:p.id});
+  const run=bench.start({mode:"quick",inspectionOnly:true,candidateIds:ids,approvedPromptId:p.id});
   await completion(bench);
   const failure=bench.detail(run).manifest.guardrailFailure;
   assert.ok(failure);
@@ -71,7 +71,7 @@ test("Quick starter pins the domain in the catalogue, matching graders and compl
   const manufacturing=save("Manufacturing"),finance=save("Financial Services");
   const choices=bench.quickGraderOptions(approved.id).available;
   assert.ok(choices.some(g=>g.id===manufacturing));assert.ok(!choices.some(g=>g.id===finance));
-  const run=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id,graderIds:[manufacturing]});
+  const run=bench.start({mode:"quick",inspectionOnly:true,candidateIds:ids,approvedPromptId:approved.id,graderIds:[manufacturing]});
   await completion(bench);
   const detail=bench.detail(run);
   assert.equal(detail.status,"completed");assert.equal(detail.manifest.industry,"Manufacturing");
@@ -156,16 +156,16 @@ test("live polling sends only new Quick text or a changed run revision", async t
     if (candidate.id===ids[0]) {enter(options);await hold;}
     return invoke(candidate,messages,options);
   };
-  const id=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id});
+  const id=bench.start({mode:"quick",inspectionOnly:true,candidateIds:ids,approvedPromptId:approved.id});
   const done=completion(bench);
   try {
     const options=await dispatch;
     const live=bench.detail(id),revision=present(live.liveRevision);
     assert.ok(live.partial && "candidateId" in live.partial);
     assert.equal(live.partial.checkedInputTokens,43);
-    const extra={inputTokens:43,firstTokenMs:NaN,outputTokens:-1,unrelated:"PRIVATE_RUNTIME_FRAGMENT"};
+    const extra={inputTokens:43,cachedInputTokens:27,firstTokenMs:NaN,outputTokens:-1,unrelated:"PRIVATE_RUNTIME_FRAGMENT"};
     options.onCandidateUsage?.(extra);
-    const sample={inputTokens:43,revision:1};
+    const sample={inputTokens:43,cachedInputTokens:27,revision:1};
     assert.deepEqual(bench.runProgress(id,revision,0,0),{kind:"unchanged",usage:sample});
     options.onCandidateUsage?.({inputTokens:43});
     assert.deepEqual(bench.runProgress(id,revision,0,1),{kind:"unchanged"});
@@ -176,7 +176,13 @@ test("live polling sends only new Quick text or a changed run revision", async t
     assert.deepEqual(bench.runProgress(id,revision,0),{kind:"append",candidateId:ids[0],text:"partial"});
     assert.deepEqual(bench.runProgress(id,revision,7),{kind:"unchanged"});
     options.onCandidateUsage?.({approximateOutputTokens:null});
-    assert.deepEqual(bench.runProgress(id,revision,7,2),{kind:"unchanged",usage:{inputTokens:43,revision:3}});
+    assert.deepEqual(bench.runProgress(id,revision,7,2),{kind:"unchanged",usage:{...sample,revision:3}});
+    options.onCandidateUsage?.({inputTokens:49});
+    assert.deepEqual(bench.runProgress(id,revision,7,3),{kind:"unchanged",usage:{inputTokens:49,revision:4}});
+    options.onCandidateUsage?.({cachedInputTokens:0});
+    assert.deepEqual(bench.runProgress(id,revision,7,4),{kind:"unchanged",usage:{inputTokens:49,cachedInputTokens:0,revision:5}});
+    options.onCandidateUsage?.({cachedInputTokens:50});
+    assert.deepEqual(bench.runProgress(id,revision,7,5),{kind:"unchanged",usage:{inputTokens:49,revision:6}});
     options.onText?.("partial answer");
     assert.deepEqual(bench.runProgress(id,revision,7),{kind:"append",candidateId:ids[0],text:" answer"});
     assert.deepEqual(bench.runProgress(id,revision,900),{kind:"refresh"});
@@ -201,7 +207,7 @@ test("Quick progress identifies the pinned grader while its score is pending",as
     await hold;
     return assess(...args);
   };
-  const runId=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id});
+  const runId=bench.start({mode:"quick",inspectionOnly:true,candidateIds:ids,approvedPromptId:approved.id});
   const done=completion(bench);
   try {
     await reached;
@@ -257,7 +263,7 @@ test("a reviewer-only categorical answer is retained for grading and cannot ente
   assert.ok(implementer);
   assert.doesNotMatch(JSON.stringify(implementer.messages),/quarantine/i);
   const approved=bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
-  const run=bench.start({mode:"quick",candidateIds:ids,approvedPromptId:approved.id});
+  const run=bench.start({mode:"quick",inspectionOnly:true,candidateIds:ids,approvedPromptId:approved.id});
   await completion(bench);
   const results=bench.detail(run).results;
   assert.equal(results.length,2);

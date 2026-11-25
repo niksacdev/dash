@@ -219,22 +219,27 @@ function modelStatus(entries: InventoryEntry[], model: string): "eligible" | "un
   return capable === true ? "eligible" : "unspecified";
 }
 
+export async function checkLocalDecision(config:DecisionConfig,signal:AbortSignal) {
+  const protocol = config.protocol ?? "systemone";
+  const origin = localOrigin(config.endpoint ?? defaultLocal);
+  const entries = await localInventory(origin, protocol, signal);
+  const primary = modelStatus(entries, config.model);
+  let attempt: FallbackAttempt | undefined;
+  if (primary === "primary-unavailable" || primary === "primary-not-decision-capable") {
+    if (!config.fallbackModel) throw new ProviderFailure(primary === "primary-unavailable"
+      ? "The selected decision model is absent from the local server." : "The selected local model does not advertise decisions output.");
+    if (modelStatus(entries, config.fallbackModel) !== "eligible") {
+      throw new ProviderFailure("The alternate local model must be uniquely advertised as decision-capable.");
+    }
+    attempt = { requestedModel: config.model, dispatchedModel: config.fallbackModel, protocol, fallbackReason: primary };
+  }
+  const selected = attempt?.dispatchedModel ?? config.model;
+  return {protocol,origin,attempt,selected};
+}
+
 const localDecision: DecisionModel = {
   async evaluate(config, request, signal) {
-    const protocol = config.protocol ?? "systemone";
-    const origin = localOrigin(config.endpoint ?? defaultLocal);
-    const entries = await localInventory(origin, protocol, signal);
-    const primary = modelStatus(entries, config.model);
-    let attempt: FallbackAttempt | undefined;
-    if (primary === "primary-unavailable" || primary === "primary-not-decision-capable") {
-      if (!config.fallbackModel) throw new ProviderFailure(primary === "primary-unavailable"
-        ? "The selected decision model is absent from the local server." : "The selected local model does not advertise decisions output.");
-      if (modelStatus(entries, config.fallbackModel) !== "eligible") {
-        throw new ProviderFailure("The alternate local model must be uniquely advertised as decision-capable.");
-      }
-      attempt = { requestedModel: config.model, dispatchedModel: config.fallbackModel, protocol, fallbackReason: primary };
-    }
-    const selected = attempt?.dispatchedModel ?? config.model;
+    const {protocol,origin,attempt,selected}=await checkLocalDecision(config,signal);
     // MLX's omitted-model default may differ from the loaded cache. Pin its exact absolute local checkpoint.
     const body = encodeRequest({ ...request, model: selected });
     if (signal.aborted) throw cancellation(signal);

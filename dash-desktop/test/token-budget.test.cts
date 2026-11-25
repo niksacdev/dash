@@ -52,7 +52,7 @@ function responseSchema(opts: LLMRespondOpts): Record<string, unknown> {
   assert.ok(isRecord(structured) && isRecord(structured.jsonSchema));
   return structured.jsonSchema;
 }
-function fixture(t: TestContext) {
+function fixture(t: TestContext, progress = {cachedTokenCount:0,totalPromptTokenCount:40,processedPromptTokenCount:20,unprocessedPromptTokenCount:20}) {
   const calls: Call[] = [];
   const { model } = sdkFixture(t, candidate.model, {
     template(chat) { return chat.map(m => `<${m.role}>${m.content}</${m.role}>`).join("") + "<assistant>"; },
@@ -60,7 +60,7 @@ function fixture(t: TestContext) {
     context: 1024,
     respond(chat, options) {
       calls.push({method:"respond", chat, options});
-      options.onPromptProcessingProgress?.(0.5,{cachedTokenCount:0,totalPromptTokenCount:40,processedPromptTokenCount:20,unprocessedPromptTokenCount:20});
+      options.onPromptProcessingProgress?.(0.5, progress);
       assert.ok(options.onPredictionFragment);
       options.onPredictionFragment({content:"hidden",tokensCount:1,containsDrafted:false,isStructural:false,reasoningType:"reasoning"});
       options.onPredictionFragment({content:"WO-402",tokensCount:3,containsDrafted:false,isStructural:false,reasoningType:"none"});
@@ -86,12 +86,30 @@ test("dispatches the original messages once through the checked model with the e
   assert.equal(responseCall(f.calls,1).options.maxTokens, 4);
   assert.deepEqual(responseSchema(responseCall(f.calls,1).options), schema);
   assert.deepEqual(seen, ["WO-402"]);
-  assert.deepEqual(usage.filter(x=>x.firstTokenMs===undefined),[{inputTokens:40},{approximateOutputTokens:1},{approximateOutputTokens:4}]);
+  assert.deepEqual(usage.filter(x=>x.firstTokenMs===undefined),[{inputTokens:40,cachedInputTokens:0},{approximateOutputTokens:1},{approximateOutputTokens:4},{inputTokens:41,cachedInputTokens:null}]);
   assert.ok(usage.some(x=>x.firstTokenMs!=null && x.firstTokenMs>=0));
   assert.equal(result.telemetry.input_tokens, inputBudget.tokens);
+  assert.equal(result.telemetry.cached_input_tokens, null);
   assert.equal(result.telemetry.output_tokens, 4);
   assert.equal(result.output, "WO-402");
   assert.equal(result.finishReason, "length");
+});
+
+test("SDK cache observations distinguish reuse, measured zero, and older percentage-only servers", async t => {
+  for (const [total, cache, expected] of [[41, 33, 33], [41, 0, 0], [0, 0, null], [41, 42, null]] as const) {
+    const f = fixture(t, {cachedTokenCount:cache, totalPromptTokenCount:total,
+      processedPromptTokenCount:0, unprocessedPromptTokenCount:Math.max(0, total - cache)});
+    const observed:CandidateUsage[] = [];
+    const checked = await f.checkInputBudget({candidate, messages, cap:41});
+    assert.ok(checked);
+    const result = await f.invokeBudgeted(candidate, messages, {signal, inputBudget:checked, maxTokens:4,
+      onCandidateUsage:event=>observed.push(event)});
+    assert.equal(result.telemetry.input_tokens, 41);
+    assert.equal(result.telemetry.cached_input_tokens, expected);
+    assert.deepEqual(observed.flatMap(event=>event.cachedInputTokens == null ? [] : [event.cachedInputTokens]),
+      expected === null ? [] : [expected]);
+    assert.equal(f.calls.filter(call=>call.method==="respond").length, 1);
+  }
 });
 
 test("an overflowing SDK fragment total clears the live estimate without changing the provider receipt", async t => {
@@ -145,7 +163,7 @@ test("planning constrains generation on the loaded instance and forwards the sta
   const signal = new AbortController().signal;
   const observed:unknown[]=[];
   const r = await f.invokePlanner(candidate, messages, { maxTokens: 400, signal, structured: schema, onPlanningProgress:update=>observed.push(update) });
-  assert.deepEqual(observed,[{phase:"processing-prompt",percent:50,inputTokens:40},{phase:"generating",approximateOutputTokens:3}]);
+  assert.deepEqual(observed,[{phase:"processing-prompt",percent:50,inputTokens:40,cachedInputTokens:0},{phase:"generating",approximateOutputTokens:3}]);
   assert.equal(r.output, "WO-402");
   assert.equal(f.calls.length, 1);
   assert.equal(responseSchema(responseCall(f.calls,0).options), schema);

@@ -21,9 +21,11 @@ function datasetImportHelp(packId:string) {
 
 function caseJudgePicker(w:UiWorkflow) {
   const modelsForJudge=models().filter(m=>m.loaded);
-  const preferred=modelsForJudge.find(m=>m.id===w.caseJudgeId) || modelsForJudge.find(m=>/lfm3/i.test(m.model)) || modelsForJudge[0];
+  const preferred=w.caseJudgeId ? modelsForJudge.find(m=>m.id===w.caseJudgeId) : modelsForJudge.find(m=>/lfm3/i.test(m.model)) || modelsForJudge[0];
+  if(preferred && !w.caseJudgeId)w.caseJudgeId=preferred.id;
   return '<label class="field"><span>Opik G-Eval judge for SME references and case rubrics</span><select name="caseJudgeId" required>'+
-    (preferred ? modelsForJudge.map(m=>opt(m.id,m.model,preferred.id)).join("") : '<option value="">Load a local model first</option>')+
+    (!preferred?'<option value="">'+esc(w.caseJudgeId?"Unavailable judge · "+w.caseJudgeId:"Load a local model first")+'</option>':"")+
+    modelsForJudge.map(m=>opt(m.id,m.model,preferred?.id ?? "")).join("")+
     '</select></label><small>The judge scores the answer against each case and explains its decision. A score of 0.80 passes.</small>';
 }
 
@@ -38,6 +40,8 @@ function datasetScoringMethod(d:UiDataset) {
   return "selected-graders";
 }
 function datasetGraderEvidenceIssue(grader:UiGrader,options:UiGraderOptions|null,total:number) {
+  const setup=options?.setupIssues?.[grader.id];
+  if(setup)return setup;
   if (grader.type==="trajectory" || grader.requiredEvidence?.includes("trajectory"))
     return "This grader needs recorded agent actions. Use Test one output and supply the agent steps.";
   if (!needsGraderReference(grader)) return "";
@@ -52,6 +56,7 @@ function datasetGraderEvidenceIssue(grader:UiGrader,options:UiGraderOptions|null
   return "";
 }
 function referenceScoringIssue() {
+  if(!datasetGradingChoices || datasetGradingChoices.scoringVersion!==1)return datasetGradingRead.message || "Restart DASH to verify scoring coverage for this dataset.";
   const d=dataset();
   if(!d)return "";
   const selected=datasetGradeSelection(activeDatasetGraderScope());
@@ -63,6 +68,8 @@ function referenceScoringIssue() {
   }
   if (pack()?.kind!=="reference" || workflows.dataset.approved)return "";
   const method=datasetScoringMethod(d);
+  if(method==="case-judge" && workflows.dataset.caseJudgeId && !models().some(m=>m.loaded && m.id===workflows.dataset.caseJudgeId))
+    return "The saved case judge is unavailable. Load it or choose another judge.";
   const withoutGuidance=datasetGradingChoices?.casesWithoutGuidance ?? d.casesWithoutReference;
   if(method==="exact-reference")return (datasetGradingChoices?.literalAnswerCount ?? d.count-d.casesWithoutReference)<d.count || d.casesWithRubric ?
     "Exact matching needs an expected answer on every case and no case rubrics." : "";
@@ -75,34 +82,51 @@ function referenceScoringIssue() {
     return "Choose a grader that can score the input and response without a reference, such as Opik Usefulness.";
   return meaningful.length ? "" : "Choose a saved grader or enable a compatible cross-industry grader in the library.";
 }
+function datasetScoreReadiness() {
+  const d=dataset(),options=datasetGradingChoices;
+  if(!d || !options)return "";
+  const ids=datasetGradeSelection(activeDatasetGraderScope()),mode=datasetScoringMethod(d);
+  const selected=[...options.automatic,...options.available.filter(g=>ids.has(g.id))].filter(g=>!options.diagnosticIds?.includes(g.id));
+  const checks:ScoreSetupCheck[]=selected.map(g=>({label:g.name,correction:datasetGraderEvidenceIssue(g,options,d.count)}));
+  if(pack()?.kind!=="reference")checks.unshift({label:"Scenario check"});
+  else if(mode!=="selected-graders")checks.unshift({label:mode==="exact-reference"?"Exact reference match":"Case reference and rubric",correction:referenceScoringIssue() || (mode==="case-judge" && !models().some(m=>m.loaded)?"Choose a local judge":"")});
+  return renderScoreLanes("dataset",checks);
+}
 function updateDatasetGradingControls() {
+  const preview=document.getElementById("dataset-score-readiness");
+  if(preview)preview.innerHTML=datasetScoreReadiness();
   const note=document.getElementById("dataset-scoring-issue");
   if(note){const issue=referenceScoringIssue();note.textContent=issue;note.hidden=!issue;}
-  const go=dashElement("#dataset-models .go-button",HTMLButtonElement);
+  const status=document.getElementById("qc-launch-state");
+  if(status)status.textContent=datasetLaunchStatus();
+  const go=dashElement("[data-picker-submit=dataset]",HTMLButtonElement);
   if(go)go.disabled=!canStartDataset();
+}
+function datasetScorerControl() {
+  const d=dataset(),scenario=pack(),w=workflows.dataset;
+  if(!d || !scenario || w.approved)return "";
+  const method=datasetScoringMethod(d),reference=scenario.kind==="reference";
+  return (reference ? '<label class="field"><span>Scoring method</span><select name="datasetScorer">'+
+      opt("case-judge","Use Opik G-Eval on case references and rubrics",method)+
+      opt("selected-graders","Use saved graders",method)+opt("exact-reference","Match the reference exactly",method)+'</select></label>'+
+      (method==="case-judge" ? caseJudgePicker(w) : '') :
+      '<div class="wf-options"><strong>Scenario grader</strong><p>'+esc(scenario.scorer)+' · '+esc(scenario.metrics.join(" · "))+'</p></div>');
 }
 function datasetRunPage(w:UiWorkflow) {
   const d=dataset(), scenario=pack(), reference=scenario?.kind==="reference";
   if (!d || !scenario) return '<section class="wf-page"><h1>Dataset run</h1>'+link("Import a dataset →","datasets")+'</section>';
-  const method=datasetScoringMethod(d);
   const error=w.error?'<p class="wf-error" role="alert">'+esc(w.error)+'</p>':'';
   return '<section class="wf-page"><div class="wf-title"><h1>Dataset run</h1></div>'+error+
-    '<form id="dataset-run-form" class="wf-panel"><h2>Evaluate saved cases</h2>'+pickers()+
+    '<form id="dataset-run-form" class="qc-workbench"><div class="dataset-case-setup"><h2>Evaluate saved cases</h2>'+pickers()+
     '<div class="wf-section-head"><p>'+esc(d.metadata.family)+' · '+esc(d.metadata.industry)+' · '+esc(d.count)+' cases</p>'+
     link("Inspect prompts and references →","datasets/"+encodeURIComponent(d.id),"link")+'</div>'+
     '<p>'+esc(reference ? "Each model receives the prompt or conversation saved with each case." : "Each model receives the scenario instructions and the input saved with each case.")+
     (d.casesWithoutReference ? " This snapshot includes input-only cases. These need a grader with its own success criteria.</p>" : " The grader can use the held-out evidence after the model answers.</p>")+
-    (reference ? '<label class="field"><span>Scoring method</span><select name="datasetScorer">'+
-      opt("case-judge","Use Opik G-Eval on case references and rubrics",method)+
-      opt("selected-graders","Use saved graders",method)+opt("exact-reference","Match the reference exactly",method)+'</select></label>'+
-      (method==="case-judge" ? caseJudgePicker(w) : '') :
-      '<div class="wf-options"><strong>Scenario grader</strong><p>'+esc(scenario.scorer)+' · '+esc(scenario.metrics.join(" · "))+'</p></div>')+
-    graderPicker()+
     '<details class="wf-options"><summary>Token limits</summary><div class="cols">'+
     '<label class="field"><span>Max input tokens</span><input name="inputCap" type="number" min="1" max="1000000" value="'+esc(w.inputCap)+'" placeholder="Automatic"></label>'+
     '<label class="field"><span>Max output tokens</span><input name="outputCap" type="number" min="1" max="1000000" value="'+esc(w.outputCap)+'" placeholder="Automatic"></label></div></details>'+
     (!rosterModels().some(m=>!m.needsKey)?'<p class="wf-hint">Connect a candidate in '+link("Local runtimes","providers","link")+' or use Connect a model endpoint below to start this run.</p>':"")+
-    modelPicker("dataset",d.count)+'</form>'+endpointForm()+hostingLegend()+
+    '</div>'+runSetupControls("dataset")+'</form>'+endpointForm()+hostingLegend()+
     (reference ? '' : '<div class="wf-actions"><button id="wf-variant" type="button">Test a prompt variant</button><small>Draft an alternate instruction for the same saved cases.</small></div>')+
     fixtureControl(w)+'</section>';
 }
@@ -130,6 +154,7 @@ function plannerSettingsPanel() {
 document.addEventListener("click",async e=>{
   if (!(e.target instanceof Element)) return;
 
+  if(e.target.closest("[data-new-dataset-setup]")){resetDatasetSetupReceipt();workflows.dataset=plannerState("dataset");resetModelSelection("dataset");await render();return;}
   if (e.target.closest("#wf-variant")) { workflows.dataset.variant=true; workflows.dataset.error=""; await render(); }
   if (e.target.closest("#dataset-native")) {
     const w=workflows.dataset,stillHere=currentVisit();
@@ -141,14 +166,14 @@ document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
 
   if (e.target.form?.id==="dataset-run-form" && (e.target.name==="inputCap" || e.target.name==="outputCap"))
-    workflows.dataset[e.target.name]=e.target.value;
+    {workflows.dataset[e.target.name]=e.target.value;rememberDatasetSetup();}
 });
 document.addEventListener("change",e=>{
   if (!textInput(e.target)) return;
 
   if (e.target.form?.id!=="dataset-run-form") return;
   if (e.target.name==="datasetScorer") { datasetScorerChoices.set(dataset().id,e.target.value); render(); }
-  if (e.target.name==="caseJudgeId") workflows.dataset.caseJudgeId=e.target.value;
+  if (e.target.name==="caseJudgeId") {workflows.dataset.caseJudgeId=e.target.value;rememberDatasetSetup();updateDatasetGradingControls();}
 });
 document.addEventListener("submit",async e=>{
   if (!(e.target instanceof HTMLFormElement)) return;
@@ -182,6 +207,7 @@ document.addEventListener("submit",async e=>{
     const consent=graderConsentById(config.graderIds,"this dataset run of "+d.count+" cases across "+ids.length+" candidates");
     if(!consent)return;
     const run=await api.start({...config,...consent});
+    if(workflows.dataset===workflow)resetDatasetSetupReceipt();
     workflow.error=""; if(stillHere() && workflows.dataset===workflow){baseline="";location.hash="run/"+run;}
   } catch (err) {
     const msg=errorText(err);

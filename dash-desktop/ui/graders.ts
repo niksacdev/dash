@@ -2,6 +2,11 @@
 const graderTypes={"opik-metric":"Opik library metric",catalog:"Versioned catalog rule",contains:"Contains required text",exact:"Exact answer",field:"JSON field matches reference",trajectory:"Agent actions in order",judge:"Local LLM rubric (legacy)",opik:"Opik G-Eval",decision:"Decision model · yes/no"};
 const graderHints={"opik-metric":"The Opik metric defines its criterion.",catalog:"The selected rule defines its deterministic check.",contains:"Text the output must contain",exact:"Expected answer",field:'{"outputField":"team","referenceField":"team"}',trajectory:"One required tool or action name per line",judge:"Describe what earns full, partial and zero credit.",opik:"Describe the task, evaluation criteria and what distinguishes a good answer.",decision:"Does the response hold the lot when the measurement exceeds the drawing tolerance?"};
 const formField=(label:string,input:string)=>'<label class="field"><span>'+esc(label)+'</span>'+input+'</label>';
+function graderSelectionButton(attribute:"data-qc-toggle"|"data-qc-extra-remove"|"data-gd-action",value:string,action:"Remove"|"Restore"|"Choose",target:string) {
+  const label=esc(action+" "+target);
+  return '<button type="button" class="grader-selection-action" '+attribute+'="'+esc(value)+'" aria-label="'+label+'" title="'+label+'">'+
+    (action==="Remove"?'<span aria-hidden="true">×</span>':action)+'</button>';
+}
 const datasetGradeSelections=new Map<string,Set<string>>();
 function datasetGradeSelection(scope:string) {
   const selected=datasetGradeSelections.get(scope) ?? new Set(readGraderAttachment(scope)?.ids);
@@ -12,6 +17,28 @@ const catalogSections:readonly {scope:UiGraderScope;title:string}[]=[
   {scope:"general",title:"General"},{scope:"industry",title:"Industry"},{scope:"customer",title:"My graders"},
 ];
 let datasetGradingChoices:UiGraderOptions|null=null;
+type DatasetGradingRead = {options:UiGraderOptions|null;message:string;restart:boolean};
+let datasetGradingRead:DatasetGradingRead={options:null,message:"Loading dataset grading options.",restart:false};
+async function fetchDatasetGrading(snapshot:string):Promise<DatasetGradingRead> {
+  try {
+    const options=await api.datasetGraderOptions(snapshot);
+    if(!isRecord(options) || ![options.automatic,options.available].every(list=>Array.isArray(list) && list.every(g=>isRecord(g) && typeof g.id==="string")))
+      throw Error("The dataset grader list was incomplete.");
+    if(options.scoringVersion!==1)return {options:null,message:"Restart DASH to verify scoring coverage for this dataset.",restart:true};
+    return {options,message:"",restart:false};
+  } catch(error) {
+    const restart=staleDesktopMethod(error) || errorText(error).startsWith("This action is unavailable in the running version of DASH.");
+    return {options:null,restart,message:restart?"Restart DASH to verify scoring coverage for this dataset.":errorText(error)};
+  }
+}
+function applyDatasetGrading(read:DatasetGradingRead) {
+  datasetGradingRead=read;datasetGradingChoices=read.options;
+}
+function datasetGradingFailure() {
+  if(!datasetGradingRead.restart)return readFailure("Couldn’t load dataset graders",datasetGradingRead.message,"Retry");
+  return '<section class="wf-error spacer" role="alert" data-dataset-grading-restart><strong>Restart DASH to choose graders</strong>'+
+    '<p>Your dataset setup is saved. Quit DASH completely, reopen it and return to Dataset run to verify scoring coverage.</p></section>';
+}
 function graderScope(g:UiGrader):UiGraderScope{return g.library?.scope || "customer";}
 function graderScenario(g:UiGrader) {
   const id=g.library?.scenario;
@@ -35,30 +62,10 @@ function revisionFamilies(items:UiGrader[]) {
   }
   return [...families.values()].map(items=>items.sort((a,b)=>b.version-a.version)).sort((a,b)=>a[0].name.localeCompare(b[0].name));
 }
-function catalogChoices(list:UiGrader[],chosen:Set<string>,inputName:string,reasons?:Map<string,string|undefined>) {
-  const choice=(g:UiGrader)=>{
-    const rec=reasons?.get(g.id);
-    const unavailable=inputName==="custom-grader" ? datasetGraderEvidenceIssue(g,datasetGradingChoices,dataset()?.count ?? 0) : "";
-    return '<label class="qc-grade-choice choice"><input type="checkbox" name="'+inputName+'" value="'+esc(g.id)+'" '+(chosen.has(g.id)?"checked":unavailable?"disabled":"")+
-      '><span><strong>'+esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc(graderApplicability(g))+'</small><small>'+esc(g.criteria)+'</small>'+
-      (unavailable || rec?'<small>'+esc(unavailable || rec)+'</small>':'')+'</span></label>';
-  };
-  return catalogSections.map(({scope,title})=>{
-    const families=revisionFamilies(list.filter(g=>graderScope(g)===scope));
-    if(!families.length)return "";
-    return '<fieldset class="gc-options"><legend>'+title+'</legend>'+families.map(([head,...previous])=>
-      choice(head)+(previous.length?'<details class="gc-previous" '+(previous.some(g=>chosen.has(g.id))?'open':'')+'><summary>Earlier versions of '+esc(head.name)+'</summary>'+
-        previous.map(choice).join("")+'</details>':"")).join("")+'</fieldset>';
-  }).join("");
-}
 function selectedGraderIds() {
   const selected=[...datasetGradeSelection(activeDatasetGraderScope())];
   if(selected.some(id=>!datasetGradingChoices?.available.some(g=>g.id===id)))throw Error("Remove unavailable grader versions before starting this run.");
   return selected;
-}
-function selectedGradersLabel(chosen:Set<string>) {
-  const names=[...chosen].map(id=>{const g=state.graders.find(row=>row.id===id);return g ? g.name+" v"+g.version : "Unavailable version";});
-  return names.length ? "Selected graders · "+names.join(", ") : "Add optional graders";
 }
 function selectedJudgeNotice(chosen:Set<string>) {
   const pending=state.graders.filter(g=>chosen.has(g.id) && g.judge && !models().some(m=>m.id===g.judge?.id && m.loaded));
@@ -66,16 +73,39 @@ function selectedJudgeNotice(chosen:Set<string>) {
   const names=[...new Set(pending.map(g=>g.judge?.model))].join(", ");
   return 'Check the local judge before starting · '+esc(names)+' · '+link("Local runtimes","providers","link");
 }
+let lastRemovedGrader:{scope:string;id:string;metric?:string}|null=null;
+function runGraderHeader(mode:UiMode) {
+  const path=runLibraryPath(mode);
+  return '<div class="qc-section-title"><h2>Graders</h2><a class="link" data-run-choose-graders href="#'+esc(path)+'">Choose graders</a></div>';
+}
+function selectedRunGraders(mode:UiMode,scope:string,ids:Iterable<string>,mapped:ReadonlyMap<string,string>=new Map()) {
+  const chosen=[...new Set(ids)],removed=lastRemovedGrader?.scope===scope?lastRemovedGrader.id:undefined;
+  const items=chosen.map(id=>{
+    const grader=state.graders.find(g=>g.id===id);
+    const name=grader?grader.name+" · v"+grader.version:"Unavailable grader · "+id;
+    const extra=mode==="quick" && !mapped.has(id)?' data-qc-extra-remove="'+esc(id)+'"':"";
+    return '<li><span>'+esc(name)+(mapped.has(id)?'<small>'+esc(mapped.get(id))+'</small>':"")+'</span>'+
+      '<a class="link" href="#'+esc(runLibraryPath(mode)+'?replace='+encodeURIComponent(id))+'" aria-label="'+esc("Change "+name)+'">Change</a><button type="button" class="grader-selection-action" data-run-remove="'+esc(id)+'"'+extra+' aria-label="'+esc("Remove "+name+" from this run")+'"><span aria-hidden="true">×</span></button></li>';
+  });
+  return '<section data-selected-graders><h3 class="qc-line-label">Selected graders</h3>'+
+    (items.length?'<ul class="qc-additional-versions">'+items.join("")+'</ul>':'<p class="wf-hint">No saved grader versions attached.</p>')+
+    (removed?'<button type="button" data-run-restore="'+esc(removed)+'" class="link">Restore '+esc(state.graders.find(g=>g.id===removed)?.name || "grader")+'</button>':"")+'</section>';
+}
+function runGraderDesign(scope:string,automatic:UiGrader[]) {
+  const checks=automatic.length?automaticChecks(automatic):'<section class="gc-auto"><h3>Automatic checks</h3><p>No automatic checks for this run.</p></section>';
+  return '<div data-run-grader-design>'+checks+gradeDesignerView(scope)+'</div>';
+}
+function runGraderPanel(mode:UiMode,scope:string,versions:string,controls:string,automatic?:UiGrader[]) {
+  return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+runGraderHeader(mode)+
+    '<div class="qc-attached">'+versions+'</div>'+(automatic?runGraderDesign(scope,automatic):"")+controls+'</section>';
+}
 function graderPicker(){
-  const scope=activeDatasetGraderScope(),chosen=datasetGradeSelection(scope);
-  const issue=referenceScoringIssue();
-  const available=datasetGradingChoices?.available || [];
-  const missing=[...chosen].filter(id=>!available.some(g=>g.id===id));
-  return automaticChecks(datasetGradingChoices?.automatic || [])+gradeDesignerView(scope)+'<details class="card grader-picker" data-grade-scope="'+esc(scope)+'"><summary>'+esc(selectedGradersLabel(chosen))+'</summary>'+
-    catalogChoices(available,chosen,"custom-grader")+(available.length?"":"<p>No optional graders are available for this snapshot.</p>")+
-    missing.map(id=>'<label class="choice"><input type="checkbox" name="custom-grader" value="'+esc(id)+'" checked>Unavailable · '+esc(state.graders.find(g=>g.id===id)?.name || id)+'</label>').join("")+
-    link("Open grader library →","graders","link")+'</details><div id="dataset-judge-note" role="status" class="wf-hint">'+selectedJudgeNotice(chosen)+'</div>'+
+  const scope=activeDatasetGraderScope(),chosen=datasetGradeSelection(scope),issue=referenceScoringIssue();
+  if(!datasetGradingChoices)return runGraderPanel("dataset",scope,selectedRunGraders("dataset",scope,chosen),datasetGradingFailure());
+  const controls=datasetScorerControl()+'<div id="dataset-judge-note" role="status" class="wf-hint">'+selectedJudgeNotice(chosen)+'</div>'+
+    '<div id="dataset-score-readiness">'+datasetScoreReadiness()+'</div>'+
     '<p id="dataset-scoring-issue" role="status" class="wf-hint" '+(issue?'':'hidden')+'>'+esc(issue)+'</p>';
+  return runGraderPanel("dataset",scope,selectedRunGraders("dataset",scope,chosen),controls,datasetGradingChoices?.automatic || []);
 }
 function decisionSource(provider:UiDecisionConfig["provider"]) {
   return provider==="local" ? "Local decision server" : "OpenRouter";
@@ -369,7 +399,9 @@ function snapshotChooser(snapshots:UiDataset[]) {
 }
 let graderActionSequence=0;
 async function openGraderRun(g:UiGrader,d:UiDataset,isCurrent:()=>boolean) {
-  const options=await api.datasetGraderOptions(d.id);
+  const read=await fetchDatasetGrading(d.id);
+  if(!read.options)throw Error(read.message);
+  const options=read.options;
   if(!isCurrent())return;
   const w=workflows.dataset;
   if(state.active || w.busy)throw Error("Another run or preparation is active. Finish it before setting up a dataset run.");
@@ -486,7 +518,7 @@ function scoringInspection(id:string,title:string,criterion:string,inputs:string
     (judge?'<dt>Judge</dt><dd>'+esc(judge)+'</dd>':'')+'<dt>Scoring</dt><dd>'+esc(outcome)+'</dd></dl>';
 }
 function catalogRevision(g:UiGrader,latest:boolean) {
-  const scoped=!!quickLibraryRoute();
+  const scoped=!!runLibraryRoute();
   const parent=scoped?undefined:state.graders.find(p=>p.id===g.library?.parentRevisionId);
   const enabled=state.generalGraderDefaults.includes(g.id);
   const automatic=g.library?.automatic || enabled;
@@ -502,7 +534,7 @@ function catalogRevision(g:UiGrader,latest:boolean) {
   const inspection=scoringInspection("grader-info-"+g.id,scoringRuleLabels[g.type],g.criteria,graderInputs(g),gradingOutcome(g),decisionTarget(g) || g.judge?.model);
   const common='<article class="grader-row gc-card" data-grade-version="'+esc(g.id)+'" data-filter="'+esc(text.join(" ").toLowerCase())+'">'+
     '<div class="gc-revision-head">'+title+'</div><small class="gc-context">'+esc(context)+'</small>'+inspection;
-  if(scoped)return common+'<div class="gc-use" data-use-version="'+esc(g.id)+'">'+quickLibraryActions(g)+
+  if(scoped)return common+'<div class="gc-use" data-use-version="'+esc(g.id)+'">'+runLibraryActions(g)+
     '<div class="gc-target" role="status" hidden></div></div></article>';
   return common+(ancestry?'<small class="block">'+esc(ancestry)+'</small>':'')+graderUseActions(g,undefined,edit)+
     '<details class="gc-manage"><summary>'+(graderScope(g)==="industry"?'Run history':'Manage version')+'</summary><div class="gc-actions">'+
@@ -541,7 +573,7 @@ function catalogSection(scope:UiGraderScope,title:string) {
     (!items.length && !templates?'<p class="muted">'+(scope==="customer"?"Save a grader or customize a shipped version to start your collection.":"No graders in this section.")+'</p>':'')+'</section>';
 }
 function applyCatalogFilter(){
-  const query=(quickLibraryRoute()?quickChooserFilter:gradeFilter).trim().toLowerCase();
+  const query=(runLibraryRoute()?quickChooserFilter:gradeFilter).trim().toLowerCase();
   for(const row of document.querySelectorAll<HTMLElement>(".gc-template"))row.hidden=!(row.dataset.filter || "").includes(query);
   document.querySelectorAll<HTMLElement>(".gc-family").forEach(family=>{
     const rows=[...family.querySelectorAll<HTMLElement>(".grader-row")];
@@ -611,7 +643,7 @@ async function refreshSampleHistory(){
   return scores;
 }
 async function gradersPage(){
-  if(quickLibraryRoute())return quickChooserPage();
+  if(runLibraryRoute())return runChooserPage();
   const history=await sampleHistory(),draft=pendingSample ?? retrySample?.draft;
   const group=pendingSample ? ' disabled' : '';
   const selected=state.graders.find(g=>g.id===draft?.grader);
@@ -639,7 +671,7 @@ function savedCaseNeedsAnswer(form:HTMLFormElement,grader:UiGrader) {
 function caseGrading(run:UiRunDetail,r:UiResult,index:number,row?:UiCase|null){
   const expected=row?.reference ?? row?.gold;
   const hasExpected=run.hasQuickExpectedAnswer===true || evidencePresent(expected);
-  const fieldGraders=state.graders.filter(g=>{
+  const fieldGraders=run.manifest.mode==="quick" ? run.quickFieldGraderIds ?? [] : state.graders.filter(g=>{
     const path=referenceFieldFor(g);
     return path && includesJsonField(expected,path);
   }).map(g=>g.id);
@@ -650,17 +682,6 @@ function caseGrading(run:UiRunDetail,r:UiResult,index:number,row?:UiCase|null){
 document.addEventListener("change",e=>{
   if (!textInput(e.target)) return;
 
-  if(e.target.name==="custom-grader"){
-    const picker=e.target.closest<HTMLElement>("[data-grade-scope]");
-    if (!picker?.dataset.gradeScope || !(e.target instanceof HTMLInputElement)) return;
-    const chosen=datasetGradeSelection(picker.dataset.gradeScope);
-    if(e.target.checked)chosen.add(e.target.value);else chosen.delete(e.target.value);
-    writeGraderAttachment(picker.dataset.gradeScope,chosen);
-    $("summary",picker).textContent=selectedGradersLabel(chosen);
-    const notice=document.getElementById("dataset-judge-note");
-    if(notice)notice.innerHTML=selectedJudgeNotice(chosen);
-    updateDatasetGradingControls();
-  }
   if(e.target.matches("#grade-case [name=grader]") && e.target.form) {
     const form=e.target.form,id=e.target.value,g=state.graders.find(row=>row.id===id);
     const missing=!!g && savedCaseNeedsAnswer(form,g);
@@ -725,7 +746,7 @@ document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
   if(e.target.form?.id==="grade-sample")editSampleRetry(e.target.form);
   if(e.target.name==="decision-endpoint" && e.target.form?.id==="grade-create")resetDecisionDiscovery(e.target.form);
-  if(e.target.id==="grade-filter"){if(quickLibraryRoute())quickChooserFilter=e.target.value;else gradeFilter=e.target.value;applyCatalogFilter();}
+  if(e.target.id==="grade-filter"){if(runLibraryRoute())quickChooserFilter=e.target.value;else gradeFilter=e.target.value;applyCatalogFilter();}
 });
 document.addEventListener("change",e=>{
   const radio=e.target;
@@ -754,7 +775,7 @@ document.addEventListener("click",async e=>{
   const section=attach?.closest<HTMLElement>("[data-use-version]");
   if (attach && section) {
     const g=state.graders.find(g=>g.id===section.dataset.useVersion);
-    if(g)await quickLibraryAction(attach,section,g);
+    if(g)await runLibraryAction(attach,section,g);
     return;
   }
   const action=e.target.closest<HTMLButtonElement>("[data-grade-run],[data-grade-continue],[data-grade-cancel],[data-grade-test]");

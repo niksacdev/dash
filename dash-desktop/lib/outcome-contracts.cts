@@ -1,5 +1,6 @@
 import {decodeQuickOutputSchema, decodeQuickTaskInput, schemaReviewRecord, type SchemaReview, type QuickOutputSchema, type QuickTaskInput} from "./quick-structure.cjs";
 import {z} from "zod";
+import {cachedInputTokenCount} from "./runtime-types.cjs";
 import {isRecord,isDomain,decodeAgentPin,type AgentPin,type Domain} from "../agents/registry.cjs";
 import {decodeRoleSnapshot,type RoleSnapshot} from "./domain-profiles.cjs";
 import type {PlanningAttempt,PlannerIdentity} from "./planner-routing.cjs";
@@ -84,7 +85,11 @@ const savedPlanningCall = z.object({
   energy:z.object({scope:z.literal("Whole device"),source:z.string().max(240).nullable(),sampled_seconds:z.number().nonnegative(),
     estimated_energy_j:z.number().nonnegative().nullable()}).optional().catch(undefined),
   usage:z.object({inputTokens:z.int().nonnegative().nullable(),outputTokens:z.int().nonnegative().nullable(),
-    estimatedCostUsd:z.number().nonnegative().nullable()}).optional().catch(undefined),
+    cachedInputTokens:z.unknown().optional(),estimatedCostUsd:z.number().nonnegative().nullable()})
+    .transform(({cachedInputTokens,...usage})=>{
+      const reads=cachedInputTokenCount(usage.inputTokens,cachedInputTokens);
+      return reads===null ? usage : {...usage,cachedInputTokens:reads};
+    }).optional().catch(undefined),
 });
 function savedPlanningCalls(raw:unknown):UiPlanningAttempt[]|undefined {
   if (!Array.isArray(raw)) return undefined;

@@ -11,6 +11,9 @@ import {OutcomeWorkflow,contractHash} from "./outcome-workflow.cjs";
 import {decodeRequest,type DesignContext,type PlanningPurpose,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
 import {checkStructuredOutput} from "./quick-structure.cjs";
 import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
+import {SavedScoreReviews,reviewRequest,reviewResults} from "./saved-score-review.cjs";
+import {checkLocalDecision} from "./decision-model.cjs";
+import {quickVerdictIssue,scoringOptions} from "./score-readiness.cjs";
 import {RunReports} from "./run-report.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
 import {getOpikTemplate,opikLibraryTemplates,hasEvidence} from "./opik-library.cjs";
@@ -23,9 +26,9 @@ import {assessCase,lengthFailure,reasoningPolicy,autoOutputTarget,GuardrailError
 import {decodeManifest,decodeResult,decodeRunSummary,decodeDatasetSummary} from "./run-decode.cjs";
 import {errorMessage,isCaseRow,jsonText,stringValue,statusValue} from "./run-types.cjs";
 import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
-import {ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, ProviderRejectedError} from "./runtime-types.cjs";
+import {scenarioCacheSupport,cachedInputTokenCount,ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, ProviderRejectedError} from "./runtime-types.cjs";
 import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate,ModelLoadReceipt} from "./runtime-types.cjs";
-import {graderRequiredEvidence,parseFieldRule,requireAssessmentEvidence} from "./grader-types.cjs";
+import {decodeFieldAnswer,quickGradingReference,graderRequiredEvidence,parseFieldRule,requireAssessmentEvidence} from "./grader-types.cjs";
 import {AssessmentStorageError} from "./grading-errors.cjs";
 const datasetCaseTest = z.strictObject({
   grader:z.string().min(1).max(200),datasetId:z.string().min(1).max(200),
@@ -45,6 +48,14 @@ function mergeCandidateUsage(previous:CandidateUsageSample|undefined, observatio
   }
   if (observation.approximateOutputTokens===null && previous?.approximateOutputTokens!=null) {
     delete sample.approximateOutputTokens;
+    changed=true;
+  }
+  const reads=observation.cachedInputTokens!==undefined
+    ? cachedInputTokenCount(sample.inputTokens,observation.cachedInputTokens)
+    : sample.inputTokens===previous?.inputTokens ? previous?.cachedInputTokens : null;
+  if ((reads ?? null)!==(previous?.cachedInputTokens ?? null)) {
+    if (reads!=null) sample.cachedInputTokens=reads;
+    else delete sample.cachedInputTokens;
     changed=true;
   }
   return changed ? sample : previous;
@@ -81,6 +92,7 @@ export class Bench {
   readonly packs:PackBundle[];
   readonly graders:Graders;
   readonly endpoints:Endpoints;
+  readonly scoreReviews:SavedScoreReviews;
   readonly catalog:Catalog;
   readonly plannerSettings:PlannerSettings;
   readonly workflow:OutcomeWorkflow;
@@ -107,6 +119,7 @@ export class Bench {
       COMMIT;`);
     this.db.exec("CREATE TABLE IF NOT EXISTS quick_expected_answers(run TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, answer TEXT NOT NULL)");
     this.reports = new RunReports(this.db);
+    this.scoreReviews=new SavedScoreReviews(this.db);
     this.packs = loadPacks();
     for (const { pack, rows } of this.packs) if(pack.kind !== "reference")
       this.saveDataset(pack.id, pack.dataset, rows);
@@ -238,7 +251,11 @@ export class Bench {
   quickGraderOptions(approvedPromptId:string) {
     const approved=this.workflow.get(approvedPromptId);
     const options = this.graders.quickOptions(approved, this.servers.flatMap(s => s.models));
-    return {...options, expectedAnswerVersion:1 as const, automatic:this.automaticGraders(!!approved.outputSchema)};
+    const automatic=this.automaticGraders(!!approved.outputSchema);
+    return {...options,expectedAnswerVersion:1 as const,automatic,...this.scoringOptions([...options.available,...automatic])};
+  }
+  private scoringOptions(graders:GraderSpec[]) {
+    return scoringOptions(graders,this.servers.filter(server=>server.online).flatMap(server=>server.models));
   }
   graderDatasetIds(graderId:string):string[] {
     const grader=this.graders.get(graderId);
@@ -274,9 +291,10 @@ export class Bench {
     const available=this.graders.list().filter(g=>this.graders.appliesToDataset(g,dataset.metadata.industry,pack.id));
     const fields=new Set(available.filter(g=>g.type==="field").map(g=>parseFieldRule(g.criteria).referenceField));
     const fieldCoverage=Object.fromEntries([...fields].map(field=>[field,countExpectedAnswers(dataset.rows,field)]));
-    return {expectedAnswerCount,fieldCoverage,literalAnswerCount:dataset.rows.filter(row=>row.reference!=null).length,
+    const automatic=this.automaticGraders(pack.outputSchema !== null);
+    return {...this.scoringOptions([...available,...automatic]),expectedAnswerCount,fieldCoverage,literalAnswerCount:dataset.rows.filter(row=>row.reference!=null).length,
       casesWithoutGuidance:dataset.rows.filter(row=>!hasEvidence(row.reference ?? row.gold) && !row.rubric).length,
-      hasReferences:expectedAnswerCount>0,automatic:this.automaticGraders(pack.outputSchema !== null),available};
+      hasReferences:expectedAnswerCount>0,automatic,available};
   }
   graderRuns(id:string) {
     this.graders.get(id);
@@ -366,6 +384,7 @@ export class Bench {
       plannerFallback: this.plannerSettings.status(),
       servers: this.servers,
       endpoints: this.endpoints.list(),
+      scenarioCacheSupport,
       graders: this.graders.list().map(grader=>({...grader,generalDefaultKey:generalDefaultKey(grader)})),
       generalGraderDefaults:this.configuredGeneralGraders().map(g=>g.id),
       opikLibraryTemplates,
@@ -390,10 +409,12 @@ export class Bench {
     allowHostedDecision = false,
     outcomeRubric,
     measureGraders,
+    inspectionOnly,
     expectedAnswer,
     animation = true,
   }:StartRun) {
     if (this.modelLoading) throw Error("Wait for the LM Studio model load to finish before starting a run.");
+    if (this.scoreReviews.busy) throw Error("Wait for the saved-answer review to finish before starting an evaluation.");
     if (this.designing) throw Error("Wait for the prompt preparation to finish.");
     if (this.active)
       throw Error("A job is active. Stop it or wait for completion.");
@@ -406,6 +427,7 @@ export class Bench {
       new Set(candidateIds).size !== candidateIds.length
     )
       throw Error(mode === "quick" ? "Choose two different models for the starting line." : "Select one or two distinct candidates.");
+    if (inspectionOnly!==undefined && (inspectionOnly!==true || mode!=="quick")) throw Error("Answer inspection is available only in Quick compare.");
     if(measureGraders!==undefined && (mode!=="quick" || outcomeRubric!=null))
       throw Error("Use measure mappings on an approved Quick compare prompt without a combined outcome rubric.");
     if (expectedAnswer!==undefined && (mode!=="quick" || typeof expectedAnswer!=="string" || !expectedAnswer.trim() || expectedAnswer.length>12000))
@@ -525,6 +547,7 @@ export class Bench {
     const id = randomUUID();
     const manifest:CurrentManifest = {
       format: 2,
+      ...(inspectionOnly && {inspectionOnly}),
       id,
       created: now(),
       mode,
@@ -593,6 +616,13 @@ export class Bench {
           manifest.policyHash = hash(taskAnswerIds.length ? [...policy,{taskAnswerDecisionGraderIds:taskAnswerIds}] : policy);
         }
       }
+      const readiness=this.scoringOptions(manifest.graders);
+      const unavailable=Object.values(readiness.setupIssues)[0];
+      if (unavailable) throw Error(unavailable);
+      if (mode==="quick" && !inspectionOnly && approved) {
+        const issue=quickVerdictIssue(approved,manifest.graders,manifest.measureGraders,!!outcomeRubric);
+        if (issue) throw Error(issue);
+      }
       this.db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(id, manifest.created, "queued", JSON.stringify(manifest));
     };
     if (mode === "quick") {
@@ -658,6 +688,16 @@ export class Bench {
       job.revision++;
       // Complete all lane/case checks before generating the first candidate response.
       const decisions = new Map<string,Map<string,GuardrailDecision>>();
+      const nativePolicies=new Set<string>();
+      for (const grader of m.graders) {
+        if(grader.type!=="decision" || grader.decision.provider!=="local")continue;
+        const {endpoint,protocol,model,fallbackModel}=grader.decision;
+        const key=JSON.stringify([endpoint,protocol,model,fallbackModel]);
+        if(nativePolicies.has(key))continue;
+        nativePolicies.add(key);
+        try {await checkLocalDecision(grader.decision,AbortSignal.any([signal,AbortSignal.timeout(5000)]));}
+        catch {throw Error(grader.name+" could not verify its local decision model. Start its decision server, verify the saved model and refresh the run setup. No candidate requests were sent.");}
+      }
       if (!m.fixture) {
         for (const candidate of m.candidates) {
           const cases = new Map<string,GuardrailDecision>();
@@ -734,6 +774,7 @@ export class Bench {
                 const response = await this.adapters.invoke(c, messages, {
                   signal: AbortSignal.any([signal, checkpointAbort.signal]),
                   apiKey: this.endpoints.keys.get(c.id),
+                  ...(m.pack && m.pack.kind !== "reference" && m.effectiveSystem && {sharedScenarioSystem:m.effectiveSystem}),
                   maxTokens: guardrail.outputReserve,
                   inputBudget,
                   structured: m.pack?.outputSchema ?? m.approvedPrompt?.outputSchema,
@@ -840,13 +881,11 @@ export class Bench {
             for (const scorer of m.graders || []) {
               if (signal.aborted) break;
               if (rec.error && !scorer.library?.automatic) continue;
-              if (m.mode === "quick") {
-                job.partial = {candidateId:c.id,caseId:row.case_id,text:"",grading:{name:scorer.name,version:scorer.version}};
-                job.revision++;
-              }
+              job.partial = {candidateId:c.id,caseId:row.case_id,text:"",grading:{name:scorer.name,version:scorer.version}};
+              job.revision++;
               const evidence = graderEvidence(m,row,rec,scorer.type === "catalog",scorer.id);
               if (m.mode==="quick" && graderRequiredEvidence(scorer).includes("reference"))
-                evidence.reference=this.quickExpectedAnswer(m.id);
+                evidence.reference=quickGradingReference(scorer,this.quickExpectedAnswer(m.id));
               await this.graders.record(scorer,evidence,
                 {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
               job.revision++;
@@ -896,6 +935,18 @@ export class Bench {
   private visibleStatus(id:string,saved:RunStatus):RunStatus {
     return (saved==="queued" || saved==="running") && this.unrecordedTerminals.has(id) ? "interrupted" : saved;
   }
+  async reviewSavedCase(raw:unknown) {
+    const request=reviewRequest.parse(raw);
+    if(this.active)throw Error("Wait for the active evaluation to finish before reviewing saved answers.");
+    const run=this.detail(request.run);
+    if(!run.manifest.caseIds.includes(request.caseId))throw Error("Choose a case from this run.");
+    const grader=run.manifest.graders.find(g=>g.id===request.grader) ?? this.graders.get(request.grader);
+    const problem=this.scoringOptions([grader]).setupIssues[grader.id];
+    if(problem)throw Error(problem);
+    const row=run.manifest.datasetId ? this.dataset(run.manifest.datasetId).rows.find(r=>r.case_id===request.caseId) : {case_id:request.caseId};
+    if(!row)throw Error("This case is missing from its saved dataset snapshot.");
+    return this.withRuntimeUse(()=>this.scoreReviews.assess(request,run,grader,row,this.quickExpectedAnswer(request.run),this.graders,this.adapters));
+  }
   detail(id:string):RunDetail {
     const run = this.db
       .prepare("SELECT status,manifest FROM runs WHERE id=?")
@@ -924,7 +975,10 @@ export class Bench {
       assessments: this.graders.recorded(id),
       partial: this.active?.id === id ? this.active.partial : null,
     };
-    return {...detail,...(manifest.mode==="quick" && {hasQuickExpectedAnswer:!!this.db.prepare("SELECT 1 FROM quick_expected_answers WHERE run=?").get(id)}),liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report:this.reports.get(detail)};
+    const report=this.reports.get(detail);
+    const savedReviews=report && (report.verdict==="incomplete" || report.verdict==="ungraded") ? this.scoreReviews.list(id) : [];
+    const quickFields=terminal && manifest.mode==="quick" ? {quickFieldGraderIds:this.graders.fieldGradersFor(decodeFieldAnswer(this.quickExpectedAnswer(id)))} : {};
+    return {...detail,...quickFields,...reviewResults(detail,report,savedReviews),...(manifest.mode==="quick" && {hasQuickExpectedAnswer:!!this.db.prepare("SELECT 1 FROM quick_expected_answers WHERE run=?").get(id)}),liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report};
   }
   exportRun(id:string) {
     const detail=this.detail(id);

@@ -14,6 +14,10 @@ function deviceEnergyReading(power:UiDeviceEnergy|null|undefined,provider?:strin
     pending ? "Pending" : "Unmeasured";
   return '<span title="'+esc(description)+'">'+esc(label+note)+'</span>';
 }
+const cacheUsageHint="Input tokens the provider reused from its prompt cache. These count toward the input total.";
+function cachedInputLabel(tokens:number|null|undefined,running=false) {
+  return tokens==null ? (running ? "Pending" : "Unreported") : tokens.toLocaleString();
+}
 function planningSeconds(ms:number) {
   return (ms/1000).toFixed(1) + " s";
 }
@@ -32,8 +36,7 @@ function planningClock(start:number|undefined) {
   return typeof start==="number" && Number.isFinite(start) ? '<dash-planning-elapsed data-started="'+esc(start)+'"></dash-planning-elapsed>' : "";
 }
 function activityMeter(label:string, reading?:{value:number;max:number}) {
-  if (reading) return '<progress class="run-meter" aria-label="'+esc(label)+'" value="'+esc(reading.value)+'" max="'+esc(reading.max)+'"></progress>';
-  return '<div class="run-working" role="progressbar" aria-label="'+esc(label)+'"></div>';
+  return raceCourse(label,{state:"active",reading,valueText:reading ? reading.value+" of "+reading.max : label});
 }
 function planningQueryRow(call:UiPlanningAttempt) {
   const running = call.status === "running";
@@ -57,6 +60,7 @@ function planningQueryRow(call:UiPlanningAttempt) {
     '<small>'+esc(phase || call.status)+(call.attempt && call.attempt>1 ? ' · Try '+esc(call.attempt) : '')+'</small></div>' +
     (running ? activityMeter(phase, call.progress?.phase==="processing-prompt" ? {value:call.progress.percent,max:100} : undefined) : '')+
     '<dl class="ai-usage"><div><dt>Input tokens</dt><dd>'+esc(input?.toLocaleString() ?? awaitingInput)+'</dd></div>' +
+    '<div title="'+cacheUsageHint+'"><dt>Cached input tokens</dt><dd>'+esc(cachedInputLabel(call.usage?.cachedInputTokens,running))+'</dd></div>'+
     '<div><dt>Output tokens</dt><dd>'+esc(output?.toLocaleString() ?? liveOutput)+'</dd></div>' +
     '<div><dt>Device energy (est.)</dt><dd>'+deviceEnergyReading(call.energy,call.provider,running)+'</dd></div>'+
     '<div><dt>API cost</dt><dd>'+esc(cost)+'</dd></div>'+

@@ -102,3 +102,25 @@ LSEG describes earnings-call analysis that identifies speakers, statements and t
 ## Observe candidate usage during dispatch
 
 An inspection operator opens a running Quick comparison or a dataset case. An SDK-backed candidate reports the effective input size and approximate generated tokens during prediction. A compatible provider can report input and output in separate usage frames. Text by itself supplies no token count. Switching lanes or cases resets the display, and completed rows and history use durable final measurements. An older runner still streams previously supported progress and explains how to enable live usage.
+
+## Read prompt cache usage on a repeated case
+
+A manufacturing operator evaluates two inspection cases on the same model. The cases share their approved system instructions. Beside the full input and output counts, the operator can see how many input tokens that request read from the runtime's prompt cache. When a runtime reports 800 cached out of 1,200 input tokens, the input budget remains 1,200. The operator can distinguish a measured zero from a missing counter, inspect the saved case after restart, and synchronize the same measurement to Opik. A runtime that reports usage only at completion shows a pending measurement during generation.
+
+On an already-loaded LM Studio LFM3 1.7B instance, two synthetic inspection requests each used 1,019 input tokens and produced four output tokens. The native SDK reported zero cached on the first request and 503 on the second. The live observations matched the completed receipts. The native REST endpoint on that installation supplied input and output totals but omitted a cache breakdown.
+
+## Follow the selected candidates during a run
+
+Start a Quick comparison with two models and hold the second response open. The first lane should show its saved response, the second should identify its active runtime, and the report should wait for the remaining assessments. Reading the same data with reduced motion should convey the same phase. On a Dataset run, a completed case moves only its candidate’s count. An interrupted case contributes one recorded result and zero successful answers.
+
+Independent critique called out three misleading signals to avoid. Serial dispatch must leave the waiting candidate parked. A token budget gives no denominator for inference progress. A recorded assessment can be unscored. The operator sees the actual candidate or judge, measured case and assessment counts, and a final verdict only after reporting. [Interaction decision](../adr/0040-evaluation-race-lanes.md)
+
+## Use the same starting line for a prompt and a dataset
+
+An operator selects two candidates for a Manufacturing inspection, checks the automatic response diagnostics and attaches a saved quality grader. On either run path, the automatic checks and selected graders are visible, and **Design graders** is available directly below the automatic checks. Opening the catalogue, removing a grader or choosing Back keeps the draft's models and scoring choices. Reopening the Dataset draft restores the snapshot and optional prompt variant. Dispatch pins the selected grader revision for both candidates. Both run modes open the same result view with each candidate's score against that revision.
+
+## Recover a comparison with a missing business score
+
+For a Quick manufacturing inspection, remove the grader for the approved disposition measure and select two candidates. Both lanes must name the missing check. A scored submission must reach neither candidate. The operator can map a compatible grader, revise an externally measured objective, or explicitly choose answer inspection. In Dataset run inspect the same lane coverage against the selected case set and snapshot evidence.
+
+Open a historical two-candidate earnings comparison whose period grader lacked the reference for both answers. Enter one verified reporting period, grade the saved answers with their original grader version, and observe two judge assessments and zero new candidate calls. The original report stays incomplete. If all other pinned measures have comparable scores, the reviewed verdict uses the new pair. A grader with a different revision remains a separate assessment. A missing candidate answer requires a new candidate response and cannot be repaired with a judge.

@@ -1,6 +1,6 @@
 # Choose and connect models
 
-Use **Quick compare** when you are still shaping the task. Use **Dataset run** when you have cases to repeat across candidate models or versions. The two workflows share the **Model roster** and **Starting line**. Select a model card to add it to a lane. An outlined card with a checkmark shows your selection. When both lanes are full, remove a model to free a lane before choosing its replacement.
+Use **Quick compare** when you are still shaping the task. Use **Dataset run** when you have cases to repeat across candidate models or versions. The two workflows share the **Starting line**, **Model roster** and **Graders** panel. **Selected graders** shows the saved versions that will assess the answers. Use **Choose graders** to browse them without leaving your evaluation draft. Select a model card to add it to a lane. An outlined card with a checkmark shows your selection. When both lanes are full, remove a model to free a lane before choosing its replacement.
 
 ## Connect a candidate
 
@@ -25,7 +25,7 @@ For **Suggest Metrics** and prompt drafting, use a loaded LFM3 chat model. If Pl
 
 1. Open **Quick compare** and enter an objective such as “Flag any incoming bearing that exceeds the drawing’s upper limit.”
 2. Choose **Suggest Metrics**. Pair each metric with a pass condition on the same line in the second field. For a bearing that measures 10.04 mm against a 10.03 mm limit, one metric could be disposition accuracy. Its pass condition is that this answer identifies the bearing as out of tolerance. Draft and approve the prompt. Local planning uses a loaded LFM3. An optional OpenAI planning fallback can be configured in **Domain agents**.
-3. Search the roster and click two different models onto the starting line. Check the destination and token allocation for each. Review the grader beside each approved measure. Choose a saved version, edit a dedicated Opik rubric, or leave a measure unscored. Check how many assessments the run will perform and choose **Run evaluation**.
+3. Search the roster and click two different models onto the starting line. Check the destination and token allocation for each. Review the grader beside each approved measure. Choose a saved version or edit a dedicated Opik rubric for each approved measure. In **Verdict coverage**, both lanes should show **Can score**. If you leave a measure unscored, use **Inspect answers without a quality verdict** only when you want to collect responses without ranking the models. Check how many assessments the run will perform and choose **Run evaluation**.
 4. In the result, compare both responses to the same approved objective. Use [a dataset](dataset-runs.md) to see whether the behavior repeats across cases.
 
 ## Finish an approved Quick evaluation
@@ -35,6 +35,8 @@ For **Suggest Metrics** and prompt drafting, use a loaded LFM3 chat model. If Pl
 3. Review the two models and pinned graders, then select **Run evaluation**. During the run, watch the response and assessment counts. In the report, read the two answers and the score for each approved measure.
 
 If **Restart DASH to choose graders** appears, your approved prompt is still in the catalogue. Copy any unsaved rubric edits, quit the app completely (⌘Q on macOS), reopen DASH, and return to **Quick compare**. Opening the launcher while DASH is still running brings the same process forward. A temporary read error offers **Retry** on the current comparison. If no saved grader matches, **Review proposed rubrics** opens any available run rubrics. **Design a grader for this prompt** lets you save a reusable version.
+
+If you explicitly select **Inspect answers without a quality verdict**, that choice belongs to the approved prompt version and survives a catalogue visit or reload.
 
 ![Example Quick setup showing an approved Manufacturing task, two selected model lanes, mapped graders and the evaluation launch control](quick-evaluation-setup.png)
 
@@ -82,3 +84,7 @@ Both models receive the approved input and field contract. Inspect each original
 ## When a budget blocks a run
 
 An explicit input cap requires a runtime that can verify the rendered prompt’s token count. A loaded LM Studio instance can supply that count and its active context. If preflight blocks the run, inspect the requested cap and active context. Shorten the prompt, choose a larger context, or revise the budget before starting again. A response that reached its output cap remains available to inspect. [Detailed budget behavior](https://github.com/niksacdev/dash/blob/main/docs/guides/workbench.md#evaluate-a-business-outcome)
+
+The loaded LM Studio model or connected provider manages prefix reuse. Running two cases with the same approved instructions on the same model can produce a cache hit. Selecting a different model starts a separate candidate request. Expand a planning attempt or case to see the runtime's own cache receipt. [Read cached input tokens](results.md#read-cached-input-tokens)
+
+When configuring a supported Anthropic Claude model on OpenRouter, the endpoint editor offers five-minute caching of shared scenario instructions. Select the option before saving the endpoint if you want DASH to mark that prefix on scenario dataset requests. OpenRouter can charge a cache write; short prefixes may never qualify. Quick prompts and imported case-authored conversations do not receive this marker. Reopen the endpoint settings and turn the option off to stop sending the marker. [OpenRouter’s Claude caching rules](https://openrouter.ai/docs/guides/best-practices/prompt-caching#anthropic-claude)

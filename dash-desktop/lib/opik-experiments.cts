@@ -12,7 +12,7 @@ import {prepareInput} from "./guardrail.cjs";
 import {resolveDatasetFamily} from "./opik-dataset-family.cjs";
 import {caseData,nativeVersion} from "./opik-dataset-versions.cjs";
 import type {RunManifest,CaseRow} from "./run-types.cjs";
-import {isRecord} from "./runtime-types.cjs";
+import {cachedInputTokenCount,isRecord} from "./runtime-types.cjs";
 import {datasetVersion,promptLink,syncReceipt,statusCode,type SyncOptions,type SyncStore,type SyncReceipt,type Checkpoint,
   type SavedRun,type PublishState,type OpikConfiguration,type Destination,type NativeOpik,type NativeScore,type NativeTrace,type NativeSpan,type NativeItem} from "./opik-types.cjs";
 export type {PublishState,SyncReceipt} from "./opik-types.cjs";
@@ -393,6 +393,8 @@ export class OpikExperiments {
           const usage:Record<string,number>={};
           if(typeof tel.input_tokens==="number" && Number.isFinite(tel.input_tokens))usage.prompt_tokens=tel.input_tokens;
           if(typeof tel.output_tokens==="number" && Number.isFinite(tel.output_tokens))usage.completion_tokens=tel.output_tokens;
+          const reads=cachedInputTokenCount(tel.input_tokens,tel.cached_input_tokens);
+          if(reads!==null)usage.cache_read_input_tokens=reads;
           if(usage.prompt_tokens!=null && usage.completion_tokens!=null)usage.total_tokens=usage.prompt_tokens+usage.completion_tokens;
           spans.push({id:this.stableId(key+"/span"),traceId,projectName,name:privacy.label(candidate.model),type:"llm",model:privacy.label(candidate.model),
             provider:candidate.provider,startTime,endTime,input,output,source:"experiment",usage,

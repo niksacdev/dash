@@ -335,7 +335,7 @@ test("a two-model run compares actual persisted judge and deterministic assessme
   const grader = { industry: "Manufacturing", category: "Traceability", threshold: .6 };
   const judgeId = bench.graders.save({ ...grader, name: "Evidence", type: "judge", judgeId: "a", criteria: "PRIVATE_RUBRIC_MARKER" }, local);
   const ruleId = bench.graders.save({ ...grader, name: "Cites lot", type: "contains", criteria: "712" }, []);
-  const runId = bench.start({ mode: "quick", candidateIds: ["a", "b"], approvedPromptId: approval.id, graderIds: [judgeId, ruleId] });
+  const runId = bench.start({ mode: "quick", candidateIds: ["a", "b"], approvedPromptId: approval.id, graderIds: [judgeId, ruleId], measureGraders: [{metric:approval.metrics[0],kind:"saved",graderId:judgeId}] });
   await present(bench.active).done;
   const detail = bench.detail(runId);
   assert.equal(detail.status, "completed");

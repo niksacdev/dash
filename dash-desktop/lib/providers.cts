@@ -2,7 +2,7 @@ import {loadSdkModel,type LoadedHandle} from "./lmstudio-load.cjs";
 import { checkInputBudget, invokeBudgeted, invokeJudge, invokePlanner } from "./token-budget.cjs";
 import { readProviderJson, parseProviderObject, providerChunks } from "./provider-response.cjs";
 import {httpGuidance, reportsTemplateFailure, templateAdvice} from "./provider-errors.cjs";
-import { ProviderFailure, ProviderPreflightError, ProviderRejectedError, isRecord, finite, errorText, isPositiveInteger, type LocalProvider, type LocalCandidate, type RuntimeInstance,
+import { ProviderFailure, ProviderPreflightError, ProviderRejectedError, isRecord, finite, errorText, isPositiveInteger, cachedInputTokenCount, reportedTokenCount, supportsScenarioCache, type LocalProvider, type LocalCandidate, type RuntimeInstance,
   type RuntimeInventory, type ModelLoadReceipt, type ModelCandidate, type InvokeOptions, type ChatTurn, type InferenceResult, type InferenceTelemetry } from "./runtime-types.cjs";
 export { checkInputBudget };
 
@@ -19,7 +19,6 @@ function entries(value: unknown): Record<string, unknown>[] {
 }
 const string = (value: unknown): string | null => typeof value === "string" ? value : null;
 const tokens = (value: unknown): number | null => isPositiveInteger(value) ? value : null;
-const count = (value: unknown): number | null => value === 0 ? 0 : tokens(value);
 function modelId(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 300) throw Error("Invalid model ID");
   return value;
@@ -230,7 +229,7 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
         ttft === null
           ? null
           : ttft * 1000,
-      input_tokens: finite(stats.input_tokens),
+      input_tokens: reportedTokenCount(stats.input_tokens),
       output_tokens: finite(stats.total_output_tokens),
       reasoning_tokens: finite(stats.reasoning_output_tokens),
       tokens_per_second: finite(stats.tokens_per_second),
@@ -245,7 +244,10 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
     },
   };
 }
-export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, strictSchema, onText, onCandidateUsage, apiKey, inputBudget, planning, onPlanningProgress, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
+export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, strictSchema, onText, onCandidateUsage, apiKey, sharedScenarioSystem, inputBudget, planning, onPlanningProgress, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
+  const explicitCache = candidate.provider === "compatible" && candidate.cacheScenarioInstructions === true;
+  if (explicitCache && !supportsScenarioCache(candidate.endpoint, candidate.model))
+    throw new ProviderPreflightError("Shared-instruction caching requires a supported Anthropic Claude model on the OpenRouter API.");
   if (inputBudget != null)
     return invokeBudgeted(candidate, messages, { inputBudget, maxTokens, signal, structured, onText, onCandidateUsage });
   if (judging && candidate.provider === "lmstudio")
@@ -255,6 +257,9 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
   if (structured && !strictSchema && candidate.provider === "lmstudio" && candidate.nativeChat && messages.length === 2 && messages[0].role === "system" && messages[1].role === "user")
     return nativeDataset(candidate, messages, signal, maxTokens);
   const native = candidate.provider === "ollama";
+  const system = messages[0];
+  const markSystem = explicitCache && sharedScenarioSystem?.trim() && system?.role === "system" &&
+    system.content === sharedScenarioSystem;
   const body = native
     ? {
         model: candidate.model,
@@ -268,7 +273,10 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
       }
     : {
         model: candidate.model,
-        messages,
+        messages: markSystem ? [
+          {role:"system", content:[{type:"text", text:system.content, cache_control:{type:"ephemeral"}}]},
+          ...messages.slice(1),
+        ] : messages,
         stream: true,
         ...(structured ? {response_format:{type:"json_schema", json_schema:{name:"case_output", schema:structured,...(strictSchema && {strict:true})}}} : {}),
         stream_options: { include_usage: true },
@@ -299,6 +307,7 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
     first: number | null = null,
     ended = false,
     inputTokens: number | null = null,
+    cachedInputTokens: number | null = null,
     outputTokens: number | null = null,
     bytes = 0;
   let timing: Pick<InferenceTelemetry, "load_ns" | "prompt_ns" | "generation_ns"> = {},
@@ -319,12 +328,14 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
       // Streaming errors may echo authorization headers, model inputs or provider internals.
       throw new ProviderFailure(reportsTemplateFailure(d.error) ? templateAdvice : "Model provider reported an error during generation. Check the server activity before starting another request.");
     }
+    const previousCache = cachedInputTokens;
     if (native && d.done === true) {
       ended = true;
       reportedFinishReason = string(d.done_reason) ?? null;
       finishReason = reportedFinishReason ?? "stop";
-      inputTokens = count(d.prompt_eval_count);
-      outputTokens = count(d.eval_count);
+      inputTokens = reportedTokenCount(d.prompt_eval_count);
+      cachedInputTokens = cachedInputTokenCount(inputTokens, d.prompt_eval_cached_count);
+      outputTokens = reportedTokenCount(d.eval_count);
       timing = {
         load_ns: finite(d.load_duration),
         prompt_ns: finite(d.prompt_eval_duration),
@@ -334,12 +345,22 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
     const choice = !native && Array.isArray(d.choices) && isRecord(d.choices[0]) ? d.choices[0] : null;
     if (choice && typeof choice.finish_reason === "string") finishReason = choice.finish_reason;
     if (!native && isRecord(d.usage)) {
-      inputTokens = count(d.usage.prompt_tokens) ?? inputTokens;
-      outputTokens = count(d.usage.completion_tokens) ?? outputTokens;
+      const statedInput = reportedTokenCount(d.usage.prompt_tokens);
+      // A stream can report input and output in separate usage frames. Invalidate a
+      // prefix count if a later frame replaces its denominator or rejects its value.
+      if ("prompt_tokens" in d.usage && statedInput !== inputTokens) cachedInputTokens = null;
+      inputTokens = statedInput ?? inputTokens;
+      const details = d.usage.prompt_tokens_details;
+      if (isRecord(details) && "cached_tokens" in details) {
+        const total = "prompt_tokens" in d.usage ? statedInput : inputTokens;
+        cachedInputTokens = cachedInputTokenCount(total, details.cached_tokens);
+      }
+      outputTokens = reportedTokenCount(d.usage.completion_tokens) ?? outputTokens;
     }
     if (onCandidateUsage && ((native && d.done===true) || (!native && isRecord(d.usage))) &&
         (inputTokens!==null || outputTokens!==null))
-      onCandidateUsage({...(inputTokens!==null && {inputTokens}),...(outputTokens!==null && {outputTokens})});
+      onCandidateUsage({...(inputTokens!==null && {inputTokens}), ...(outputTokens!==null && {outputTokens}),
+        ...((previousCache!==null || cachedInputTokens!==null) && {cachedInputTokens})});
     const delta = native ? d.message : choice?.delta;
     const chunk = isRecord(delta) ? delta.content : null;
     if (typeof chunk === "string" && chunk) {
@@ -383,6 +404,7 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
       latency_ms: Math.round(performance.now() - start),
       first_token_ms: first === null ? null : Math.round(first),
       input_tokens: inputTokens,
+      cached_input_tokens: cachedInputTokens,
       output_tokens: outputTokens,
       ...timing,
     },

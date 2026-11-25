@@ -10,6 +10,7 @@ import {measureGraderRequest} from "./lib/measure-graders.cjs";
 import { operatorProviderMessage } from "./lib/provider-errors.cjs";
 import { desktopFailure } from "./lib/desktop-errors.cjs";
 import { Bench } from "./lib/bench.cjs";
+import { scenarioCacheSupport } from "./lib/runtime-types.cjs";
 import { PromptGuide } from "./lib/prompt-guide.cjs";
 import { OpikExperiments } from "./lib/opik-experiments.cjs";
 import { confirmGraderPlan, designGraderPlan } from "./lib/grader-designer.cjs";
@@ -19,7 +20,7 @@ import { performance } from "./lib/performance.cjs";
 import { createDeviceSampler } from "./lib/device-stats.cjs";
 import { readPower } from "./lib/power.cjs";
 import { isRecord, type DatasetCase, type StartRun } from "./lib/run-types.cjs";
-import { graderRequiredEvidence, requireAssessmentEvidence, type GraderEvidence } from "./lib/grader-types.cjs";
+import { quickGradingReference, graderRequiredEvidence, requireAssessmentEvidence, type GraderEvidence } from "./lib/grader-types.cjs";
 
 const page = path.join(__dirname, "ui", "index.html");
 const pageUrl = pathToFileURL(page).href;
@@ -48,6 +49,7 @@ const startRequest=z.object({
   approvedPromptId:idSchema.nullish(),caseJudgeId:modelId.optional(),graderIds:z.array(idSchema).max(8).optional(),
   allowHostedDecision:z.boolean().optional(),animation:z.boolean().optional(),inputCap:tokenCap,outputCap:tokenCap,
   datasetScorer:z.enum(["scenario","selected-graders","exact-reference"]).nullish(),
+  inspectionOnly:z.literal(true).optional(),
   expectedAnswer:z.string().trim().min(1).max(12000).optional(),
   measureGraders:measureGraderRequest.optional(),
   outcomeRubric:z.object({type:z.enum(["opik","judge"]).optional(),judgeId:modelId,
@@ -98,6 +100,10 @@ function initialize():void {
   bind("saveDomainRole",value=>bench.workflow.saveRole(value));
   bind("savePlannerFallback",value=>bench.plannerSettings.save(value));
   bind("saveEndpoint",value=>bench.endpoints.save(value));
+  bind("openCacheGuide",async()=>{
+    try { await shell.openExternal(scenarioCacheSupport.guideUrl); }
+    catch { throw Error("DASH could not open the OpenRouter caching guide. Check your default browser."); }
+  });
   bind("designGraders",value=>designGraderPlan(bench,value,onStage));
   bind("confirmGraders",value=>confirmGraderPlan(bench,value));
   bind("listDecisionModels", (raw, protocol) => bench.graders.discoverDecisionModels(
@@ -111,6 +117,7 @@ function initialize():void {
   bind("quickGraderOptions",value=>bench.quickGraderOptions(identifier(value)));
   bind("previewQuickBudget",(value,candidates)=>bench.previewQuickBudget(identifier(value),z.array(modelId).max(2).parse(candidates)));
   bind("graderSamples",()=>bench.graders.recent());
+  bind("reviewSavedCase",value=>bench.reviewSavedCase(value));
   bind("assess",async value=>{
     if(isRecord(value) && "datasetId" in value)return bench.testGraderOnDatasetCase(value);
     const saved=caseAssessment.safeParse(value);
@@ -126,7 +133,7 @@ function initialize():void {
       const selected=bench.graders.get(grader);
       evidence=graderEvidence(manifest,row ?? {case_id:result.caseId},result,selected.type==="catalog",grader);
       if (manifest.mode==="quick" && graderRequiredEvidence(selected).includes("reference"))
-        evidence.reference=bench.quickExpectedAnswer(run);
+        evidence.reference=quickGradingReference(selected,bench.quickExpectedAnswer(run));
       graderId=grader;where={run,candidate:result.candidateId,caseId:result.caseId};
     } else {
       const sample=sampleAssessment.safeParse(value);

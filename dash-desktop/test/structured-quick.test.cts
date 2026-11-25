@@ -104,7 +104,7 @@ test("Quick approves editable source/schema once, sends both lanes the pinned co
   const {schemaReview:_historical,...historic}=approved;
   assert.equal(decodeApprovedPrompt(historic).schemaReview,undefined);
   const candidateIds=models.map(model=>model.id);
-  const start=(id:string)=>bench.start({mode:"quick",approvedPromptId:id,candidateIds});
+  const start=(id:string)=>bench.start({mode:"quick",inspectionOnly:true,approvedPromptId:id,candidateIds});
   const runId=start(approved.id);
   await present(bench.active).done;
   const run=bench.detail(runId);

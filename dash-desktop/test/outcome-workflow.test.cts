@@ -411,7 +411,10 @@ test("unwritten inspection policies are removed before the implementer sees the 
 test("planning estimates count cached input once and require verified pricing and usage", () => {
   const body={model:"gpt-4.1-mini-2025-04-14",service_tier:"default",
     usage:{prompt_tokens:100_000,prompt_tokens_details:{cached_tokens:40_000},completion_tokens:20_000}};
-  assert.deepEqual(hostedPlanningUsage(body),{inputTokens:100_000,outputTokens:20_000,estimatedCostUsd:0.06});
+  assert.deepEqual(hostedPlanningUsage(body),{inputTokens:100_000,outputTokens:20_000,cachedInputTokens:40_000,estimatedCostUsd:0.06});
+  const custom=hostedPlanningUsage({...body,model:"custom"});
+  assert.equal(custom.cachedInputTokens,40_000);
+  assert.equal(custom.estimatedCostUsd,null);
   for (const incomplete of [{...body,model:"custom"},{...body,service_tier:"priority"},
     {...body,usage:{prompt_tokens:100,completion_tokens:3}},{...body,usage:{...body.usage,prompt_tokens:1}}])
     assert.equal(hostedPlanningUsage(incomplete).estimatedCostUsd,null);
@@ -425,7 +428,7 @@ test("planning emits bounded numeric progress, measured timings and one terminal
   const run:PlannerAdapters["invoke"]=async(_candidate,_messages,options)=>{
     const reading={phase:"processing-prompt" as const,percent:20,content:"private source text"};
     options.onPlanningProgress?.(reading);
-    options.onPlanningProgress?.({...reading,inputTokens:37});
+    options.onPlanningProgress?.({...reading,inputTokens:37,cachedInputTokens:19});
     for(let n=0;n<30;n++)options.onPlanningProgress?.({phase:"generating",approximateOutputTokens:n});
     return inferenceReply('{"domain":"Manufacturing"}',{input_tokens:9,output_tokens:3,first_token_ms:41,provider_first_token_ms:32,tokens_per_second:22});
   };
@@ -442,6 +445,8 @@ test("planning emits bounded numeric progress, measured timings and one terminal
   assert.ok(typeof final.elapsedMs==="number" && final.elapsedMs>=0);
   assert.ok(typeof final.discoveryMs==="number" && final.discoveryMs>=0);
   assert.equal(final.progress,undefined);
+  assert.equal(events.find(e=>e.usage?.inputTokens===37)?.usage?.cachedInputTokens,19);
+  assert.equal(final.usage?.cachedInputTokens,undefined);
   assert.equal(final.usage?.inputTokens,9);
   assert.equal(final.usage?.outputTokens,3);
 });

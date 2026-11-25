@@ -34,6 +34,7 @@ export interface CompatibleCandidate extends CandidateIdentity {
   section: EndpointSection;
   endpoint: string;
   keyRequired: boolean;
+  cacheScenarioInstructions?: boolean;
   needsKey?: boolean;
 }
 export interface FixtureCandidate extends CandidateIdentity {
@@ -75,12 +76,14 @@ export interface TokenCheck {
 }
 export type CheckInputBudget = (request: TokenCheck) => Promise<TokenReceipt | null>;
 export type PlanningProgress =
-  | {phase:"processing-prompt";percent:number;inputTokens?:number}
+  | {phase:"processing-prompt";percent:number;inputTokens?:number;cachedInputTokens?:number|null}
   | {phase:"generating";approximateOutputTokens:number|null};
 export interface InvokeOptions {
   onPlanningProgress?: (progress:PlanningProgress) => void;
   onCandidateUsage?: (usage:CandidateUsage) => void;
   strictSchema?:boolean;
+  /** Run-owned instructions shared across cases, excluding authored case messages. */
+  sharedScenarioSystem?:string;
   signal: AbortSignal;
   structured?: OutputSchema | null;
   onText?: (text: string) => void;
@@ -94,6 +97,7 @@ export interface InferenceTelemetry {
   latency_ms: number;
   first_token_ms: number | null;
   input_tokens: number | null;
+  cached_input_tokens?: number | null;
   output_tokens: number | null;
   provider_first_token_ms?: number | null;
   reasoning_tokens?: number | null;
@@ -141,10 +145,35 @@ export function errorText(error: unknown): string {
 export function finite(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
+export function reportedTokenCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** Cache reads are a subset of the complete input for one provider request. */
+export function cachedInputTokenCount(input: unknown, cached: unknown): number | null {
+  const total = reportedTokenCount(input);
+  const reads = reportedTokenCount(cached);
+  return total !== null && reads !== null && reads <= total ? reads : null;
+}
+
 export function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+
+// OpenRouter documents these model families/versions and their minimum cacheable prefix lengths.
+export const scenarioCacheSupport = {
+  guideUrl: "https://openrouter.ai/docs/guides/best-practices/prompt-caching#anthropic-claude",
+  baseUrl: "https://openrouter.ai/api/v1",
+  models: ["claude-sonnet-4", "claude-sonnet-4.5", "claude-sonnet-4.6", "claude-sonnet-5", "claude-sonnet-5.5",
+    "claude-opus-4", "claude-opus-4.1", "claude-opus-4.5", "claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8",
+    "claude-opus-5", "claude-opus-5.5", "claude-haiku-4.5", "claude-haiku-5.5", "claude-fable-5", "claude-fable-5.1"]
+    .map(model => "anthropic/" + model),
+};
+
+export function supportsScenarioCache(endpoint: string, model: string): boolean {
+  return endpoint === scenarioCacheSupport.baseUrl && scenarioCacheSupport.models.includes(model);
+}
 
 export function isCandidate(value: unknown): value is Candidate {
   if (!isRecord(value) || typeof value.id !== "string" || typeof value.model !== "string") return false;
@@ -162,6 +191,7 @@ export function isCandidate(value: unknown): value is Candidate {
   if (value.kind !== "model") return false;
   if (value.provider === "lmstudio" || value.provider === "ollama") return true;
   return value.provider === "compatible" && typeof value.endpoint === "string" && typeof value.keyRequired === "boolean" &&
+    (value.cacheScenarioInstructions === undefined || typeof value.cacheScenarioInstructions === "boolean") &&
     (value.needsKey === undefined || typeof value.needsKey === "boolean") &&
     (value.section === "Frontier Labs" || value.section === "Fine-tuned" || value.section === "Hosted");
 }

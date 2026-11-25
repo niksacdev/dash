@@ -22,6 +22,8 @@ function isUsage(value:unknown):value is PlanningUsage {
   if (!value || typeof value !== "object") return false;
   const count = (n:unknown) => n === null || (typeof n === "number" && Number.isSafeInteger(n) && n >= 0);
   return "inputTokens" in value && count(value.inputTokens) && "outputTokens" in value && count(value.outputTokens) &&
+    (!("cachedInputTokens" in value) || (typeof value.cachedInputTokens==="number" && count(value.cachedInputTokens) &&
+      typeof value.inputTokens==="number" && value.cachedInputTokens<=value.inputTokens)) &&
     "estimatedCostUsd" in value && (value.estimatedCostUsd === null || (typeof value.estimatedCostUsd === "number" &&
     Number.isFinite(value.estimatedCostUsd) && value.estimatedCostUsd >= 0));
 }
@@ -85,6 +87,7 @@ const bridge:DashBridge = {
   cancelGuide: () => invoke("cancelGuide"),
   power: detailed => detailed===undefined ? invoke("power") : invoke("power",detailed),
   saveEndpoint: (request) => invoke("saveEndpoint", request),
+  openCacheGuide: () => invoke("openCacheGuide"),
   designGraders: (request) => invoke("designGraders", request),
   confirmGraders: (definitions) => invoke("confirmGraders", definitions),
   listDecisionModels: (baseUrl,protocol) => invoke("listDecisionModels",baseUrl,protocol),
@@ -96,6 +99,7 @@ const bridge:DashBridge = {
   setGeneralGraderDefault: (id,enabled) => invoke("setGeneralGraderDefault",id,enabled),
   quickGraderOptions: (id) => invoke("quickGraderOptions", id),
   previewQuickBudget: (id, models) => invoke("previewQuickBudget", id, models),
+  reviewSavedCase: request=>invoke("reviewSavedCase",request),
   assess: (request) => invoke("assess", request),
   diagnostics: (id) => invoke("diagnostics", id),
   opikExperimentStatus: (id) => invoke("opikExperimentStatus", id),
