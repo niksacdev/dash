@@ -49,7 +49,8 @@ test("a chat dataset can run against its own case rubric with no saved customer 
   assert.equal(saved.assessments[0].value,1,saved.assessments[0].reason);
   const [rubric]=saved.manifest.graders;
   assert.equal(rubric.type,"opik");
-  assert.equal(rubric.version,2);
+  assert.equal(rubric.version,3);
+  assert.match(rubric.criteria,/verified reference/);
   assert.match(present(rubric.opikEngine),/^opik-js@/);
   assert.equal(saved.assessments[0].evaluator,rubric.opikEngine);
   assert.ok(saved.report);

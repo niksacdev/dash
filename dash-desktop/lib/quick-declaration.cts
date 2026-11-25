@@ -1,5 +1,5 @@
 import {isRecord} from "./runtime-types.cjs";
-import {plannerFieldsSchema,schemaFromFields} from "./quick-structure.cjs";
+import {maxQuickOutputFields,plannerFieldsSchema,schemaFromFields,type IntervalEndpoint,type QuickOutputSchema} from "./quick-structure.cjs";
 
 const identifier=/^[A-Za-z][A-Za-z0-9_]{0,47}$/;
 
@@ -42,4 +42,69 @@ export function proposedOutputSchema(raw:unknown,keys:string[]|null) {
     if (!isRecord(field)) throw Error("Specify the type and nullability of "+name+".");
     return {name,type:field.type,nullable:field.nullable};
   }));
+}
+
+// An interval in the source can support many different tasks. Require wording that asks
+// the candidate to report the interval itself before changing any proposed field.
+function asksForInterval(instruction:string,subjects?:readonly string[]):boolean {
+  const request=/\b(?:report|state|give|provide|include|cite|extract|identify|capture|return|record|specify|list|show|contains?)\s+((?:[\w-]+\s+){0,6}?)(?:ranges?|intervals?|bounds|endpoints|limits|(?:min(?:imum)?|lower)\s+(?:and|&)\s+(?:max(?:imum)?|upper))\b(?!\s+(?:width|span|size|midpoint|average|count|maximum|minimum|threshold)\b)/gi;
+  for (const match of instruction.matchAll(request)) {
+    if (/\b(?:not|never)\s*$/i.test(instruction.slice(Math.max(0,match.index-12),match.index))) continue;
+    const modifiers=match[1].replace(/\b(?:lower\s+(?:and|&)\s+upper|min(?:imum)?\s+(?:and|&)\s+max(?:imum)?)\b/gi,"");
+    if (/\b(?:one|upper|lower|min(?:imum)?|max(?:imum)?|width|span|size|midpoint|average|count|of|within|outside|whether|against|from|using|above|below)\b/i.test(modifiers)) continue;
+    if (!subjects) return true;
+    const after=instruction.slice(match.index+match[0].length).match(/^\s+(?:for|of)\s+(?:the\s+)?([\w-]+)/i);
+    const named=(match[0]+" "+(after?.[1] ?? "")).toLowerCase().split(/[\W_]+/);
+    if (subjects.some(word=>named.includes(word))) return true;
+  }
+  return false;
+}
+
+function fieldWords(name:string):string[] {
+  return name.replace(/([a-z])([A-Z])/g,"$1_$2").toLowerCase().split("_");
+}
+function namesNumericInterval(name:string):boolean {
+  const words=fieldWords(name);
+  const lower=words.some(word=>["lower","min","minimum"].includes(word));
+  const upper=words.some(word=>["upper","max","maximum"].includes(word));
+  if (words.some(word=>["width","span","size","midpoint","mean","average","count","threshold","within","outside"].includes(word))) return false;
+  if (lower || upper) return lower && upper;
+  return words.some(word=>["range","interval","bounds","endpoints","limits"].includes(word));
+}
+
+export function alignIntervalProposal(proposed:QuickOutputSchema,declared:boolean,objective:string,measures:readonly string[]) {
+  const intervals=new Map<string,IntervalEndpoint>();
+  const task=objective.split(/\b(?:source|excerpt|example|record)\s*:/i,1)[0];
+  const singleBound=/\b(?:cite|state|report|give|return|provide|extract|include|identify|specify|show)\s+(?:(?:just|only|the|applicable|permitted|specified|drawing)\s+)*(?:(?:upper|lower|minimum|maximum)\s+(?:bound|limit|value|threshold)\b|(?:one[- ]sided\s+)?threshold\b|(?:range|interval)\s+(?:width|span|midpoint)\b)/i;
+  // A stale measure must not expand an operator's explicit one-sided task.
+  const requirements=[task,...measures];
+  if (!asksForInterval(task) && (singleBound.test(task) || !measures.some(line=>asksForInterval(line)))) return {schema:proposed,intervals};
+  const candidates=proposed.required.filter(name=>{
+    const property=proposed.properties[name].type;
+    const type=Array.isArray(property) ? property[0] : property;
+    return (type==="number" || type==="integer") && namesNumericInterval(name);
+  });
+  const fields=[];
+  let room=maxQuickOutputFields-proposed.required.length;
+  for (const [name,property] of Object.entries(proposed.properties)) {
+    const type=Array.isArray(property.type) ? property.type[0] : property.type;
+    const nullable=Array.isArray(property.type);
+    // A request for the pressure range cannot also establish a temperature interval.
+    const subjects=candidates.length>1 ? fieldWords(name).filter(word=>!/^(?:range|interval|bounds|endpoints|limits|min|max|lower|upper|minimum|maximum|and)$/.test(word)) : undefined;
+    if (!candidates.includes(name) || (subjects && !requirements.some(line=>asksForInterval(line,subjects)))) {
+      fields.push({name,type,nullable});
+      continue;
+    }
+    const lower=name+"_lower",upper=name+"_upper";
+    if (declared || room===0 || lower.length>48 || Object.hasOwn(proposed.properties,lower) || Object.hasOwn(proposed.properties,upper)) {
+      fields.push({name,type:"string",nullable});
+      intervals.set(name,"text");
+    } else {
+      fields.push({name:lower,type,nullable},{name:upper,type,nullable});
+      intervals.set(lower,"lower");
+      intervals.set(upper,"upper");
+      room--;
+    }
+  }
+  return {schema:intervals.size ? schemaFromFields(fields) : proposed,intervals};
 }

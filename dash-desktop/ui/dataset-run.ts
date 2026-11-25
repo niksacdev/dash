@@ -44,6 +44,11 @@ function datasetGraderEvidenceIssue(grader:UiGrader,options:UiGraderOptions|null
   if(setup)return setup;
   if (grader.type==="trajectory" || grader.requiredEvidence?.includes("trajectory"))
     return "This grader needs recorded agent actions. Use Test one output and supply the agent steps.";
+  if(inspectionDecisionRule(grader)){
+    const count=grader.ruleKey==="inspection-active-range" ? options?.inspectionRangeCount : options?.inspectionCaseCount;
+    if(count===undefined)return "Restart DASH to verify the inspection facts for this grader.";
+    return count<total ? grader.name+" has verified inspection facts for "+count+" of "+total+" cases. "+expectedAnswerHelp(grader) : "";
+  }
   if (!needsGraderReference(grader)) return "";
   const field=referenceFieldFor(grader);
   if (field && !options?.fieldCoverage) return "Restart DASH to check whether each expected answer contains the JSON field "+field+".";

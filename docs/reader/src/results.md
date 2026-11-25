@@ -1,14 +1,14 @@
 # Read scores and timings
 
-Open **Run history**, filter by industry if useful, and select **Run to inspect**. Use **Evaluation result** to see each candidate’s scores, then **Open run details** to find the case behind a number.
+Open **Run history** and select the run. **Responses and grader results** puts each saved answer beside the checks used on that case. Read the expected criterion, the score and the judge’s stated reason together. **Performance** follows the answers. The detailed correctness breakdown and response diagnostics come next.
 
 The **Traceability and Observability** slide uses a GAAP-versus-adjusted EPS mismatch as an example. Inspect the grader reason locally or [sync the run to Opik OSS](opik.md) to follow a case trace with latency, available token counts and grader scores.
 
 ## Follow a running evaluation
 
-In **Evaluation in progress**, each selected model has a labeled lane. During preflight both cars are parked. When DASH calls a candidate, its lane shows **Waiting for response**, then **Generating** when the provider reports output. **Scoring** names the active grader and its version. After DASH saves an answer the car parks while the next candidate runs. During report preparation the heading identifies the current step.
+In **Evaluation in progress**, each selected model has a labeled lane. **Waiting for response** means DASH has dispatched the request. **Generating** appears when that candidate returns output. **Scoring** names the active grader. One model can finish while another is still generating.
 
-On a Dataset run, each car’s position marks the number of case results saved for that candidate, including errors. In Quick compare the moving road indicates an open call with an unknown duration. **Answers received** counts successful responses. **Grader assessments recorded** includes unscored checks. The final report determines the verdict. During prompt preparation a provider may also report the percentage of the prompt it has read. Reduced-motion settings keep every label and measurement with the cars parked.
+On a Dataset run, the marker shows how many case results have been recorded for that candidate, including errors. Quick compare shows a brief movement when output arrives. An open request has no percentage. **Answers received** counts successful responses. **Grader assessments recorded** includes unscored checks. All labels and measurements are available with reduced motion.
 
 A live candidate can show **Input tokens** with the label **checked** when its local tokenizer measured the formatted prompt before dispatch. Quick compare and the active Dataset case show counts as the runtime reports them. The input total usually stays fixed for one request. A native LM Studio run can show a growing **≈** output count from its prediction fragments, including tokens spent on reasoning. Only the answer text is displayed. First visible output records the delay before answer text arrived. An endpoint that only supplies final usage leaves the running token count pending. Completed results use the provider’s final receipt. In **Run history**, the two token charts show per-model averages over the responses that reported each count. An unreported count stays out of its average.
 
@@ -16,7 +16,7 @@ A live candidate can show **Input tokens** with the label **checked** when its l
 
 In Quick compare, the report pairs each approved measure with the criterion and grader version used on both answers. Inspect the two scores, the corresponding outputs and the assessment evidence. For example, one earnings answer might give the correct GAAP EPS and omit the reporting period. A second might cite the period and use adjusted EPS. If these are separate pass/fail checks, the scores are 1 and 0 for the EPS check, and 0 and 1 for the period check. The verdict is mixed. Use a labeled dataset when you need a pass rate over many cases.
 
-Each parked car marks the measured score. In **Response diagnostics**, two cars at 100% on **Response present** mean that both models returned an answer. Their business grades appear separately. An unscored answer has no car. For a missing comparison, select **See why cases have no comparable score** to inspect the recorded reason for each candidate. A measured zero puts the car at the start. The report retains historical overall rubrics at the granularity at which DASH recorded them.
+A marker shows the measured score on a shared scale. Two markers at 100% on **Response present** mean that both models returned an answer. Their business grades appear separately. A zero has a marker at the origin. An unscored answer has no marker. Choose **See why cases have no comparable score** to inspect missing evidence.
 
 ## Grade saved answers
 
@@ -27,6 +27,16 @@ If a report says **Incomplete comparison**, open **Grade saved answers**. Choose
 3. Choose **Grade saved answers**. A model-based grader may use judge tokens. DASH reads the recorded candidate responses and saves each graded lane. See the scores under **Saved-answer reviews**.
 
 When every missing case has a complete review under the original rubric versions and the original decision rule can resolve the result, DASH shows a separate **Reviewed verdict**. A supplementary rubric, a judge abstention or a still-missing case cannot establish the original winner. If the decision server selected different model revisions for the two answers, both receipts stay visible. Make one revision available for both and grade the saved pair again. In a dataset, use the serving revision named above the grader for every outstanding case. DASH preserves cases already scored on that revision. A case with two scores from a different revision remains available for an explicit review. The original run, export and synchronized Opik experiment retain their recorded scores. If a lane has no completed answer, inspect its trace. A Dataset case can be rerun explicitly to generate a new response.
+
+## Challenge a completed verdict
+
+**Equal scores from the original graders** means those graders assigned equal scores. Read each pinned scoring rule and pass condition beside the saved answer. **Judge score** and **Recorded judge reason** show what the judge actually credited. **Pinned judge** names the configured evaluator. When a decision server reports its identity, **Serving judge** names the model that returned that score. A fallback also shows the requested model. A grader can give full credit for an incorrect decision. The expected answer indicator distinguishes a held-out answer from instructions or case facts contained in the task. For a Quick check that uses a private expected answer, read the full grading reason here. A JSON export carries its score and a local-only notice because the reason may quote the private answer.
+
+Choose **Challenge verdict** on the case. Select a different grader version, inspect its evidence requirements, then choose **Grade saved answers**. For the shipped Manufacturing inspection sample, DASH can use its versioned case facts to check the disposition independently. An unrelated inspection requires its own verified facts. The range check evaluates the active drawing revision, both endpoints and the observed reading. The disposition check evaluates the decision, required action and recheck status. You can apply both versions to the same pair. Each deterministic check uses no model tokens. A model-based check invokes its pinned evaluator after submission.
+
+The report shows the supplementary result and reason beside each answer. **Scored higher on this check** applies to that case and grader version. If the decision cannot be established, the check stays unscored. The original rubric grades, winner or tie, and Opik experiment retain their recorded values.
+
+A canceled or interrupted candidate may have saved a **Partial candidate output**. Inspect its case trace before requesting another response. For a historical provider failure, DASH shows the recoverable HTTP status or a short diagnostic and action.
 
 ## Explain a failed case
 
@@ -48,22 +58,24 @@ A winner requires complete scores on the same cases, a lead on at least one rubr
 
 ## Read device energy
 
-**Device energy (est.)** appears beside input and output tokens on candidate responses, in case telemetry, and in AI planning query details. For example, **12 J · 1.5 s sampled** means that the DASH host used an estimated 12 joules during 1.5 seconds covered by whole-device power readings. The observation window can include adapter preparation or a failed request. Other applications contribute to the reading. For a hosted request, the value covers your local device only. The provider’s server energy is unavailable.
+For a two-candidate run, both lanes share one host measurement window. It begins after preflight and covers both workers, including their graders, until they settle. Read the energy and sampled duration as a whole-device estimate for that interval. The host sensor cannot say how many joules Gemma or LFM3 consumed individually.
+
+For a single candidate or an AI planning query, **Device energy (est.)** can appear beside the request’s tokens. For example, **12 J · 1.5 s sampled** means that the DASH host used an estimated 12 joules during 1.5 seconds covered by whole-device power readings. The observation window can include adapter preparation or a failed request. Other applications contribute to the reading. For a hosted request, the value covers your local device only. The provider’s server energy is unavailable.
 
 DASH integrates successive power readings about one second apart. A sensor failure or a gap longer than three seconds breaks the interval. A single watt reading can show device power but cannot establish energy. A short planning query may finish before two readings arrive. **Pending** changes to the recorded estimate or **Unmeasured** when the observation ends. Older runs display any energy already recorded. Fixture replay supplies no inference measurements.
 
-Run history shows the mean energy per measured case and the number of measured cases. Compare the sampled durations along with the joules. The grader verdict depends on the approved success measures.
+Run history’s per-candidate energy averages use cases with a request-level measurement. A shared run reading contributes no per-candidate sample. Compare the sampled durations along with the joules. The grader verdict depends on the approved success measures.
 
 ## Find measured performance
 
 | Question | Where to look |
 | --- | --- |
 | How quickly does each candidate answer? | **Run history → Performance → Response latency** shows median and 95th percentile per response, alongside the measured count. |
-| How long did one call take? | **Open run details → Telemetry** shows case latency and time to first visible output when available. **Developer → Case telemetry** provides additional detail. |
+| How long did one call take? | **Open run details → Telemetry** shows request latency and time to first visible output when available. On a shared runtime, these times can include waiting for capacity. Two overlapping latencies cannot be added to calculate run duration. For an isolated timing baseline, repeat the same Dataset snapshot with one candidate per run. **Developer → Case telemetry** provides additional detail. |
 | How much work did the model do? | The report shows input and output tokens when supplied. Power reflects the whole DASH host during the call on supported devices. |
 | How long did preflight, all inference, judges and reporting take together? | DASH currently has no end-to-end elapsed-time chart or separate duration for each stage. Per-response latency alone cannot answer this question. |
 
-In **Performance**, each card uses a shared scale for the candidates shown. A car farther right on **Response latency** means the model took longer. On **Device energy (est.)**, it means more joules were measured on the host. The car's position describes the quantity in the card's units. **Pass rate across runs** uses the same 0–100% scale across run dates. In a Dataset run, choose a compatible **Saved baseline** to compare passed cases and false accepts. The two lanes use only cases measured on both sides. **Change in count** gives the current count minus the baseline count.
+In **Performance**, each card uses a shared scale for the candidates shown. A marker farther right on **Response latency** means the model took longer. On **Device energy (est.)**, it means more joules were measured on the host. Its position describes the quantity in the card's units. **Pass rate across runs** uses the same 0–100% scale across run dates. In a Dataset run, choose a compatible **Saved baseline** to compare passed cases and false accepts. The two lanes use only cases measured on both sides. **Change in count** gives the current count minus the baseline count.
 
 These charts use local records. A recorded-answer replay has no measured candidate inference timing. An unavailable sensor reading stays missing. To inspect the same run as experiments in Opik, [sync the saved run](opik.md).
 

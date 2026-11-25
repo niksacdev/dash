@@ -3,7 +3,7 @@ import * as path from "node:path";
 import {createHash} from "node:crypto";
 import {isDeepStrictEqual} from "node:util";
 import {validateCase} from "./evaluation-cases.cjs";
-import {jsonField as field,isRecord,isCaseRow,isScenarioPack,objectValue,stringValue,errorMessage,jsonText} from "./run-types.cjs";
+import {jsonField as field,isRecord,isCaseRow,isScenarioPack,objectValue,stringValue,errorMessage,jsonText,duplicateKey} from "./run-types.cjs";
 import type {ScoredPack,ScenarioPack,DatasetCase,CaseRow} from "./run-types.cjs";
 
 export const hash = (value:unknown) =>
@@ -35,24 +35,6 @@ function equal(pack:ScoredPack, key:string, actual:unknown, expected:unknown):bo
     );
   }
   return isDeepStrictEqual(actual, expected);
-}
-// JSON.parse retains only the last value for each key. Inspect valid JSON tokens
-// before discarding duplicates so an ambiguous record cannot pass the grader.
-function duplicateKey(text:string) {
-  const objects:Set<string>[] = [];
-  const tokens = /("(?:\\.|[^"\\])*")\s*(:)?|[{}]/g;
-  for (const match of text.matchAll(tokens)) {
-    if (match[0] === "{") objects.push(new Set());
-    else if (match[0] === "}") objects.pop();
-    else if (match[2]) {
-      const key = JSON.parse(match[1]);
-      const keys = objects.at(-1);
-      if(!keys) throw Error("Invalid JSON object");
-      if (keys.has(key)) return key;
-      keys.add(key);
-    }
-  }
-  return null;
 }
 export function grade(pack:ScoredPack, row:CaseRow, text:string) {
   const reasons = [];

@@ -1,5 +1,5 @@
 import {quickStarterFor} from "./domain-starters.cjs";
-import {declaredOutputKeys,declaredPlannerFields,proposedOutputSchema} from "./quick-declaration.cjs";
+import {alignIntervalProposal,declaredOutputKeys,declaredPlannerFields,proposedOutputSchema} from "./quick-declaration.cjs";
 import {decodeQuickOutputSchema, decodeQuickTaskInput, inputsFromTask, reviewProposedFields, plannerFieldNotesSchema, plannerFieldsSchema, plannerInputsSchema, type QuickOutputSchema, type QuickTaskInput} from "./quick-structure.cjs";
 import {randomUUID} from "node:crypto";
 import type {DatabaseSync} from "node:sqlite";
@@ -275,8 +275,11 @@ export class OutcomeWorkflow {
         implementerTask,
         structuredOutput ? objectSchema({...implementerSchema.properties,fields:declaredKeys ? declaredPlannerFields(declaredKeys) : plannerFieldsSchema,inputs:plannerInputsSchema,fieldNotes:plannerFieldNotesSchema}) : implementerSchema,
         structuredOutput ? 2200 : 650, result => {
-          const outputSchema = structuredOutput ? proposedOutputSchema(result.fields,declaredKeys) : undefined;
-          const schemaReview = outputSchema ? reviewProposedFields(outputSchema,result.fieldNotes,objective,!!declaredKeys) : undefined;
+          // Audit wording may contain held-out targets. Use it locally for field cardinality only.
+          const proposed=structuredOutput ? proposedOutputSchema(result.fields,declaredKeys) : undefined;
+          const contract=proposed ? alignIntervalProposal(proposed,!!declaredKeys,objective,[...metrics,...requirements]) : undefined;
+          const outputSchema=contract?.schema;
+          const schemaReview=contract ? reviewProposedFields(contract.schema,result.fieldNotes,objective,!!declaredKeys,contract.intervals) : undefined;
           const inputs = structuredOutput ? inputsFromTask(result.inputs,objective) : undefined;
           const generated=required(result?.prompt, "Implementer prompt", 1500);
           const withoutLabel=generated.replace(/^\s*(?:(?:business )?objective|business outcome)\s*:\s*/i,"");
@@ -285,6 +288,13 @@ export class OutcomeWorkflow {
           const prompt=repeatedObjective ? withoutLabel.slice(objective.length).replace(/^[\s.:;–—-]+/,"").trim() : generated;
           if (repeatedObjective && !prompt) return {outputSchema,inputs,schemaReview,text:"",omitted:1,reasons:["repeated operator objective"],
             reason:"The implementer repeated the original objective. DASH kept it unchanged."};
+          if (proposed && contract?.intervals.size) {
+            const names=new Set(prompt.match(/[A-Za-z][A-Za-z0-9_]*/g) ?? []);
+            const obsolete=proposed.required.some(name=>names.has(name) &&
+              (!Object.hasOwn(contract.schema.properties,name) || contract.intervals.get(name)==="text"));
+            if (obsolete) return {outputSchema,inputs,schemaReview,text:"",omitted:1,reasons:["instruction referenced a replaced numeric interval field"],
+              reason:"DASH kept the original task and omitted an added instruction for the earlier numeric interval proposal."};
+          }
           if (new Set(tokens(prompt)).size < 3) throw Error("the implementer returned an incomplete instruction");
           const sources=[implementer.instructions,promptAsset("workflow-implementer").instructions,promptAsset("workflow-implementer-assignment").instructions];
           const sentences=prompt.split(/(?<=[.!?])\s+|[;\r\n]+/).map(line=>line.trim()).filter(Boolean);

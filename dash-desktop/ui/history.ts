@@ -95,7 +95,7 @@ function historyTrend(s: UiPerformance) {
 }
 let historyIndustry="All industries";
 const runIndustry=(r: UiRunSummary)=>r.industry || state.datasets.find(d=>d.id===r.datasetId)?.metadata?.industry || "Unclassified";
-async function historyPage(key?: string) {
+async function historyPage(key:string|undefined, seq:number) {
   const selector='<label class="field"><span>Industry</span><select id="history-industry">'+industryOptions(historyIndustry,true)+'</select></label>';
   const runs=state.runs.filter(r=>historyIndustry==="All industries" || runIndustry(r)===historyIndustry);
   if(!runs.length)return heading("Workbench","Run history")+selector+'<div class="panel">'+historyList(runs)+'</div>';
@@ -104,6 +104,8 @@ async function historyPage(key?: string) {
   try {saved=await api.detail(selectedRun.id);}
   catch(error){return heading("Workbench","Run history")+selector+readFailure("Couldn’t open the selected run",error,"Retry run details")+bar("Saved runs")+'<div class="panel">'+historyList(runs)+'</div>';}
   const s=await runPerformance(selectedRun.id,saved);
+  if (seq!==token) return "";
+  current=saved;
   const report = saved.report;
   s.packKind=saved.manifest.pack?.kind;
   const ds=state.datasets.find(d=>d.id===s.datasetId);
@@ -119,9 +121,11 @@ async function historyPage(key?: string) {
       (unconfirmed?' · '+unconfirmed+' without a confirmed final response':'')+
       ' · '+errors+' runtime '+(errors===1?"error":"errors")+'</p>'+
     (s.fixture?'<small>Saved answers exercise the grader. Timing and token usage apply to live model runs.</small>':'')+'</section>'+
+    (saved.status==="running" || saved.status==="queued" ? "" : responseComparison(saved))+
+    bar("Performance")+sharedPowerMeasurement(saved.manifest,saved.status==="running" || saved.status==="queued")+performanceCharts(s)+
     (report && !s.fixture ? '<section class="panel history-report"><h3>Evaluation result</h3><p>'+esc(report.summary)+'</p>'+
       reportMetricGroups(report.metrics.map((metric,index)=>({metric,index})),report,s.id,true)+'</section>':'')+
-    (await opikExperimentPanel(saved))+bar("Performance")+performanceCharts(s)+historyTrend(s)+bar("Saved runs")+'<div class="panel">'+historyList(runs)+'</div>';
+    (isReportChallenge(saved)?reportRecovery(saved):"")+(await opikExperimentPanel(saved))+historyTrend(s)+bar("Saved runs")+'<div class="panel">'+historyList(runs)+'</div>';
 }
 
 document.addEventListener("change", e=>{if(e.target instanceof HTMLSelectElement && e.target.id==="history-industry"){historyIndustry=e.target.value; render();}});

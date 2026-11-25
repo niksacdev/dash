@@ -3,6 +3,8 @@ import type {ApprovedPrompt} from "./outcome-workflow.cjs";
 import type {GraderDefinition,GraderSpec} from "./grader-types.cjs";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 
+export const rubricEvidenceInstruction = "For a factual decision, establish the expected result from the supplied case facts or verified reference. Only the candidate output establishes what the candidate said or did. Do not credit a fact found only in the task, reference or rubric. In the reason, state the expected detail and quote the decisive words or value from the candidate, or name the missing detail.";
+
 const metricText=z.string().min(1).max(2000);
 export const measureGraderRequest=z.array(z.discriminatedUnion("kind",[
   z.strictObject({metric:metricText,kind:z.literal("skip")}),
@@ -36,8 +38,8 @@ export function measureOptions(approved:ApprovedPrompt,preferredJudge:string|nul
       name:metric.slice(0,100),category:"Approved measure",industry:approved.domain,type:"opik",judgeId:preferredJudge,threshold:1,
       ...(audit?.evidenceBasis!=="task-answer" && {requiredEvidence:["reference"]}),
       criteria:["Success measure: "+metric,"Per-answer success criterion: "+criterion,
-        "Score this criterion alone. The criterion states the test. Evidence of what the candidate did must come from its answer.",
-        "Full credit (10) when the answer satisfies the criterion. Zero credit (0) when it fails. Use only 0 or 10 and cite the decisive detail."].join("\n"),
+        rubricEvidenceInstruction,
+        "Score this measure alone. Full credit (10) requires every requested element to be present and correct. Zero credit (0) if any required element is missing, contradicted or wrong. A correct field elsewhere cannot offset a wrong decision. Use only 0 or 10."].join("\n"),
     };
     return {metric,criterion,generated,reason:null};
   });

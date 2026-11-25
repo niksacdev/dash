@@ -598,15 +598,30 @@ function usageLabels(row:UiResult|undefined,checked:number|undefined,running:boo
   const cached=cachedInputLabel(row?.telemetry?.cached_input_tokens ?? usage?.cachedInputTokens,running);
   return {input,cached,produced,first:usage?.firstTokenMs!=null?" · First visible output "+planningSeconds(usage.firstTokenMs):""};
 }
-function responseTokenUsage(row:UiResult|undefined,checked:number|undefined,running:boolean,provider:string,usage?:CandidateUsage) {
-  const {input,cached,produced,first}=usageLabels(row,checked,running,running ? usage : undefined);
-  return '<p class="muted response-token-usage"'+(running?' data-current-usage':'')+'>Input tokens <strong data-input-count>'+esc(input)+
-    '</strong> · <span title="'+cacheUsageHint+'">Cached input tokens <strong data-cached-input>'+esc(cached)+'</strong></span> · Output tokens <strong data-output-count>' +esc(produced)+'</strong><span data-first-output>'+esc(first)+'</span> · Device energy (est.) <strong>'+
-    deviceEnergyReading(row?.telemetry?.device_power,provider,running)+'</strong></p>';
+function responseTokenUsage(row:UiResult|undefined,part:UiLanePartial|undefined,running:boolean,provider:string,sharedPower:boolean) {
+  const {input,cached,produced,first}=usageLabels(row,part?.checkedInputTokens,running,running ? part?.usage : undefined);
+  const energy=sharedPower ? "" : ' · Device energy (est.) <strong>'+deviceEnergyReading(row?.telemetry?.device_power,provider,running)+'</strong>';
+  return '<p class="muted response-token-usage"'+(running && part?' data-current-usage="'+esc(part.candidateId)+'"':'')+'>Input tokens <strong data-input-count>'+esc(input)+
+    '</strong> · <span title="'+cacheUsageHint+'">Cached input tokens <strong data-cached-input>'+esc(cached)+'</strong></span> · Output tokens <strong data-output-count>'+esc(produced)+'</strong><span data-first-output>'+esc(first)+'</span>'+energy+'</p>';
+}
+function sharedPowerMeasurement(m:UiManifest,live:boolean) {
+  if(m.executionMode!=="parallel-lanes")return "";
+  const power=m.sharedDevicePower;
+  return '<p class="muted" data-shared-device-power>Whole-device energy (est.) <strong>'+deviceEnergyReading(power,undefined,live)+'</strong>'+
+    (power?.average_w!=null?' · Average power <strong>'+esc(developerMetric(power.average_w," W"))+'</strong>':'')+
+    ' · Covers both lanes and grading on the DASH device.</p>';
+}
+function activeRunPartials(run:UiRunDetail):UiLanePartial[] {
+  if (run.liveLaneProgressVersion===1 && Array.isArray(run.candidatePartials))return run.candidatePartials;
+  const part=run.partial;
+  return part && typeof part.candidateId==="string" && typeof part.caseId==="string" && !part.stage ?
+    [{...part,candidateId:part.candidateId,caseId:part.caseId}] : [];
 }
 function executionProgress(run:UiRunDetail) {
-  const {manifest,partial}=run;
-  const candidate=manifest.candidates.find(c=>c.id===partial?.candidateId);
+  const {manifest}=run;
+  const active=activeRunPartials(run);
+  const part=active[0];
+  const candidate=manifest.candidates.find(c=>c.id===part?.candidateId);
   const saved=run.results.filter(r=>r.dispatchState!=="pending");
   const answers=saved.filter(r=>!r.dispatchState && !r.error && !!r.output?.trim()).length;
   const issues=saved.length-answers;
@@ -614,11 +629,12 @@ function executionProgress(run:UiRunDetail) {
   const total=manifest.candidates.length*manifest.caseIds.length;
   const estimates=total*manifest.graders.length;
   let activity=run.status==="queued" ? "Waiting to start" : "Checking model token budgets";
-  if (manifest.fixture && !partial) activity="Preparing recorded answers";
-  if (partial?.stage) activity="Preparing the evaluation report · "+partial.stage;
-  else if (candidate && partial?.grading) activity="Scoring "+displayModel(candidate.model)+" · "+partial.grading.name+" v"+partial.grading.version;
-  else if (candidate) activity=saved.some(r=>r.candidateId===candidate.id && r.caseId===partial?.caseId)
-    ? "Recording the result for "+displayModel(candidate.model) : displayModel(candidate.model)+(manifest.mode==="dataset" && partial?.caseId ? " · "+partial.caseId : " · Candidate response");
+  if (manifest.fixture && !part) activity="Preparing recorded answers";
+  if (run.partial?.stage) activity="Preparing the evaluation report · "+run.partial.stage;
+  else if (active.length>1) activity=active.length+" candidate lanes active";
+  else if (candidate && part?.grading) activity="Scoring "+displayModel(candidate.model)+" · "+part.grading.name+" v"+part.grading.version;
+  else if (candidate) activity=saved.some(r=>r.candidateId===candidate.id && r.caseId===part?.caseId)
+    ? "Recording the result for "+displayModel(candidate.model) : displayModel(candidate.model)+(manifest.mode==="dataset" && part?.caseId ? " · "+part.caseId : " · Candidate response");
   return '<section class="run-activity" aria-label="Evaluation progress"><h2>Evaluation in progress</h2><p role="status">'+esc(activity)+'</p>'+
     candidateRace(run)+'<div class="run-activity-counts"><div><strong>'+esc(answers)+' / '+esc(total)+'</strong><span>Answers received</span>'+
     (issues ? '<small>'+esc(issues)+' interrupted or failed</small>' : '')+'</div>'+
@@ -657,7 +673,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
       '</div><div class="panel"><h3>' + (r.dispatchState ? "Partial candidate output" : "Candidate output") + '</h3><pre>' +
       esc(r.output ?? (r.dispatchState ? "No response text was observed." : r.error)) +
       "</pre>" +
-      (!m.fixture && !m.approvedPrompt ? responseTokenUsage(r,undefined,false,m.candidates.find(c=>c.id===r.candidateId)?.provider ?? "") : "") +
+      (!m.fixture && !m.approvedPrompt ? responseTokenUsage(r,undefined,false,m.candidates.find(c=>c.id===r.candidateId)?.provider ?? "",m.executionMode==="parallel-lanes") : "") +
       (r.error ? box(observationLabel(r) ?? "Runtime error", r.error) : "") +
       (r.gradingError ? '<p class="note">'+esc(r.gradingError)+'</p>' : "") +
       (r.score ? box("Score explanation", r.score) : "") +
@@ -686,31 +702,37 @@ async function runPage(id:string, record:string|undefined, seq:number) {
   if (live && !m.fixture && run.liveUsageVersion!==1)
     out+='<p class="muted">This runner reports token usage when a response finishes. Quit and reopen DASH for live provider counts.</p>';
   if (m.error) out += '<div class="wf-error spacer" role="alert">' + esc(m.error) + "</div>";
-  if (live && !m.fixture && m.mode==="dataset" && run.partial?.candidateId && !run.partial.grading) {
-    const {candidateId,caseId,checkedInputTokens}=run.partial;
-    const candidate=m.candidates.find(c=>c.id===candidateId);
-    const saved=run.results.find(r=>r.candidateId===candidateId && r.caseId===caseId);
+  const partials=activeRunPartials(run);
+  const sharedPower=m.executionMode==="parallel-lanes";
+  if (live) out+=sharedPowerMeasurement(m,true);
+  if (live && !m.fixture && m.mode==="dataset") for(const part of partials) {
+    if(part.grading)continue;
+    const candidate=m.candidates.find(c=>c.id===part.candidateId);
+    const saved=run.results.find(r=>r.candidateId===part.candidateId && r.caseId===part.caseId);
     if (candidate && (!saved || saved.dispatchState==="pending")) out+='<p class="muted">'+esc(displayModel(candidate.model))+
-      ' · '+esc(caseId)+'</p>'+responseTokenUsage(saved,checkedInputTokens,true,candidate.provider,run.partial.usage);
+      ' · '+esc(part.caseId)+'</p>'+responseTokenUsage(saved,part,true,candidate.provider,sharedPower);
   }
   if (m.guardrailFailure) out += guardrailDetails(m.guardrailFailure);
-  if (!live) out += evaluationReport(run);
-  if (!live) out += structuredOutputSummary(run);
+  if (!live) {
+    out += responseComparison(run) + bar("Performance") + sharedPowerMeasurement(m,false) +
+      performanceCharts(await runPerformance(id, run)) + evaluationReport(run) + structuredOutputSummary(run);
+  }
   out += workflowRunSummary(m, run.status);
-  if (!live) out += bar("Performance") + performanceCharts(await runPerformance(id, run));
   if (m.fixture) out += '<p class="muted">These results show how the grader handled saved answers. Choose models in Dataset run to evaluate the saved cases live.</p>';
   if (m.mode === "quick") {
     out +=
       '<div class="panel spacer">' +
       box("Shared prompt", m.prompt) +
-      "</div>" +
-      bar("Responses") +
+      "</div>";
+    if (live) out += bar("Responses") +
       '<div class="responses">' +
       m.candidates
         .map((c) => {
           const i = run.results.findIndex((r) => r.candidateId === c.id),
             r = run.results[i];
-          const part = run.partial?.candidateId === c.id ? run.partial : null;
+          const part = partials.find(p=>p.candidateId===c.id);
+          const streaming=live && !!part && !part.grading && (!r || r.dispatchState==="pending");
+          const answer=streaming ? part?.text || r?.output : r?.output;
           return (
             '<article class="panel"><h3>' +
             esc(c.model) +
@@ -718,13 +740,12 @@ async function runPage(id:string, record:string|undefined, seq:number) {
             esc(c.provider) +
             '</small><pre data-live-candidate="' + esc(c.id) + '">' +
             esc(
-              r?.output ||
+              answer ||
                 r?.error ||
-                part?.text ||
                 (live ? "Waiting…" : "No response"),
             ) +
             "</pre>" +
-            (r || part ? responseTokenUsage(r,part?.checkedInputTokens,live && (!r || r.dispatchState==="pending"),c.provider,part?.usage) : "")+
+            (r || part ? responseTokenUsage(r,part,streaming,c.provider,sharedPower) : "")+
             (r && observationLabel(r) ? tag(observationLabel(r) ?? "") : "") +
             (r ? link("Inspect trace", "run/" + id + "/" + i, "link") : "") +
             "</article>"
@@ -781,7 +802,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
       "</div>";
     if (!live && m.pack?.kind !== "reference") out += await paired(run);
   }
-  if(run.assessments?.length)out+=bar("Grader evaluations")+'<div class="panel">'+scoreRows(run.assessments)+"</div>";
+  if(live && run.assessments?.length)out+=bar("Grader evaluations")+'<div class="panel">'+scoreRows(run.assessments)+"</div>";
   if (!m.fixture)
     out +=
       bar("Telemetry") +
@@ -821,48 +842,74 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     "</pre></details>"
   );
 }
-function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.partial?.text?.length ?? 0, failures=0) {
+function updateLaneStream(part:UiLanePartial,cursor:UiLaneCursor,update:UiLaneUpdate) {
+  const id=CSS.escape(part.candidateId);
+  let outputObserved=!!update.text;
+  if(update.usage) {
+    const previous=part.usage;
+    part.usage=update.usage;cursor.usageRevision=update.usage.revision;
+    outputObserved ||= (update.usage.firstTokenMs!=null && previous?.firstTokenMs==null) ||
+      (update.usage.outputTokens ?? 0)>(previous?.outputTokens ?? 0) ||
+      (update.usage.approximateOutputTokens ?? 0)>(previous?.approximateOutputTokens ?? 0);
+    const slot=document.querySelector<HTMLElement>('[data-current-usage="'+id+'"]');
+    if(slot) {
+      const labels=usageLabels(undefined,part.checkedInputTokens,true,update.usage);
+      requireElement("[data-input-count]",HTMLElement,slot).textContent=labels.input;
+      requireElement("[data-cached-input]",HTMLElement,slot).textContent=labels.cached;
+      requireElement("[data-output-count]",HTMLElement,slot).textContent=labels.produced;
+      requireElement("[data-first-output]",HTMLElement,slot).textContent=labels.first;
+    }
+  }
+  if(update.text) {
+    const field=document.querySelector<HTMLElement>('[data-live-candidate="'+id+'"]');
+    if(!field)return false;
+    if(cursor.offset && field.firstChild instanceof Text)field.firstChild.appendData(update.text);
+    else field.textContent=update.text;
+    cursor.offset+=update.text.length;
+  }
+  if(outputObserved)showGenerating(part.candidateId);
+  return true;
+}
+function pollRunProgress(seq:number,id:string,run:UiRunDetail) {
   const revision=run.liveRevision;
-  if (revision==null || typeof api.runProgress!=="function") {
+  const multiLane=run.liveLaneProgressVersion===1;
+  if(revision==null || (multiLane ? typeof api.runLaneProgress : typeof api.runProgress)!=="function") {
     poll=window.setTimeout(()=>{if(seq===token)void render();},2000);return;
   }
-  poll=window.setTimeout(async () => {
-    try {
-      const update=run.liveUsageVersion===1 ? await api.runProgress(id,revision,offset,run.partial?.usage?.revision ?? 0) :
-        await api.runProgress(id,revision,offset);
-      if (seq!==token) return;
-      document.getElementById("live-read-status")?.replaceChildren();
-      document.querySelector(".candidate-race[data-stale]")?.removeAttribute("data-stale");
-      if (update.kind==="refresh") { await render(); return; }
-      if (update.usage && run.partial) {
-        run.partial.usage=update.usage;
-        if (run.partial.candidateId && receivedCandidateOutput(undefined,update.usage)) showGenerating(run.partial.candidateId);
-        const slot=document.querySelector<HTMLElement>("[data-current-usage]");
-        if (slot) {
-          const labels=usageLabels(undefined,run.partial.checkedInputTokens,true,update.usage);
-          requireElement("[data-input-count]",HTMLElement,slot).textContent=labels.input;
-          requireElement("[data-cached-input]",HTMLElement,slot).textContent=labels.cached;
-          requireElement("[data-output-count]",HTMLElement,slot).textContent=labels.produced;
-          requireElement("[data-first-output]",HTMLElement,slot).textContent=labels.first;
+  const parts=activeRunPartials(run);
+  const cursors=parts.map(part=>({candidateId:part.candidateId,caseId:part.caseId,offset:part.text?.length ?? 0,usageRevision:part.usage?.revision ?? 0}));
+  async function readProgress(revision:number):Promise<UiLaneProgress> {
+    if(multiLane)return api.runLaneProgress(id,revision,cursors);
+    const cursor=cursors[0];
+    const update=run.liveUsageVersion===1 ? await api.runProgress(id,revision,cursor?.offset ?? 0,cursor?.usageRevision ?? 0) :
+      await api.runProgress(id,revision,cursor?.offset ?? 0);
+    if(update.kind==="refresh" || (update.kind==="append" && update.candidateId!==cursor?.candidateId))return {kind:"refresh"};
+    return {kind:"lanes",updates:cursor && (update.kind==="append" || update.usage) ?
+      [{candidateId:cursor.candidateId,caseId:cursor.caseId,...(update.kind==="append" && {text:update.text}),usage:update.usage}] : []};
+  }
+  const schedule=(failures=0)=>{
+    poll=window.setTimeout(async()=>{
+      try {
+        const update=await readProgress(revision);
+        if(seq!==token)return;
+        document.getElementById("live-read-status")?.replaceChildren();
+        document.querySelector(".candidate-race[data-stale]")?.removeAttribute("data-stale");
+        if(update.kind==="refresh"){await render();return;}
+        for(const delta of update.updates) {
+          const index=cursors.findIndex(p=>p.candidateId===delta.candidateId && p.caseId===delta.caseId);
+          if(index<0 || !updateLaneStream(parts[index],cursors[index],delta)){await render();return;}
         }
+        schedule();
+      } catch (e) {
+        if(seq!==token)return;
+        document.querySelector(".candidate-race")?.setAttribute("data-stale","true");
+        const slot=document.getElementById("live-read-status");
+        if(slot && !slot.firstElementChild)slot.innerHTML=readFailure("Live updates paused. Showing the last received result.",e,"Refresh run");
+        if(failures<3)schedule(failures+1);
       }
-      if (update.kind==="append") {
-        const field=document.querySelector<HTMLElement>('[data-live-candidate="'+CSS.escape(update.candidateId)+'"]');
-        if (!field || !run.partial || run.partial.candidateId!==update.candidateId) { await render(); return; }
-        if (offset && field.firstChild instanceof Text) field.firstChild.appendData(update.text);
-        else field.textContent=update.text;
-        if (update.text) showGenerating(update.candidateId);
-        offset+=update.text.length;
-      }
-      pollRunProgress(seq,id,run,offset);
-    } catch (e) {
-      if(seq!==token)return;
-      document.querySelector(".candidate-race")?.setAttribute("data-stale","true");
-      const slot=document.getElementById("live-read-status");
-      if(slot && !slot.firstElementChild)slot.innerHTML=readFailure("Live updates paused. Showing the last received result.",e,"Refresh run");
-      if(failures<3)pollRunProgress(seq,id,run,offset,failures+1);
-    }
-  },failures ? 1000 * 2**(failures-1) : 220);
+    },failures ? 1000 * 2**(failures-1) : 220);
+  };
+  schedule();
 }
 let renderedLocation:string|null=null;
 async function render(discardEdits=false) {
@@ -960,7 +1007,7 @@ async function render(discardEdits=false) {
         html = providersPage();
         break;
       case "history":
-        html = await historyPage(id);
+        html = await historyPage(id,seq);
         break;
       case "run":
         html = await runPage(id, rec, seq);

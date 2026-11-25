@@ -320,7 +320,7 @@ test("the earnings brief keeps aggregate gaps separate from an anchored task rub
   t.after(()=>b.db.close());b.servers=inv;
   const ds=present(b.list().datasets.find(d=>d.pack==="earnings"));
   const plan=await designGraderPlan(b,{datasetId:ds.id,objective,metrics:metric});
-  assert.equal(requests,3);assert.equal(plan.agent.version,5);
+  assert.equal(requests,3);assert.equal(plan.agent.version,6);
   assert.deepEqual(plan.gaps,[{measure:metric,reason:"The denominator across all releases is unavailable."}]);
   const rule=present(plan.checks[0]);
   assert.equal(rule.type,"opik");assert.equal(rule.evidenceView,"case");

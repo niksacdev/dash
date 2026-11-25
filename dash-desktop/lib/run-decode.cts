@@ -24,7 +24,8 @@ const candidate=z.preprocess(v=>{
   if(v && typeof v==="object" && !("kind" in v))return {...v,kind:"provider" in v && v.provider==="fixture"?"fixture":"model"};
   return v;
 },z.custom<Candidate>(isCandidate));
-const manifest=z.object({format:num,id:str,created:str,title:str,mode:z.enum(["quick","dataset"]),fixture:z.boolean(),
+const devicePowerSummary=z.object({scope:z.literal("Whole device"),source:nullable,samples:num.int().nonnegative(),average_w:n,peak_w:n,sampled_seconds:num.nonnegative(),estimated_energy_j:n});
+const manifest=z.object({executionMode:z.enum(["single-lane","parallel-lanes"]).optional(),sharedDevicePower:devicePowerSummary.optional(),format:num,id:str,created:str,title:str,mode:z.enum(["quick","dataset"]),fixture:z.boolean(),
   candidates:z.array(candidate),caseIds:z.array(str),pack:z.custom<ScenarioPack>(isScenarioPack).nullable(),
   graders:z.array(z.unknown().transform(decodeGraderSpec)).default([]),approvedPrompt:z.unknown().transform(v=>v==null?v:decodeApprovedPrompt(v)).optional(),
   inspectionOnly:z.literal(true).optional(),measureGraders:z.array(pinnedMeasure).max(8).optional(),taskAnswerDecisionGraderIds:z.array(z.string().min(1)).optional(),
@@ -49,7 +50,7 @@ const telemetry=z.object({
   return {...rest,cached_input_tokens:cachedInputTokenCount(rest.input_tokens,cached_input_tokens)};
 });
 export type StoredPower=z.infer<typeof power>;
-const result=z.object({candidateId:str,caseId:str,output:nullable,error:nullable,gradingError:str.optional(),
+const result=z.object({finalizedIndex:num.int().nonnegative().optional(),candidateId:str,caseId:str,output:nullable,error:nullable,gradingError:str.optional(),
   structuredOutputCheck:z.object({valid:z.boolean(),message:str}).optional(),
   trace:z.object({id:str,runId:str,candidateId:str,caseId:str,started:str,finished:str.optional(),
     steps:z.array(z.object({at:str,action:str,guardrail:guardrail.optional()}).passthrough())}).passthrough(),

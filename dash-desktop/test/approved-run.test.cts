@@ -153,7 +153,8 @@ test("live polling sends only new Quick text or a changed run revision", async t
   const hold=new Promise<void>(resolve=>{release=resolve;});
   const invoke=bench.adapters.invoke;
   bench.adapters.invoke=async(candidate,messages,options)=>{
-    if (candidate.id===ids[0]) {enter(options);await hold;}
+    if (candidate.id===ids[0]) enter(options);
+    await hold;
     return invoke(candidate,messages,options);
   };
   const id=bench.start({mode:"quick",inspectionOnly:true,candidateIds:ids,approvedPromptId:approved.id});
@@ -163,6 +164,8 @@ test("live polling sends only new Quick text or a changed run revision", async t
     const live=bench.detail(id),revision=present(live.liveRevision);
     assert.ok(live.partial && "candidateId" in live.partial);
     assert.equal(live.partial.checkedInputTokens,43);
+    assert.deepEqual(live.candidatePartials?.map(lane=>lane.candidateId),ids);
+    const cursors=present(live.candidatePartials).map(lane=>({candidateId:lane.candidateId,caseId:lane.caseId,offset:0,usageRevision:0}));
     const extra={inputTokens:43,cachedInputTokens:27,firstTokenMs:NaN,outputTokens:-1,unrelated:"PRIVATE_RUNTIME_FRAGMENT"};
     options.onCandidateUsage?.(extra);
     const sample={inputTokens:43,cachedInputTokens:27,revision:1};
@@ -174,6 +177,9 @@ test("live polling sends only new Quick text or a changed run revision", async t
     options.onText?.("partial");
     assert.deepEqual(bench.runProgress(id,revision,0,1),{kind:"append",candidateId:ids[0],text:"partial",usage:{...sample,revision:2,approximateOutputTokens:4}});
     assert.deepEqual(bench.runProgress(id,revision,0),{kind:"append",candidateId:ids[0],text:"partial"});
+    assert.deepEqual(bench.runLaneProgress(id,revision,cursors),{kind:"lanes",updates:[{candidateId:ids[0],caseId:cursors[0].caseId,
+      text:"partial",usage:{...sample,revision:2,approximateOutputTokens:4}}]});
+    assert.deepEqual(bench.runLaneProgress(id,revision,[cursors[0],cursors[0]]),{kind:"refresh"});
     assert.deepEqual(bench.runProgress(id,revision,7),{kind:"unchanged"});
     options.onCandidateUsage?.({approximateOutputTokens:null});
     assert.deepEqual(bench.runProgress(id,revision,7,2),{kind:"unchanged",usage:{...sample,revision:3}});
@@ -202,8 +208,9 @@ test("Quick progress identifies the pinned grader while its score is pending",as
   const reached=new Promise<void>(resolve=>{enter=resolve;});
   const hold=new Promise<void>(resolve=>{release=resolve;});
   const assess=bench.graders.assess.bind(bench.graders);
+  let gradingLanes=0;
   bench.graders.assess=async (...args)=>{
-    enter();
+    if(++gradingLanes===2)enter();
     await hold;
     return assess(...args);
   };
@@ -215,7 +222,9 @@ test("Quick progress identifies the pinned grader while its score is pending",as
     assert.ok(partial && "candidateId" in partial);
     assert.equal(partial.candidateId,ids[0]);
     assert.deepEqual(partial.grading,{name:progress.manifest.graders[0].name,version:progress.manifest.graders[0].version});
-    assert.equal(progress.results.length,1);
+    assert.equal(progress.results.length,2);
+    assert.deepEqual(progress.candidatePartials?.map(lane=>lane.candidateId),ids);
+    assert.ok(progress.candidatePartials?.every(lane=>lane.grading?.startedAt));
     assert.equal(progress.assessments.length,0);
     assert.equal(bench.runProgress(runId,present(progress.liveRevision),0).kind,"unchanged");
   } finally {release();await done;}

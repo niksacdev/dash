@@ -27,7 +27,7 @@ interface UiPlanningReview { omitted:number; reasons:string[]; supplementSource?
 interface UiPriorRun {id:string; candidates:{candidate:string;responses:number;errors:number;passed:number;scored:number}[]; graders:{grader:string;version:number;candidate:string;passed:number;scored:number}[]}
 interface UiTaskInput {task:string;inputs:Record<string,string>}
 interface UiPrompt extends UiTokenCaps, UiReviewEvidence {
-  schemaReview?:{taskEdited:boolean;declaredKeys?:boolean;fields:{name:string;type:string;nullable:boolean;note:{quote:string;explanation:string}|null}[]};
+  schemaReview?:{taskEdited:boolean;declaredKeys?:boolean;fields:{name:string;type:string;nullable:boolean;interval?:"lower"|"upper"|"text";note:{quote:string;explanation:string}|null}[]};
   input?:UiTaskInput;outputSchema?:Record<string,unknown>;
   promptRationale?:{original:string;addition:string;reason:string};
   mode:UiMode; objective:string; domain:string; requestedMetrics?:string; title:string; prompt:string; metrics:string[]; requirements:string[];
@@ -66,9 +66,9 @@ type UiGraderScope = "general" | "industry" | "customer";
 interface UiGraderLibrary {scope:UiGraderScope;familyId:string;parentRevisionId?:string;scenario?:string;automatic?:boolean}
 type UiGraderSave = UiGraderDefinition & ({intent:"create"}|{intent:"derive"|"revise";sourceGraderId:string});
 interface UiGraderRun {id:string;title:string;created:string}
-interface UiGraderOptions {scoringVersion?:1;diagnosticIds?:string[];setupIssues?:Record<string,string>;fieldCoverage?:Record<string,number>;literalAnswerCount?:number;expectedAnswerCount?:number;casesWithoutGuidance?:number;hasReferences?:boolean;automatic:UiGrader[];available:UiGrader[]}
+interface UiGraderOptions {sourcedInspection?:boolean;inspectionCaseCount?:number;inspectionRangeCount?:number;scoringVersion?:1;diagnosticIds?:string[];setupIssues?:Record<string,string>;fieldCoverage?:Record<string,number>;literalAnswerCount?:number;expectedAnswerCount?:number;casesWithoutGuidance?:number;hasReferences?:boolean;automatic:UiGrader[];available:UiGrader[]}
 interface UiGrader extends UiGraderDefinition {generalDefaultKey?:string|null;library?:UiGraderLibrary;ruleKey?:string;ruleVersion?:number;id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
-interface UiQuickMeasure {metric:string;criterion:string|null;generated:UiGraderDefinition|null;reason:string|null}
+interface UiQuickMeasure {defaultGraderId?:string;metric:string;criterion:string|null;generated:UiGraderDefinition|null;reason:string|null}
 type UiMeasureAssignment = {metric:string;kind:"skip"} | {metric:string;kind:"saved";graderId:string} |
   {metric:string;kind:"rubric";judgeId:string;threshold:number;criteria:string;evidence:"task-answer"|"reference"};
 interface UiPinnedMeasure {metric:string;criterion:string|null;graderId:string|null;graderVersion:number|null;reason:string|null}
@@ -85,6 +85,8 @@ interface UiResult {dispatchedMessages?:{role:string;content:string}[];structure
 interface UiRunSummary {id:string;mode:UiMode;status:string;title:string;created:string;fixture:boolean|number;industry?:string|null;datasetId?:string|null}
 interface UiManifest {
   inspectionOnly?:true;
+  executionMode?:"parallel-lanes"|"single-lane";
+  sharedDevicePower?:(UiDeviceEnergy & {samples:number;average_w:number|null;peak_w:number|null})|null;
   id:string;approvedPromptId?:string|null;created:string;mode:UiMode;fixture:boolean;title:string;measureGraders?:UiPinnedMeasure[];graders:UiGrader[];approvedPrompt?:UiApproved|null;
   prompt?:string|null;promptHash?:string;datasetId:string|null;datasetVersion?:string|null;split?:string|null;industry?:string|null;
   policyHash?:string|null;caseSetHash?:string;caseIds:string[];pack:UiPack|null;candidates:UiModel[];error?:string;
@@ -99,8 +101,16 @@ interface CandidateUsage {
 }
 interface CandidateUsageSample extends CandidateUsage { revision:number }
 type UiRunProgress = {kind:"unchanged";usage?:CandidateUsageSample}|{kind:"refresh"}|{kind:"append";candidateId:string;text:string;usage?:CandidateUsageSample};
-interface UiSavedReview {comparisonIssue?:string;id:string;caseId:string;graderId:string;graderName:string;version:number;created:string;source:string;status:"grading"|"completed"|"interrupted";grades:(UiAssessment & {candidate:string})[]}
-interface UiRunDetail {decisionReviewTargets?:Record<string,{model:string;caseIds:string[]}>;savedReviews?:UiSavedReview[];reviewedVerdict?:Pick<UiReport,"verdict"|"summary"|"winnerId">;quickFieldGraderIds?:string[];hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;caseId?:string;text?:string;checkedInputTokens?:number;usage?:CandidateUsageSample;grading?:{name:string;version:number}}|null}
+interface UiRunPartial {
+  stage?:string;candidateId?:string;caseId?:string;text?:string;startedAt?:string;checkedInputTokens?:number;
+  usage?:CandidateUsageSample;grading?:{name:string;version:number;startedAt?:string};
+}
+interface UiLanePartial extends UiRunPartial {candidateId:string;caseId:string}
+interface UiLaneCursor {candidateId:string;caseId:string;offset:number;usageRevision:number}
+interface UiLaneUpdate {candidateId:string;caseId:string;text?:string;usage?:CandidateUsageSample}
+type UiLaneProgress = {kind:"refresh"}|{kind:"lanes";updates:UiLaneUpdate[]};
+interface UiSavedReview {finding?:{status:"higher"|"equal"|"inconclusive";candidateId?:string};comparisonIssue?:string;id:string;caseId:string;graderId:string;graderName:string;version:number;created:string;source:string;status:"grading"|"completed"|"interrupted";grades:(UiAssessment & {candidate:string})[]}
+interface UiRunDetail {hasSourcedInspectionDecision?:boolean;hasInspectionReference?:boolean;hasInspectionRangeReference?:boolean;decisionReviewTargets?:Record<string,{model:string;caseIds:string[]}>;savedReviews?:UiSavedReview[];reviewedVerdict?:Pick<UiReport,"verdict"|"summary"|"winnerId">;quickFieldGraderIds?:string[];hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;liveLaneProgressVersion?:1;candidatePartials?:UiLanePartial[];partial?:UiRunPartial|null}
 interface UiDiagnostic {status:string;fixture:boolean;candidates:Pick<UiModel,"model"|"id">[];traces:{
   candidateId:string;caseId:string;index:number;telemetry?:UiTelemetry|null;stage:string;note:string;traceId:string;started:string;finished?:string;finishReason?:string|null;adapter?:string|null}[]}
 interface UiPower {at:string;watts:number|null;source:string|null;
@@ -135,6 +145,7 @@ interface DashBridge {
  loadLocalModel(key:string):Promise<{status:"already-loaded"|"loaded";instanceId:string}|{status:"unconfirmed"}>;
  list():Promise<UiState>;refresh():Promise<UiServer[]>;dataset(id:string):Promise<UiDatasetDetail>;detail(id:string):Promise<UiRunDetail>;
  runProgress(id:string,revision:number,offset:number,usageRevision?:number):Promise<UiRunProgress>;
+ runLaneProgress(id:string,revision:number,cursors:UiLaneCursor[]):Promise<UiLaneProgress>;
  designPrompt(request:UiDesignInput):Promise<UiDraft>;suggestMetrics(request:UiDesignInput):Promise<UiSuggestion>;
  previewStructuredPrompt(request:{input:Record<string,unknown>;outputSchema:Record<string,unknown>}):Promise<{role:string;content:string}[]>;
  approvePrompt(request:UiApproval):Promise<UiApproved>;cancelDesign():Promise<void>;onPlanningStage(callback:(event:UiPlanningEvent)=>void):void;

@@ -16,4 +16,6 @@ When a grader needs an expected answer, setup checks coverage across the selecte
 
 Keep the same case IDs, snapshot, split and grader revisions when comparing a new candidate. When testing a prompt revision, hold the candidates and grader revisions fixed. Run history retains the selected versions.
 
-DASH runs the job in the background and processes the candidate/case calls sequentially. You can inspect progress while it works. If a connection drops, check the saved case trace and partial output before choosing **Rerun case**. A rerun creates a linked run and uses the original pins. [Read scores and timings](results.md)
+DASH checks the selected cases before sending any candidate request. It then starts one worker per selected model, up to two in a run. Each worker follows the snapshot’s case order and finishes grading its answer before it takes its next case. For example, LFM3 can start its second inspection while Gemma is still waiting for its first answer. A shared runtime controls when each request gets compute time.
+
+Stopping a run asks both workers to stop. If DASH loses a connection or closes during generation, open the case trace to see which answers were saved and where the outcome is uncertain. Inspect the runtime before choosing **Rerun case**. A rerun creates a linked run using the original pins. [Read scores and timings](results.md)

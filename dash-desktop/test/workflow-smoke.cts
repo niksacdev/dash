@@ -14,6 +14,8 @@ import {decodeApprovedPrompt} from "../lib/outcome-contracts.cjs";
 import {decodeManifest} from "../lib/run-decode.cjs";
 import power = require("../lib/power.cjs");
 import {Bench} from "../lib/bench.cjs";
+import {domainStarters} from "../lib/domain-starters.cjs";
+import {inspectionRuleId,inspectionRangeId} from "../lib/inspection-decision.cjs";
 import {verifyLiveRace} from "./live-race-fixture.cjs";
 
 const profile = mkdtempSync(path.join(os.tmpdir(), "dash-workflow-smoke-"));
@@ -136,7 +138,7 @@ const decisionQuestion=z.object({model:z.string(),state:z.string(),questions:z.o
 function decisionAnswer(model:string,probability:number){
   return {model,answers:{criterion:{type:"noul",noul:probability}},usage:{input_tokens:12,output_tokens:0}};
 }
-const streamedCache:{armed:boolean;finish?:()=>void}={armed:false};
+const streamedCache:{armed:boolean;begin?:()=>void;finish?:()=>void}={armed:false};
 const streamedQuick:{armed:boolean; send?:(part:0|1|2)=>void}={armed:false};
 
 // Intercept HTTP at the transport boundary. Discovery, request formatting,
@@ -204,8 +206,9 @@ globalThis.fetch = async (url, options = {}) => {
     return new Response(new ReadableStream<Uint8Array>({start(controller) {
       const write=(frame:unknown)=>controller.enqueue(new TextEncoder().encode("data: "+JSON.stringify(frame)+"\n\n"));
       write({choices:[],usage:{prompt_tokens:21,prompt_tokens_details:{cached_tokens:8}}});
+      streamedCache.begin=()=>write({choices:[{delta:{content:content.slice(0,9)}}],usage:{completion_tokens:2}});
       streamedCache.finish=()=>{
-        write({choices:[{delta:{content},finish_reason:"stop"}],usage:{completion_tokens:12}});
+        write({choices:[{delta:{content:content.slice(9)},finish_reason:"stop"}],usage:{completion_tokens:12}});
         controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));controller.close();
       };
     }}));
@@ -495,7 +498,6 @@ async function smoke() {
     await img.decode();
     return img.currentSrc.startsWith('file:') && img.naturalWidth > 0 && img.checkVisibility({visibilityProperty:true});
   })).then(values => values.length === 3 && values.every(Boolean))`));
-  assert.equal(await exists(".banner-track"), false);
   assert.equal(await js("document.querySelector('.hero').offsetHeight"), bannerHeight);
   await click(previous);
   assert.equal(await scene(), String(slideCount - 1));
@@ -514,7 +516,7 @@ async function smoke() {
   await click(playback);
   assert.equal(await isPlaying(), false);
   assert.equal(await caption(), "Compare and benchmark multiple models");
-  assert.equal(await js("document.querySelectorAll('.banner-car').length"), 3);
+  assert.equal(await js("document.querySelector('.capability-illustration').childElementCount"), 0);
   assert.ok(await js(`(async () => {
     const art = getComputedStyle(document.querySelector('.capability-reel'), '::before').backgroundImage;
     const source = art.match(/url\\("([^"]+)"\\)/)?.[1];
@@ -552,7 +554,6 @@ async function smoke() {
       // Start and end on the approved industry slide. Inspect the actual visible art at each step.
       for (const visual of ["industries", "objective", "race", "grading", "report", "hardware"]) {
         assert.equal(await js("document.querySelector('.capability-reel').dataset.visual"), visual);
-        assert.equal(await js("document.querySelectorAll('.banner-car').length"), visual === "race" ? 3 : 0);
         const background = await text("getComputedStyle(document.querySelector('.capability-reel'), '::before').backgroundImage");
         assert.equal(background.includes("scarlet-circuit.jpg"), visual === "race");
         if (visual === "objective") {
@@ -895,25 +896,42 @@ async function smoke() {
   assert.deepEqual(await js("window.dash.runProgress('previous-session',0,0)"),{kind:"refresh"},"Prior preload argument count");
   streamedCache.armed=true;streamedQuick.armed=true;
   await click("#setup .go-button");
-  await wait(()=>js("document.querySelector('[data-current-usage] [data-cached-input]')?.textContent==='8'"),"First candidate reports cache reads before it sends an answer");
-  assert.equal(await text("document.querySelector('[data-current-usage] [data-input-count]').textContent"),"21","Cached tokens remain part of total input");
-  assert.ok(streamedCache.finish);streamedCache.finish();
-  await wait(()=>Promise.resolve(!!streamedQuick.send),"Quick stream opened");
+  const studioId="lmstudio/"+models.lmstudio,ollamaId="ollama/"+models.ollama;
+  const studioCounters='[data-current-usage="'+studioId+'"]',ollamaCounters='[data-current-usage="'+ollamaId+'"]';
+  const liveField='[data-live-candidate="'+ollamaId+'"]',studioField='[data-live-candidate="'+studioId+'"]';
+  const statusFor=(id:string)=>'[data-racer="'+id+'"] .candidate-race-state span';
+  const visibleText=(selector:string)=>text("document.querySelector("+q(selector)+").textContent");
+  await wait(()=>!!streamedCache.begin && !!streamedQuick.send,"Both providers received their candidate request before either responded");
+  await wait(()=>js("document.querySelector("+q(studioCounters+" [data-cached-input]")+")?.textContent==='8'"),"LM Studio reports cached input before responding");
+  assert.equal(await visibleText(studioCounters+" [data-input-count]"),"21");
+  assert.equal(await visibleText(ollamaCounters+" [data-cached-input]"),"Pending","Cache usage belongs to the reporting candidate");
+  assert.equal(await visibleText(statusFor(studioId)),"Waiting for response");
+  assert.equal(await visibleText(statusFor(ollamaId)),"Waiting for response");
   const sendPart=streamedQuick.send;
-  assert.ok(sendPart);
-  const liveField='[data-live-candidate="ollama/'+models.ollama+'"]';
+  assert.ok(sendPart && streamedCache.begin && streamedCache.finish);
   const expectedContent=JSON.stringify(modelOutput("candidate",null,models.ollama));
+  const studioContent=JSON.stringify(modelOutput("candidate",null,models.lmstudio));
   sendPart(0);
-  await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,4))),"First visible response fragment");
-  await js("document.querySelector("+q(liveField)+").dataset.qaIdentity='original'");
-  await wait(()=>js("document.querySelector('[data-current-usage] [data-first-output]')?.textContent.includes('First visible output')"),"Provider supplied first visible output timing");
-  assert.equal(await text("document.querySelector('[data-current-usage] [data-output-count]').textContent"),"Pending","Ollama text fragments supply no token counts");
-  assert.equal(await text("document.querySelector('[data-current-usage] [data-cached-input]').textContent"),"Pending","A streaming Ollama answer has no cache-read counter");
-  assert.match(await text("document.querySelector('[data-current-usage]').textContent"),/Device energy \(est\.\) Pending/,"Live token updates retain the pending energy measurement");
+  await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,4))),"First Ollama fragment stays in its lane");
+  assert.equal(await visibleText(statusFor(studioId)),"Waiting for response","Another candidate's text cannot wake a waiting lane");
+  assert.equal(await visibleText(statusFor(ollamaId)),"Generating");
+  streamedCache.begin();
+  await wait(()=>js("document.querySelector("+q(studioField)+")?.textContent==="+q(studioContent.slice(0,9))),"Concurrent LM Studio fragment stays in its lane");
+  assert.equal(await visibleText(liveField),expectedContent.slice(0,4));
+  await wait(()=>js("document.querySelector("+q(ollamaCounters+" [data-first-output]")+")?.textContent.includes('First visible output')"),"Provider supplied first visible output timing");
+  assert.equal(await visibleText(ollamaCounters+" [data-output-count]"),"Pending","Ollama fragments supply no token counts");
+  assert.equal(await visibleText(studioCounters+" [data-output-count]"),"2","Only LM Studio reported its intermediate output count");
+  assert.match(await visibleText("[data-shared-device-power]"),/Pending/);
+  await wait(()=>js("Array.from(document.querySelectorAll('.candidate-race-lane dash-planning-elapsed'),clock=>parseFloat(clock.textContent)).filter(seconds=>seconds>=1).length===2"),"Both elapsed clocks advance while the requests remain open");
   await verifyLiveRace(win.webContents,models.ollama,models.lmstudio);
+  await js("document.querySelector("+q(liveField)+").dataset.qaIdentity='original'");
   sendPart(1);
-  await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,8))),"Incremental response fragment");
-  assert.equal(await js("document.querySelector("+q(liveField)+").dataset.qaIdentity"),"original","A token update must retain the visible run view");
+  await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,8))),"Independent cursor appends only new text");
+  assert.equal(await js("document.querySelector("+q(liveField)+").dataset.qaIdentity"),"original","Streaming keeps both response panels mounted");
+  streamedCache.finish();
+  await wait(()=>js("document.querySelector("+q(statusFor(studioId))+")?.textContent==='Response saved'"),"One provider finishes while the other remains active");
+  assert.equal(await visibleText(statusFor(ollamaId)),"Generating");
+  assert.equal(await visibleText(liveField),expectedContent.slice(0,8),"Structural refresh restores the active candidate's partial text");
   sendPart(2);
   const quick = await completedRun(1);
   assert.equal(quick.mode, "quick");
@@ -922,10 +940,10 @@ async function smoke() {
   assert.match(developerFacts,/Cached input tokens/);
   assert.match(developerFacts,/DASH device energy \(est\.\)/);
   assert.match(developerFacts,/Remote server energy is unavailable/);
-  await wait(()=>js("document.querySelector('.response-token-usage')?.textContent.includes('12 J · 1.5 s sampled')"),"Saved energy replaces pending beside candidate tokens");
-  await wait(()=>js("!document.querySelector('[data-current-usage]')"),"Second candidate has a saved receipt");
-  assert.deepEqual(await js("Array.from(document.querySelectorAll('.response-token-usage [data-cached-input]'),el=>el.textContent).sort()"),["8","Unreported"],"Each saved candidate keeps its provider’s cache measurement");
-  assert.equal(await js("window.dash.performance("+q(quick.id)+").then(p=>p.candidates.every(c=>c.energy===12 && c.energyCount===1))"),true);
+  await wait(()=>js("document.querySelector('[data-shared-device-power]')?.textContent.includes('12 J · 1.5 s sampled')"),"Parallel run saves one whole-device energy measurement");
+  await wait(()=>js("!document.querySelector('[data-current-usage]')"),"Both candidates have a saved receipt");
+  assert.deepEqual(await js("window.dash.detail("+q(quick.id)+").then(r=>r.results.map(c=>[c.candidateId,c.telemetry?.cached_input_tokens ?? null]).sort())"),[[studioId,8],[ollamaId,null]],"Each saved candidate keeps its provider’s cache count");
+  assert.equal(await js("window.dash.performance("+q(quick.id)+").then(p=>p.candidates.every(c=>c.energyCount===0))"),true,"Parallel lanes cannot claim individual whole-device energy");
   assert.equal(await js("JSON.parse(localStorage.getItem('dash.quick-lineups.v1')).active"),null,"Dispatch retires the active draft");
   assert.equal(quick.prompt, approvedText);
   assert.deepEqual(quick.candidates.map(c => c.model).sort(), Object.values(models).sort());
@@ -972,8 +990,8 @@ async function smoke() {
   assert.deepEqual(await js("Array.from(document.querySelectorAll('.er-measure-comparison [role=meter]'),m=>m.getAttribute('aria-valuenow'))"),["0","1","1","0"]);
   assert.equal(await js("Array.from(document.querySelectorAll('.er-metric-section')).find(s=>s.querySelector('h3')?.textContent==='Response diagnostics')?.querySelectorAll('.er-equal').length"),2);
 
-  assert.equal(await js("document.querySelectorAll("+q(comparison+" .er-answer a")+").length"),2);
-  assert.deepEqual(await js("Array.from(document.querySelectorAll("+q(comparison+" tbody tr")+")).slice(1).map(row=>Array.from(row.querySelectorAll('td')).slice(1).map(cell=>cell.innerText))"),
+  assert.equal(await js("document.querySelectorAll('.er-response-card>a').length"),2);
+  assert.deepEqual(await js("Array.from(document.querySelectorAll("+q(comparison+" tbody tr")+")).map(row=>Array.from(row.querySelectorAll('td')).slice(1).map(cell=>cell.innerText))"),
     [["0 / 1\nBelow threshold","1 / 1\nPassed"],["1 / 1\nPassed","0 / 1\nBelow threshold"]]);
   const businessMetric=quickRecords.report.metrics.findIndex(m=>m.method==="opik-judge");
   const evidenceSelector='.er-evidence[data-metric-index="'+businessMetric+'"]';
@@ -2177,6 +2195,37 @@ async function smoke() {
   await wait(()=>exists(".overview"),"Leave after saving opens the originally chosen destination");
   await route("roles");await wait(()=>js("document.querySelector('#planner-fallback [name=model]')?.value==='test-fallback-only'"),"The saved fallback is durable after Leave");
   await wait(()=>js("document.querySelector('#planner-fallback [name=key]')?.value==='' && !document.querySelector('#planner-fallback button').disabled"),"Fallback settings saved without retaining the secret in the form");
+  // Open an unused public Manufacturing prompt through the catalogue and accept its default business checks on GO.
+  {
+    const id="fresh-public-inspection-defaults";
+    const task=domainStarters.find(s=>s.packId==="manufacturing")?.quickObjective;assert.ok(task);
+    const metricCriteria=[
+      {metric:"Cite applicable drawing limit and reading",criterion:"Identify the correct drawing (B vs A) and state the permitted range for sample S1, and cite the actual reading."},
+      {metric:"Identify next action and state whether shift note establishes completion",criterion:"Determine the required next step for an out-of-limit sample (e.g., send to Quality for a signed recheck) and decide if the shift note confirms completion."},
+    ];
+    const properties={disposition:{type:"string"},next_action:{type:"string"},shift_note_completes_disposition:{type:"boolean"},applicable_drawing:{type:"string"},limit_range_lower:{type:"number"},limit_range_upper:{type:"number"},reading:{type:"number"}};
+    const approved={id,familyId:id,version:1,mode:"quick",domain:"Manufacturing",title:"Synthetic inspection defaults",objective:task,prompt:task,
+      metrics:metricCriteria.map(m=>m.metric),requirements:metricCriteria.map(m=>m.criterion),metricCriteria,input:{task,inputs:{}},
+      outputSchema:{type:"object",properties,required:Object.keys(properties),additionalProperties:false}};
+    const fixture=new DatabaseSync(path.join(profile,"dash.sqlite"));
+    try{fixture.prepare("INSERT INTO outcome_prompts VALUES(?,?,?,?,?,?)").run(id,id,1,id,"synthetic",JSON.stringify(approved));}finally{fixture.close();}
+    await route("prompts");await click('[data-wf-use="'+id+'"]');
+    const assignments=[inspectionRangeId,inspectionRuleId],assignment=(index:number)=>controls('[data-qc-measure="'+index+'"]',"choice");
+    for(const [index,grader] of assignments.entries()){
+      await wait(()=>js("document.querySelector("+q(assignment(index))+")?.value==="+q("saved:"+grader)),"Grounded default for approved inspection measure "+index);
+    }
+    for(const provider of ["ollama","lmstudio"] as const){
+      if(await js("document.querySelector("+q(pick(provider))+").getAttribute('aria-pressed')")!=="true")await click(pick(provider));
+    }
+    await wait(()=>js("document.querySelector('#setup .go-button')?.disabled===false"),"Public inspection can run with native checks alone");
+    const total=Number(db.prepare("SELECT count(*) n FROM runs WHERE status='completed'").get()?.n);
+    const before=calls.length;
+    await click("#setup .go-button");
+    const run=await completedRun(total+1);
+    assert.equal(run.approvedPromptId,id);assert.deepEqual(run.measureGraders?.map(m=>m.graderId),assignments);
+    assert.equal(calls.slice(before).filter(c=>c.stage==="candidate").length,2);
+    assert.equal(calls.slice(before).filter(c=>c.stage==="geval-score").length,0);
+  }
   // A pre-0037 report: this isolated copy has both original answers but no reference for its second business assessment.
   const historical="legacy-missing-reference-qa";
   const historyManifest={...quick,id:historical,graders:quick.graders.map(g=>g.id===judged.id?{...g,requiredEvidence:["reference"]}:g)};
@@ -2205,6 +2254,106 @@ async function smoke() {
   assert.equal(calls.filter(call=>call.stage==="candidate").length,generationCount);
   assert.equal(calls.filter(call=>call.stage==="geval-score").length,scoringCount+2);
   assert.ok(await exists('.er-report[data-verdict="incomplete"]'));
+  const multiCase=z.string().parse(db.prepare("SELECT id FROM runs WHERE status='completed' AND json_extract(manifest,'$.mode')='dataset' AND json_array_length(manifest,'$.caseIds')>1 ORDER BY rowid DESC LIMIT 1").get()?.id);
+  for(const page of ["run","history"]){
+    await route(page+"/"+multiCase);
+    await wait(()=>exists("[data-response-pager]"),"Dataset case navigation on "+page);
+    await fill("[data-response-pager] [name=caseNumber]","1");await click("[data-response-pager] button[type=submit]");
+    const firstCase=await text("document.querySelector('[data-response-case]').dataset.responseCase");
+    await click("[data-case-step='1']");
+    await wait(()=>js("document.querySelector('[data-response-case]')?.dataset.caseIndex==='1'"),"Show the second saved case");
+    assert.notEqual(await text("document.querySelector('[data-response-case]').dataset.responseCase"),firstCase);
+    assert.ok(await js("document.querySelector('[data-response-case]').dataset.responseCase===current.manifest.caseIds[1]"));
+    if(await exists("[data-open-challenge]")){
+      await click("[data-open-challenge]");
+      assert.ok(await js("document.querySelector('[data-verdict-challenge] [name=reviewCase]').value===current.manifest.caseIds[1]"));
+    }
+    await click("[data-case-step='-1']");
+    assert.equal(await text("document.querySelector('[data-response-case]').dataset.responseCase"),firstCase);
+  }
+  const disputedId="synthetic-disputed-inspection";
+  const sampleTask=domainStarters.find(s=>s.packId==="manufacturing")?.quickObjective;
+  assert.ok(sampleTask);
+  const source=new DatabaseSync(path.join(profile,"dash.sqlite"));
+  try{
+    const disputed={...quick,id:disputedId,industry:"Manufacturing",approvedPrompt:{...first,objective:sampleTask},prompt:sampleTask};
+    source.prepare("INSERT INTO runs SELECT ?,created,status,? FROM runs WHERE id=?").run(disputedId,JSON.stringify(disputed),quick.id);
+    for(const c of quick.candidates){
+      const hold=c.id===studioId;
+      const answer=JSON.stringify({disposition:hold?"review":"accept",next_action:hold?"send to quality for a signed recheck":"None",shift_note_completes_disposition:false});
+      source.prepare("INSERT INTO results SELECT ?,candidate,case_id,json_set(record,'$.output',?,'$.dispatchedMessages',json(?)) FROM results WHERE run=? AND candidate=?")
+        .run(disputedId,answer,JSON.stringify([{role:"user",content:sampleTask}]),quick.id,c.id);
+    }
+    source.prepare("INSERT INTO assessments SELECT ?||id,?,candidate,case_id,created,json_set(record,'$.pass',json('true'),'$.value',1,'$.reason','Original grader credited the answer.') FROM assessments WHERE run=?")
+      .run("challenged-",disputedId,quick.id);
+  }finally{source.close();}
+  await route("history/"+disputedId);
+  await wait(()=>exists("[data-open-challenge]"),"Challenge action in completed Run history");
+  assert.equal(await js("document.querySelectorAll('.er-response-card pre[aria-label]').length"),2);
+  assert.ok(await js("[...document.querySelectorAll('.er-response-card')].every(c=>c.textContent.includes('Pass threshold') && c.textContent.includes('Original grader credited') && c.textContent.includes('No held-out answer'))"));
+  await click("[data-open-challenge]");
+  await wait(()=>js("document.querySelector('[data-verdict-challenge]').open"),"Open supplementary review for selected case");
+  assert.equal(await text("document.querySelector('[name=reviewGrader]').value"),inspectionRuleId);
+  assert.ok(await js("document.querySelector('.er-responses').textContent.includes('also a candidate in this run')"));
+  const traffic=calls.length;
+  await click("[data-verdict-challenge] button[type=submit]");
+  await wait(()=>js("document.querySelector('.er-responses')?.textContent.includes('scored higher on this check')"),"Supplementary case conclusion beside original scores");
+  await click("[data-open-challenge]");
+  await fill("[data-verdict-challenge] [name=reviewGrader]","dash/inspection-active-range/v1");
+  assert.equal(await exists("[data-verdict-challenge] [name=reviewReference]"),false);
+  await click("[data-verdict-challenge] button[type=submit]");
+  await wait(()=>js("current?.savedReviews?.length===2"),"Save the second independent grader on the same case");
+  assert.equal(calls.length,traffic,"Displaying and applying both deterministic challenges invoked no model");
+  await route("run/"+disputedId);await wait(()=>exists('.er-report[data-verdict=tie]'),"Original tie retained alongside the supplementary result");
+  assert.ok(await js("[...document.querySelectorAll('.er-response-card')].every(c=>c.textContent.includes('Original grader credited') && c.textContent.includes('Saved-answer review'))"));
+  // Historical clients copied runtime exceptions into SQLite and the report cache separately.
+  const privateId="historical-provider-diagnostic",marker="SYNTH_PRIVATE_RESPONSE_BODY";
+  const failedModel=studioId,otherModel=ollamaId,decisionId="qa/fallback-check",primary="synthetic-primary";
+  const pin={provider:"local",protocol:"systemone",requestedModel:primary,fallbackModel:models.ollama,failAt:.2,passAt:.8};
+  const decision={...pin,actualModel:models.ollama,dispatchedModel:models.ollama,identityVerification:"exact",fallbackReason:"primary-unavailable",probabilityYes:.9};
+  const decisionGrader={...judged,id:decisionId,type:"decision",name:"Fallback evaluator",judge:null,threshold:.8,
+    decision:{provider:"local",model:primary,fallbackModel:models.ollama,protocol:"systemone",failAt:.2}};
+  const privacyFixture=new DatabaseSync(path.join(profile,"dash.sqlite"));
+  try {
+    const manifest={...quick,id:privateId,graders:[...quick.graders,decisionGrader]};
+    privacyFixture.prepare("INSERT INTO runs SELECT ?,created,status,? FROM runs WHERE id=?").run(privateId,JSON.stringify(manifest),quick.id);
+    privacyFixture.prepare("INSERT INTO results SELECT ?,candidate,case_id,CASE WHEN candidate=? THEN json_set(record,'$.output',NULL,'$.error',?) ELSE record END FROM results WHERE run=?")
+      .run(privateId,failedModel,"Model endpoint returned HTTP 403: "+marker+" RESULT",quick.id);
+    privacyFixture.prepare("INSERT INTO assessments SELECT ?||id,?,candidate,case_id,created,CASE WHEN candidate=? AND json_extract(record,'$.graderId')=? THEN json_set(record,'$.value',NULL,'$.pass',NULL,'$.reason',?) ELSE record END FROM assessments WHERE run=?")
+      .run("failure-",privateId,otherModel,judged.id,marker+" GRADE",quick.id);
+    const syntheticGrade={id:"decision-grade",created:quick.created,graderId:decisionId,name:"Fallback evaluator",version:judged.version,category:judged.category,
+      engine:"decision",threshold:.8,judge:primary,value:1,pass:true,reason:"Verified fallback judgement.",decisionRequest:pin,decision};
+    privacyFixture.prepare("INSERT INTO assessments VALUES(?,?,?,?,?,?)").run(syntheticGrade.id,privateId,otherModel,"prompt",quick.created,JSON.stringify(syntheticGrade));
+    await js("window.dash.detail("+q(privateId)+").then(()=>true)");
+    const cached=z.object({report:z.string()}).parse(privacyFixture.prepare("SELECT report FROM run_reports WHERE run=?").get(privateId));
+    const cache=z.looseObject({metrics:z.array(z.looseObject({caseScores:z.array(z.looseObject({values:z.array(z.looseObject({score:z.number().nullable(),reason:z.string()}))}))}))}).parse(JSON.parse(cached.report));
+    for(const metric of cache.metrics)for(const row of metric.caseScores)for(const value of row.values)if(value.score===null)value.reason=marker+" DIFFERENT CACHE COPY";
+    privacyFixture.prepare("UPDATE run_reports SET report=? WHERE run=?").run(JSON.stringify(cache),privateId);
+    for(const page of ["run","history"]){
+      await route(page+"/"+privateId);
+      await wait(()=>js("current?.manifest.id==="+q(privateId)+" && !!document.querySelector('.er-responses')"),"Open the private historical fixture on "+page);
+      assert.equal(await js("document.querySelector('#screen').textContent.includes("+q(marker)+")"),false);
+      const displayed=await text("document.querySelector('.er-responses').textContent");
+      assert.match(displayed,/HTTP 403.*permission/i);assert.match(displayed,/Check the pinned grader/);
+      assert.match(displayed,/Serving judge · lfm3-qa-7b · Requested synthetic-primary · Alternate model used · also a candidate in this run/);
+      assert.match(displayed,/Verified fallback judgement/);
+      assert.match(displayed,/Pinned judge · /);
+    }
+    assert.ok(privacyFixture.prepare("SELECT id FROM assessments WHERE run=? AND instr(record,?)>0").get(privateId,marker),"Preserve the original stored receipt.");
+    const partialId="historical-partial-answers";
+    privacyFixture.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(partialId,quick.created,"interrupted",JSON.stringify({...quick,id:partialId,graders:[],measureGraders:[]}));
+    for(const [i,c] of quick.candidates.entries()){
+      const dispatch=i===0?"canceled":"interrupted";
+      privacyFixture.prepare("INSERT INTO results SELECT ?,candidate,case_id,json_set(record,'$.output',?,'$.error',?,'$.dispatchState',?,'$.score',NULL) FROM results WHERE run=? AND candidate=?")
+        .run(partialId,"Observed fragment "+i,marker+" PRIVATE SDK DETAIL",dispatch,quick.id,c.id);
+    }
+    await route("run/"+partialId);await wait(()=>js("current?.manifest.id==="+q(partialId)+" && !!document.querySelector('.er-responses')"),"Open both partial outputs without business graders");
+    const fragments=await text("document.querySelector('.er-responses').textContent");
+    assert.match(fragments,/Observation canceled/);assert.match(fragments,/Observation interrupted/);assert.match(fragments,/No business grader was pinned/);
+    assert.equal(fragments.includes(marker),false);assert.match(fragments,/Check the model runtime/);
+    assert.deepEqual(await js("[...document.querySelectorAll('.er-response-card pre[aria-label]')].map(p=>[p.getAttribute('aria-label'),p.textContent])"),
+      [["Partial candidate output","Observed fragment 0"],["Partial candidate output","Observed fragment 1"]]);
+  } finally {privacyFixture.close();}
   db.close();
 }
 

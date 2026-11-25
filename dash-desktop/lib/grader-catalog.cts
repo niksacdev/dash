@@ -4,6 +4,8 @@ import { isRecord } from "./run-types.cjs";
 import type { ScoredPack } from "./run-types.cjs";
 import type { GraderEvidence } from "./grader-types.cjs";
 
+import {inspectionRuleKey,scoreInspectionDecision,inspectionRangeKey,scoreInspectionRange} from "./inspection-decision.cjs";
+
 type Scenario = "earnings" | "manufacturing";
 export interface CatalogRule {
   key:string;
@@ -61,7 +63,13 @@ const operations = [
     "Match the labeled sample finding and accept or review route. An explicitly missing decision instruction requires an insufficient-evidence finding and quality review.",
     ["finding","routing"]),
 ];
-export const catalogRules:readonly CatalogRule[] = [...diagnostics, ...operations];
+export const catalogRules:readonly CatalogRule[] = [...diagnostics, ...operations, {
+  key:inspectionRuleKey,version:1,scope:"industry",industry:"Manufacturing",name:"Inspection sample decision",category:"Receiving inspection",
+  criteria:"Compare the JSON disposition or routing with the approved case decision. For inclusive-limits records, compare the recorded dimension with both active bounds in millimetres. Check next_action for a signed recheck and shift_note_completes_disposition when the case requires them. Missing facts or ambiguous response wording leave this check unscored.",
+},{
+  key:inspectionRangeKey,version:1,scope:"industry",industry:"Manufacturing",name:"Active drawing range and reading",category:"Receiving inspection",
+  criteria:"Match the active drawing revision, both labeled limits in mm, and the reading in the JSON answer. A single endpoint or a superseded range cannot establish the active bounds.",
+}];
 export const isInformationalRule = (key:string|undefined):boolean => diagnostics.some(rule=>rule.key===key);
 
 const nonwhite = new RegexMatch("response_present",false);
@@ -148,6 +156,8 @@ export async function scoreCatalogRule(key:string,e:GraderEvidence,version=1):Pr
     const score=await json.score({output:e.output});
     return {value:score.value,reason:score.value ? "The answer parses as JSON." : "The answer is invalid JSON.",evaluator:evaluator+" · "+sdk+" · IsJson"};
   }
+  if(key===inspectionRangeKey)return {...scoreInspectionRange(e),evaluator};
+  if(key===inspectionRuleKey)return {...scoreInspectionDecision(e),evaluator};
   const rule=operations.find(rule=>rule.key===key);
   return rule ? scoreIndustry(rule,e.caseContext,e.output,evaluator) : unscored("Unknown catalog rule.");
 }

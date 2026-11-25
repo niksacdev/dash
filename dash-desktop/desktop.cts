@@ -7,7 +7,7 @@ import * as os from "node:os";
 import { z } from "zod";
 import {previewStructuredMessages} from "./lib/quick-structure.cjs";
 import {measureGraderRequest} from "./lib/measure-graders.cjs";
-import { operatorProviderMessage } from "./lib/provider-errors.cjs";
+import {operatorRunDetail} from "./lib/export-diagnostics.cjs";
 import { desktopFailure } from "./lib/desktop-errors.cjs";
 import { Bench } from "./lib/bench.cjs";
 import { scenarioCacheSupport } from "./lib/runtime-types.cjs";
@@ -83,11 +83,10 @@ function initialize():void {
   bind("refresh",()=>bench.refresh());
   bind("loadLocalModel",raw=>bench.loadLocalModel(z.string().min(1).max(300).parse(raw)));
   bind("dataset",raw=>bench.dataset(identifier(raw)));
-  bind("detail",raw=>{
-    const run=bench.detail(identifier(raw));
-    return {...run,results:run.results.map(row=>row.error ? {...row,error:operatorProviderMessage(row.error)} : row)};
-  });
+  bind("detail",raw=>operatorRunDetail(bench.detail(identifier(raw))));
   const cursorNumber=z.number().int().nonnegative().safe();
+  const laneCursors=z.array(z.strictObject({candidateId:modelId,caseId:idSchema,offset:cursorNumber,usageRevision:cursorNumber})).max(2);
+  bind("runLaneProgress",(id,revision,cursors)=>bench.runLaneProgress(identifier(id),cursorNumber.parse(revision),laneCursors.parse(cursors)));
   bind("runProgress",(id,revision,offset,usageRevision)=>bench.runProgress(identifier(id),cursorNumber.parse(revision),cursorNumber.parse(offset),cursorNumber.optional().parse(usageRevision)),3);
   bind("guidePrompt",value=>bench.active || bench.modelLoading ? {status:"busy"} : bench.withRuntimeUse(()=>guide.suggest(value)));
   bind("cancelGuide",()=>guide.cancel());
@@ -155,7 +154,7 @@ function initialize():void {
     if (detailed!==undefined && typeof detailed!=="boolean") throw Error("Choose a valid device measurement scope.");
     return {...await (detailed ? sampleDevice() : readPower()),host};
   },0);
-  bind("diagnostics",value=>diagnostics(bench.detail(identifier(value))));
+  bind("diagnostics",value=>diagnostics(operatorRunDetail(bench.detail(identifier(value)))));
   bind("performance",value=>performance(bench.db,identifier(value)));
   bind("opikExperimentStatus",value=>opik.status(identifier(value)));
   bind("syncOpikExperiment",value=>opik.sync(identifier(value)));

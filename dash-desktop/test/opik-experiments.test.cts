@@ -449,6 +449,7 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   assert.equal([...items.values()][0].data.sme_rationale,"Synthetic reference note");
   for(const e of experiments.values()){
     assert.equal(e.dataset_version_id,version);assert.equal(e.status,"completed");assert.equal(e.metadata.token_budget.outputCap,80);
+    assert.equal(e.metadata.dash_execution_mode,undefined,"release-era runs have no recorded execution mode");
     assert.equal(e.experiment_scores?.length,1);
   }
   for(const e of links.values()){assert.ok(experiments.has(e.experiment_id));assert.ok(items.has(e.dataset_item_id));assert.ok(traces.has(e.trace_id));}
@@ -465,12 +466,17 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   assert.deepEqual(await svc.sync(saved.manifest.id),receipt);
   assert.equal(requests.length,before);
   // Another saved run of the same snapshot shares the dataset/version, with independent experiments.
-  const second: TestRun={...saved,manifest:{...saved.manifest,id:"next-saved-run",datasetMetadata:{...saved.manifest.datasetMetadata,family:"INCOMING INSPECTION"}},
-    results:saved.results.map(r=>({...r,dispatchedMessages:[{role:"user",content:"Actual saved adapter payload"}]}))};
+  const second: TestRun={...saved,manifest:{...saved.manifest,id:"next-saved-run",executionMode:"parallel-lanes",sharedDevicePower:{scope:"Whole device",source:"Synthetic",samples:2,average_w:12,peak_w:12,sampled_seconds:1,estimated_energy_j:12},datasetMetadata:{...saved.manifest.datasetMetadata,family:"INCOMING INSPECTION"}},
+    results:saved.results.map(r=>({...r,telemetry:{...r.telemetry,device_power:undefined},dispatchedMessages:[{role:"user",content:"Actual saved adapter payload"}]}))};
   let next=await new OpikExperiments(bench(db,second),{env}).sync(second.manifest.id);
   assert.equal(next.datasetId,receipt.datasetId);assert.equal(next.versionId,receipt.versionId);
   assert.equal(datasets.size,1);assert.equal(experiments.size,4);
   assert.equal(next.datasetName,receipt.datasetName);
+  for(const experiment of next.experiments){
+    const meta=present(experiments.get(experiment.id)).metadata;
+    assert.equal(meta.dash_execution_mode,"parallel-lanes");
+    assert.equal(meta.sharedDevicePower,undefined);
+  }
   assert.equal(lastTrace().input.messages[0].content,"Actual saved adapter payload");
   assert.equal(lastTrace().metadata.input_provenance,"Recorded adapter request");
   const nextRows=[{...saved.cases[0],dataset_version:"3",reference:"NEW",sme_rationale:null},
@@ -645,6 +651,21 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
     const native=[...scores.values()].filter(s=>s.id===trace.id);
     assert.deepEqual(native.map(s=>[s.name,s.value]),[["Customer grader ["+copied.id+"]",i===0?1:0]]);
   }
+
+  // Even an old stored domain-rule reason containing held-out facts cannot leave via native SDK feedback.
+  const business={...diag,version:1,id:"dash/inspection-active-range/v1",name:"Active drawing range and reading",ruleKey:"inspection-active-range",
+    library:{scope:"industry",familyId:"dash/inspection-active-range"}} satisfies GraderSpec;
+  const nativeQuick:TestRun={...quick,manifest:{...quick.manifest,id:"quick-private-reference-qa",graders:[business]}};
+  nativeQuick.assessments=nativeQuick.results.map((r,i)=>({id:"private-domain-"+i,created:r.trace.started,graderId:business.id,
+    name:business.name,category:business.category,candidate:r.candidateId,caseId:r.caseId,version:1,threshold:1,engine:"catalog",judge:null,
+    value:i===0?1:0,pass:i===0,reason:"PRIVATE_CUSTOMER_CATALOG held-out revision and source-only numerical limits."}));
+  nativeQuick.report=buildReport({...nativeQuick,partial:null});
+  const nativeQuickSync=await new OpikExperiments(bench(db,nativeQuick),{env}).sync(nativeQuick.manifest.id);
+  const nativeReasons=nativeQuickSync.experiments.flatMap(experiment=>{
+    const item=present([...links.values()].find(item=>item.experiment_id===experiment.id));
+    return [...scores.values()].filter(s=>s.id===item.trace_id).map(s=>s.value);
+  });
+  assert.deepEqual(nativeReasons,[1,0],"Both catalog business scores reach native Opik feedback without the held-out reference in any HTTP request");
 
   // Independent local profiles publish into one Opik workspace. The API enforces names across projects.
   const renamed=present(datasets.get(receipt.datasetId));renamed.name="Renamed in Opik";

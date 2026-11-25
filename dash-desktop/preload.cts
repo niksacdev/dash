@@ -75,6 +75,7 @@ const bridge:DashBridge = {
   loadLocalModel: key => invoke("loadLocalModel",key),
   dataset: (id) => invoke("dataset", id),
   detail: (id) => invoke("detail", id),
+  runLaneProgress:(id,revision,cursors)=>invoke("runLaneProgress",id,revision,cursors),
   runProgress: (id,revision,offset,usageRevision) => usageRevision===undefined ? invoke("runProgress",id,revision,offset) : invoke("runProgress",id,revision,offset,usageRevision),
   designPrompt: (request) => invoke("designPrompt", request),
   suggestMetrics: (request) => invoke("suggestMetrics", request),

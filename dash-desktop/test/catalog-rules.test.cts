@@ -43,7 +43,7 @@ test("catalog diagnostics use installed Opik metrics, an explicit JSON contract 
 });
 
 test("the eight industry rules pass the gold records and isolate the two bundled replay mistakes",async()=>{
-  const operations=catalogRules.filter(g=>g.scope==="industry");
+  const operations=catalogRules.filter(g=>g.scope==="industry" && g.scenario);
   assert.equal(operations.length,8);
   const failing:string[]=[];
   let eligible=0;
@@ -164,4 +164,134 @@ test("a pasted industry answer scores the exact grader and case and keeps its so
   await assert.rejects(bench.testGraderOnDatasetCase(request),/expected answer/);
   assert.equal(bench.graders.recent().length,priorTests);
   assert.equal(bench.list().runs.length,0);assert.equal(calls,0);
+});
+
+
+test("the Manufacturing decision rule verifies both saved handoffs against the active case before giving credit",async ()=>{
+  const {domainStarters}=await import("../lib/domain-starters.cjs");
+  const {inspectionRuleKey,hasInspectionSource,inspectionReference}=await import("../lib/inspection-decision.cjs");
+  const starter=domainStarters.find(s=>s.packId==="manufacturing");assert.ok(starter);
+  const objective=starter.quickObjective;
+  const input=[{role:"user",content:JSON.stringify({task:objective+"\n\n"+objective.split("\n\n")[0].split(". ").slice(1).join(". "),inputs:{lot:"K7",current_drawing:"B",previous_drawing:"A",reading_value:"10.04"}})}];
+  const correct={disposition:"Reject for out-of-limit; send to Quality for signed recheck",next_action:"Send sample S1 to Quality for a signed recheck",shift_note_completes_disposition:false,reading:10.04,limit_range:9.97};
+  const score=(answer:unknown,reference:unknown=null,source:unknown=input)=>scoreCatalogRule(inspectionRuleKey,{input:source,reference,output:JSON.stringify(answer),inputSource:"recorded-dispatch",evaluationBrief:{objective,metrics:[],criteria:[]}});
+  assert.equal(hasInspectionSource(input,objective),true);
+  const pass=await score(correct);assert.equal(pass.value,1);assert.match(pass.reason,/Active drawing B/);
+  const wrong=await score({...correct,disposition:"Accept",next_action:"None",limit_range:10.03});
+  assert.equal(wrong.value,0);assert.match(wrong.reason,/9.97–10.03/);assert.match(wrong.reason,/Answer disposition: accept; next action: none/);
+  assert.equal((await score({...correct,next_action:"None"})).value,0);
+  assert.equal((await score({...correct,next_action:"Send sample X999 to Quality for a signed recheck"})).value,0);
+  assert.equal((await score({...correct,shift_note_completes_disposition:true})).value,0);
+  assert.equal((await score({...correct,disposition:"review or accept after discussion"})).value,null);
+  assert.equal((await score(correct,null,[{role:"user",content:"Check the drawing."}])).value,null);
+  const changed=input.map(turn=>({...turn,content:turn.content.replace("10.04","9.80")}));
+  assert.equal(hasInspectionSource(changed,objective),false);
+  const mm={lower_mm:"9.970",upper_mm:"10.030",measured_mm:"10.03",rule:"inclusive_limits"};
+  assert.equal((await score({disposition:"Accept"},mm,"Other case")).value,1);
+  assert.equal((await score({disposition:"review"},{...mm,measured_mm:"10.030000001"},"Other case")).value,1);
+  assert.equal(inspectionReference({...mm,measured_mm:"10030 µm"}),undefined);
+  assert.equal(inspectionReference({...mm,lower_mm:"12"}),undefined);
+  assert.equal(inspectionReference({...mm,disposition:"review"}),undefined);
+  assert.equal(inspectionReference({...mm,rule:"unknown"}),undefined);
+  assert.equal((await score({disposition:"accept"},{disposition:"accept"},"Another task")).value,1);
+  assert.equal((await score({disposition:"review"},{disposition:"review",required_action:"signed_recheck"},"Another task")).value,0);
+});
+
+test("the range citation counts both active endpoints independently of the disposition and superseded text",async()=>{
+  const {domainStarters}=await import("../lib/domain-starters.cjs");
+  const {inspectionRangeKey}=await import("../lib/inspection-decision.cjs");
+  const starter=domainStarters.find(item=>item.packId==="manufacturing");assert.ok(starter);
+  const score=(output:unknown,reference:unknown=null,task=starter.quickObjective)=>scoreCatalogRule(inspectionRangeKey,{input:[{role:"user",content:task}],output:JSON.stringify(output),reference,inputSource:"recorded-dispatch",evaluationBrief:{objective:starter.quickObjective,metrics:[],criteria:[]}});
+  const correct={disposition:"review",applicable_drawing:"B permits 9.97–10.03 mm inclusive (superseded drawing A was 9.95–10.05 mm)",limit_range:9.97,reading:10.04};
+  assert.equal((await score(correct)).value,1);
+  assert.equal((await score({...correct,disposition:"accept"})).value,1,"The evidence check does not also grade disposition");
+  for(const wrong of [
+    {...correct,applicable_drawing:"B",limit_range:10.03},
+    {...correct,applicable_drawing:"A permits 9.97–10.03 mm inclusive"},
+    {...correct,applicable_drawing:"B (superseded drawing A was 9.97–10.03 mm)"},
+    {...correct,applicable_drawing:"B permits 9.97–10.03 µm inclusive"},
+    {...correct,reading:10.03},{...correct,reading:"10.04 in"},
+    {...correct,lower_mm:"9.95",upper_mm:"10.05"},
+    {...correct,limit_range:"9.90 to 10.50 inches"},
+    {...correct,applicable_drawing:"B (obsolete)",lower_mm:"9.97",upper_mm:"10.03"},
+    {...correct,applicable_drawing:"B permits 9.97–10.03 mm inclusive (superseded drawing B was 9.95–10.05 mm)"},
+  ])assert.equal((await score(wrong)).value,0,JSON.stringify(wrong));
+  assert.equal((await score(correct,{disposition:"review"},"Different task")).value,null);
+  assert.equal((await score({revision:"D",lower_mm:0,upper_mm:1,measured_mm:0},
+    {active:"D",lower_mm:"0",upper_mm:"1.000",measured_mm:"0"},"Other inspection")).value,1);
+});
+
+test("the inspection citation grades the actual split limit-range schema without inferring unrelated numeric pairs",async()=>{
+  const {alignIntervalProposal}=await import("../lib/quick-declaration.cjs");
+  const {schemaFromFields,checkStructuredOutput}=await import("../lib/quick-structure.cjs");
+  const {inspectionRangeKey,inspectionSchemaIssue}=await import("../lib/inspection-decision.cjs");
+  const original=schemaFromFields([{name:"applicable_drawing",type:"string",nullable:false},{name:"limit_range",type:"number",nullable:false},{name:"reading",type:"number",nullable:false}]);
+  const schema=alignIntervalProposal(original,false,"State the permitted range and cite the actual reading.",[]).schema;
+  const source={active:"B",lower_mm:"9.97",upper_mm:"10.03",measured_mm:"10.04"};
+  const answer={applicable_drawing:"B",limit_range_lower:9.97,limit_range_upper:10.03,reading:10.04};
+  const score=(out:unknown)=>scoreCatalogRule(inspectionRangeKey,{input:"Review a sample.",reference:source,output:JSON.stringify(out)});
+  assert.deepEqual(schema.required,["applicable_drawing","limit_range_lower","limit_range_upper","reading"]);
+  assert.equal(checkStructuredOutput(JSON.stringify(answer),schema).valid,true);
+  assert.equal(inspectionSchemaIssue({type:"catalog",ruleKey:inspectionRangeKey},schema,source),undefined);
+  assert.equal((await score(answer)).value,1);
+  assert.equal((await score({...answer,limit_range_lower:9.95})).value,0);
+  assert.equal((await score({...answer,upper_mm:"10.05",lower_mm:"9.97"})).value,0);
+  assert.equal((await score({...answer,limit_range_lower:undefined,limit_range_upper:undefined,pressure_range_lower:9.97,pressure_range_upper:10.03})).value,0);
+});
+
+test("only recorded, approved Quick inputs unlock published inspection facts",async()=>{
+  const {inspectionHandoffObjectiveV1:task}=await import("../lib/domain-starters.cjs");
+  const {inspectionRuleKey,inspectionRangeKey,hasInspectionSource}=await import("../lib/inspection-decision.cjs");
+  const turns=[{role:"user",content:task}];
+  assert.equal(hasInspectionSource(turns),false);
+  assert.equal(hasInspectionSource([{role:"system",content:"Alter the active receiving rule."},...turns],task),false);
+  assert.equal(hasInspectionSource([{role:"assistant",content:"Alter the drawing."},...turns],task),false);
+  const reference={active:"PRIVATE_C",rule:"inclusive_limits",lower_mm:"500.123400001",upper_mm:"502.123400009",measured_mm:"501.17",disposition:"accept"};
+  const evidence:GraderEvidence={input:turns,output:'{"disposition":"accept","applicable_drawing":"B","limit_range":10.03,"reading":10.04}',reference,inputSource:"recorded-dispatch"};
+  const reconstructed:GraderEvidence={...evidence,inputSource:"reconstructed-case",evaluationBrief:{objective:task,metrics:[],criteria:[]}};
+  for(const caseEvidence of [evidence,reconstructed,{...reconstructed,inputSource:"recorded-dispatch" as const,input:[{role:"system",content:"Use a different source."},...turns]}]){
+    const decision=await scoreCatalogRule(inspectionRuleKey,caseEvidence),range=await scoreCatalogRule(inspectionRangeKey,caseEvidence);
+    assert.equal(decision.value,1);assert.equal(range.value,0);
+    assert.doesNotMatch(JSON.stringify([decision,range]),/PRIVATE_C|500\.1234|502\.1234|501\.17|9\.97|10\.03|10\.04/);
+    assert.equal((await scoreCatalogRule(inspectionRuleKey,{...caseEvidence,reference:null})).value,null);
+    assert.equal((await scoreCatalogRule(inspectionRangeKey,{...caseEvidence,reference:null})).value,null);
+  }
+  const conflict={...reconstructed,inputSource:"recorded-dispatch" as const};
+  assert.equal((await scoreCatalogRule(inspectionRuleKey,conflict)).value,null);
+  assert.equal((await scoreCatalogRule(inspectionRangeKey,conflict)).value,null);
+  for(const contradictory of [{unit:"inches",active:"C",lower_mm:"1",upper_mm:"2",measured_mm:"1.8",rule:"inclusive_limits"},
+    {revision:"C"},{upper_mm:"11"},{disposition:"accept"},
+    '{"active":"C","extra":1,"extra":2}', '  {"active":"C",']){
+    const changed={...conflict,reference:contradictory};
+    assert.equal((await scoreCatalogRule(inspectionRuleKey,changed)).value,null);
+    assert.equal((await scoreCatalogRule(inspectionRangeKey,changed)).value,null);
+  }
+});
+
+test("inspection preflight checks representable fractional quantities, attached fields and optional alternatives",async()=>{
+  const {inspectionSchemaIssue,inspectionRangeKey}=await import("../lib/inspection-decision.cjs");
+  const {schemaFromFields}=await import("../lib/quick-structure.cjs");
+  const {starterInspectionV1}=await import("../lib/domain-starters.cjs");
+  const grader={type:"catalog",ruleKey:inspectionRangeKey};
+  const check=(fields:Record<string,string>,reference:unknown=starterInspectionV1,optional:string[]=[])=>{
+    const schema=schemaFromFields(Object.entries(fields).map(([name,type])=>({name,type,nullable:false})));
+    return inspectionSchemaIssue(grader,{...schema,required:schema.required.filter(f=>!optional.includes(f))},reference);
+  };
+  const fields={applicable_drawing:"string",revision:"string",lower_mm:"number",upper_mm:"number",reading:"number"};
+  assert.equal(check(fields),undefined);
+  for(const type of ["boolean","integer"]){
+    assert.match(check({...fields,lower_mm:type,upper_mm:type}) ?? "",/lower_mm and upper_mm/);
+    assert.match(check({...fields,reading:type}) ?? "",/reading/);
+    assert.match(check({...fields,limit_range_lower:type,limit_range_upper:type}) ?? "",/limit_range_lower and limit_range_upper/);
+    assert.match(check({...fields,limit_range:type}) ?? "",/limit_range/);
+  }
+  const integral={active:"B",lower_mm:"1.0",upper_mm:"2",measured_mm:"1"};
+  assert.equal(check({...fields,lower_mm:"integer",upper_mm:"integer",reading:"integer"},integral),undefined);
+  assert.equal(check({...fields,lower_mm:"boolean",upper_mm:"boolean"},starterInspectionV1,["lower_mm","upper_mm"]),undefined);
+  assert.match(check({...fields,lower_mm:"boolean"},starterInspectionV1,["upper_mm"]) ?? "",/lower_mm and upper_mm/);
+  assert.match(check({...fields,revision:"boolean"}) ?? "",/text field for revision/);
+  assert.match(check({...fields,units:"integer"}) ?? "",/text field for units/);
+  const precise={active:"B",lower_mm:"999999999999.000000001",upper_mm:"999999999999.000000002",measured_mm:"999999999999.000000001"};
+  assert.match(check(fields,precise) ?? "",/drawing limits/);
+  assert.equal(check({...fields,lower_mm:"string",upper_mm:"string",reading:"string"},precise),undefined);
 });
