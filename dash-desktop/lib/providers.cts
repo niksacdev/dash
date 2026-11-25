@@ -59,7 +59,7 @@ function isRemoteModel(row:Record<string,unknown>,id:string):boolean {
   return !!(row.remote_host || row.remote_model || /(?:^|[:/-])cloud(?:$|[:/])/i.test(id));
 }
 interface NativeModel {
-  key: string; type: string | null; remote:boolean; quantization: string | null; parameterSize: string | null;
+  key: string; publisher?:string; type: string | null; remote:boolean; quantization: string | null; parameterSize: string | null;
   maxContextTokens: number | null; maxOutputTokens: number | null; reasoningOff: boolean; instances: RuntimeInstance[];
 }
 function nativeModel(raw: Record<string,unknown>): NativeModel {
@@ -69,7 +69,8 @@ function nativeModel(raw: Record<string,unknown>): NativeModel {
   const modes = isRecord(reasoning) ? reasoning.allowed_options : null;
   const instances=entries(raw.loaded_instances);
   const remote=isRemoteModel(raw,key) || instances.some(i=>isRemoteModel(i,modelId(i.id)));
-  return { key, type, remote, quantization, parameterSize:string(raw.params_string), maxContextTokens:tokens(raw.max_context_length),
+  const publisher=string(raw.publisher);
+  return { key, type, remote, quantization,...(publisher && /^[a-z0-9][a-z0-9_.-]{0,127}$/i.test(publisher) && {publisher}), parameterSize:string(raw.params_string), maxContextTokens:tokens(raw.max_context_length),
     maxOutputTokens:tokens(raw.max_output_tokens), reasoningOff:Array.isArray(modes) && modes.includes("off"),
     instances:instances.map(i=>({ model:key, type, id:modelId(i.id), quantization,
       context:isRecord(i.config) ? tokens(i.config.context_length) : null })),
@@ -172,7 +173,7 @@ async function inventory(provider: LocalProvider): Promise<RuntimeInventory> {
       const details=isRecord(m.details)?m.details:{};
       models.push({
         id:provider+"/"+id, kind:"model", provider, model, revision:string(m.digest),
-        ...(meta?.type==="llm" && localLoadKey(meta.key) && {nativeKey:meta.key}),
+        ...(meta?.type==="llm" && localLoadKey(meta.key) && {nativeKey:meta.key,...(meta.publisher && {nativePublisher:meta.publisher})}),
         parameterSize:meta?.parameterSize ?? string(details.parameter_size),
         quantization:string(details.quantization_level) ?? meta?.quantization ?? null,
         loaded:ollama ? running?.has(model) ?? null : meta ? meta.instances.length > 0 : null,

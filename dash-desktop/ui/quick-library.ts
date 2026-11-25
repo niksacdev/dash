@@ -1,7 +1,7 @@
 "use strict";
 
 // Keep only references and non-text controls in this Electron profile. Prompt and rubric text have separate owners.
-interface QuickRubricControls {index:number;judge:string;cutoff:number|null;evidence:"task-answer"|"reference";customText:boolean}
+interface QuickRubricControls {judgeEdited?:boolean;index:number;judge:string;cutoff:number|null;evidence:"task-answer"|"reference";customText:boolean}
 interface QuickLineup {inspectionOnly?:boolean;promptId:string;lanes:(string|null)[];rubrics:QuickRubricControls[]}
 let resumedQuickId:string|null=null;
 let quickChooserFilter="";
@@ -11,7 +11,7 @@ let quickDiscoverySettled=false;
 let pendingQuickLineup:string|null=null;
 function validRubricControls(row:unknown):row is QuickRubricControls {
   return isRecord(row) && typeof row.index==="number" && Number.isInteger(row.index) && row.index>=0 && row.index<8 &&
-    typeof row.judge==="string" && row.judge.length<=500 && (row.cutoff===null || typeof row.cutoff==="number" &&
+    typeof row.judge==="string" && row.judge.length<=500 && (row.judgeEdited===undefined || typeof row.judgeEdited==="boolean") && (row.cutoff===null || typeof row.cutoff==="number" &&
     row.cutoff>0 && row.cutoff<=1) && (row.evidence==="reference" || row.evidence==="task-answer") && typeof row.customText==="boolean";
 }
 const quickSessionKey="dash.quick-lineups.v1";
@@ -28,7 +28,7 @@ function readQuickSession() {
             Array.isArray(entry.lanes) && entry.lanes.length===2 &&
             entry.lanes.every(id=>id===null || typeof id==="string" && id.length<=500) &&
             (!entry.lanes[0] || entry.lanes[0]!==entry.lanes[1])) {
-          const rubrics=Array.isArray(entry.rubrics) ? entry.rubrics.slice(0,8).filter(validRubricControls).map(({index,judge,cutoff,evidence,customText})=>({index,judge,cutoff,evidence,customText})) : [];
+          const rubrics=Array.isArray(entry.rubrics) ? entry.rubrics.slice(0,8).filter(validRubricControls).map(({index,judge,judgeEdited,cutoff,evidence,customText})=>({index,judge,judgeEdited,cutoff,evidence,customText})) : [];
           quickSession.lineups.push({promptId:entry.promptId,lanes:[entry.lanes[0],entry.lanes[1]],rubrics,inspectionOnly:entry.inspectionOnly===true});
         }
       }
@@ -47,9 +47,9 @@ function rememberQuickLineup(lanesChanged=false) {
   const previous=quickSession.lineups.find(l=>l.promptId===id);
   const rubrics=plan?.options ? quickGradingRows(plan.options).flatMap<QuickRubricControls>((r,index)=>{
     const editor=plan.measures.get(r.metric);
-    if (!editor || editor.choice!=="rubric") return [];
+    if (!editor || !editor.edited || editor.choice!=="rubric") return [];
     const cutoff=Number(editor.threshold);
-    return [{index,judge:editor.judgeId,cutoff:cutoff>0 && cutoff<=1?cutoff:null,evidence:editor.evidence,
+    return [{index,judge:editor.judgeId,judgeEdited:!!editor.judgeEdited,cutoff:cutoff>0 && cutoff<=1?cutoff:null,evidence:editor.evidence,
       customText:editor.criteria!==r.generated?.criteria}];
   }) : previous?.rubrics ?? [];
   quickSession.active=id;
@@ -157,7 +157,7 @@ function quickLibraryUnavailable(g:UiGrader,options:UiQuickOptions) {
   if (g.type==="trajectory" || g.requiredEvidence?.includes("trajectory")) return "Requires an agent trace.";
   let ids=availableQuickVersions.get(options);
   if (!ids) {ids=new Set(options.available.map(option=>option.id));availableQuickVersions.set(options,ids);}
-  if(ids.has(g.id)) return "";
+  if(ids.has(g.id)) return options.setupIssues?.[g.id] || savedJudgeIssue("quick",options,g);
   if (g.library?.automatic) return "Runs automatically when applicable.";
   if (g.library?.scenario || !["Cross-industry","General","Unclassified",quickLibraryPrompt()?.domain].includes(g.industry))
     return "Applies to a different scenario or industry.";
@@ -212,6 +212,7 @@ function runChooserPage() {
   const hasRubric=quick && quickGradingRows(context.options).some(row=>row.generated);
   return banner+'<section class="qc-chooser"><h1>Graders for this '+subject+'</h1>'+
     (replace?'<p>Choose a replacement for '+esc(state.graders.find(g=>g.id===replace)?.name || replace)+'. Your current version stays attached until you confirm.</p>':'')+
+    requestedItemsSetup()+
     (eligible.length?formField("Search graders",'<input type="search" id="grade-filter" placeholder="Name, criterion or industry" value="'+esc(quickChooserFilter)+'">')+
       '<div class="panel gc-section" data-quick-eligible>'+familyRevisionList(eligible)+'</div>':'<p>No saved grader matches this '+subject+'.</p>')+
     (hasRubric?'<p><a href="#'+back+'" data-quick-focus="grading">Review proposed rubrics</a> for this run.</p>':'')+'<p>'+design+' to save a reusable version.</p>'+
@@ -252,7 +253,7 @@ function runAssignmentChoices(ctx:RunGraderContext,g:UiGrader) {
   const from=replacingGrader(ctx) ?? g.id;
   const selected=quick?measures.findIndex(m=>ctx.plan.measures.get(m.metric)?.choice==="saved:"+from):-1;
   return (quick?formField("Apply "+g.name+" v"+g.version+" to",'<select data-quick-assignment>'+opt("extra","Additional check for both answers",selected<0?"extra":String(selected))+
-    measures.map((m,i)=>m.criterion && !m.reason?opt(String(i),m.metric,String(selected)):"").join("")+'</select>'):'<p>'+esc(g.name)+' v'+esc(g.version)+' will assess every selected model on all '+ctx.snapshot.count+' cases.</p>')+
+    measures.map((m,i)=>m.criterion && !m.reason && (!g.presetId || m.canMapRequestedItems)?opt(String(i),m.metric,String(selected)):"").join("")+'</select>'):'<p>'+esc(g.name)+' v'+esc(g.version)+' will assess every selected model on all '+ctx.snapshot.count+' cases.</p>')+
     (selected<0?"":'<small>Moving this grader leaves its previous measure unscored.</small>')+
     '<button type="button" data-quick-stay>Attach</button> <button type="button" data-quick-confirm>Attach and return to '+(quick?'Quick compare':'Dataset run')+'</button> '+
     '<button type="button" data-quick-cancel>Cancel</button>';
@@ -271,6 +272,7 @@ function attachQuickVersion(ctx:Extract<RunGraderContext,{mode:"quick"}>,g:UiGra
     } else {
       const m=ctx.options.measures[Number(value)],editor=m && next.measures.get(m.metric);
       if (!m?.criterion || m.reason || !editor) throw Error("Choose a measure with an approved pass condition.");
+      if(g.presetId && !m.canMapRequestedItems)throw Error("Use this grader for explicitly requested item coverage, or attach it as an additional check.");
       if (mapped && mapped[0]!==m.metric) next.measures.set(mapped[0],{...mapped[1],choice:"skip",edited:true});
       next.measures.set(m.metric,{...editor,choice:"saved:"+g.id,edited:true});next.saved.delete(g.id);
     }

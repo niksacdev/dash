@@ -40,6 +40,8 @@ In either run setup, **Design graders** sits below the automatic checks. Open **
 
 The Electron renderer, preload and evaluation runner are written in TypeScript. DASH uses Opik’s TypeScript SDK in the main process for exact matches, substring checks and G-Eval. A G-Eval rubric uses the local judge you select. Scenario-specific JSON-field comparisons and ordered agent-action checks use the corresponding reference or trace. You can grade an existing agent output with its supplied steps in the library. Connecting a hosted agent for live execution is a separate design track. [Agent feasibility review](docs/reviews/agent-runs-feasibility.md)
 
+**Requested items present** uses a local D1 judge to check each explicitly listed deliverable. The report shows which items were present, absent or uncertain. JSON syntax and runtime stop status use direct checks. Quick compare and Dataset run check the scoring judge against both candidates before launch. [Choose a check by its evidence](https://niksacdev.github.io/dash/graders.html#check-specific-deliverables-with-local-d1)
+
 A **Decision model · yes/no** grader checks one domain criterion with a selected local or hosted decision model. Switch the model by saving another version. Cases with missing required evidence or a probability between the two cutoffs stay unscored. [Decision grader setup](docs/guides/workbench.md#use-a-decision-model-as-a-grader)
 
 Inspect per-case scores and explanations in **Run history**. A winner needs complete scores on the same cases and a lead on at least one rubric with no losses on the others. Ties, mixed results and missing evidence are shown explicitly. [Opik evaluator documentation](https://www.comet.com/docs/opik/reference/typescript-sdk/evaluation/metrics)

@@ -16,9 +16,10 @@ const record = {case_id:"qa-1",dataset_version:"1.0",split:"holdout",messages:tu
 
 test("a chat dataset can run against its own case rubric with no saved customer grader",async t=>{
   const model:LocalCandidate = {kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  const judge:LocalCandidate={...model,id:"ollama/independent-judge",model:"independent-judge"};
   let candidateCalls=0,judgeCalls=0;
   const b=new Bench(":memory:",{
-    discover:async()=>[inventory([model])],
+    discover:async()=>[inventory([model,judge])],
     invoke:async(c,m,o)=>{
       const evaluation=opikJudgeRequest(m);
       if (evaluation?.stage==="geval-steps") return reply("Compare the reading and units against the case limits.");
@@ -40,7 +41,9 @@ test("a chat dataset can run against its own case rubric with no saved customer 
   await b.refresh();
   const ds=b.import("reference","QA rubric cases",JSON.stringify(record));
   assert.throws(()=>b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],datasetScorer:"exact-reference"}),/Exact matching/);
-  const id=b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],caseJudgeId:model.id});
+  assert.throws(()=>b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],caseJudgeId:model.id}),/independent model/);
+  assert.deepEqual([candidateCalls,judgeCalls],[0,0]);
+  const id=b.start({mode:"dataset",datasetId:ds,candidateIds:[model.id],caseJudgeId:judge.id});
   await present(b.active).done;
   const saved=b.exportRun(id);
   assert.equal(saved.status,"completed",saved.manifest.error);
@@ -138,8 +141,9 @@ test("model datasets exclude action graders and standalone grading uses supplied
 
 test("an explicit grader requires expected answers for each selected case before candidate dispatch",async t=>{
   const model:LocalCandidate={kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
+  const judge={...model,id:"ollama/independent-judge",model:"independent-judge"};
   let candidateCalls=0,scoreCalls=0;
-  const bench=new Bench(":memory:",{discover:async()=>[inventory([model])],invoke:async(_c,messages)=>{
+  const bench=new Bench(":memory:",{discover:async()=>[inventory([model,judge])],invoke:async(_c,messages)=>{
     const request=opikJudgeRequest(messages);
     if(request?.stage==="geval-steps")return reply("Compare the answer to the supplied disposition.");
     if(request?.stage==="geval-score"){scoreCalls++;return reply('{"score":10,"reason":"The disposition matches."}');}
@@ -151,9 +155,9 @@ test("an explicit grader requires expected answers for each selected case before
   const label={...base,case_id:"labeled",reference:"HOLD"};
   const plain=bench.import("reference","Unlabeled",JSON.stringify(missing));
   const mixed=bench.import("reference","Mixed", [missing,label].map(row=>JSON.stringify(row)).join("\n"));
-  const common={intent:"create",type:"opik",category:"Disposition",industry:"Cross-industry",criteria:"Compare the lot disposition.",threshold:1,judgeId:model.id};
-  const reference=bench.graders.save({...common,name:"Reference disposition",requiredEvidence:["reference"]},[model]);
-  const trajectory=bench.graders.save({...common,name:"Disposition steps",requiredEvidence:["trajectory"]},[model]);
+  const common={intent:"create",type:"opik",category:"Disposition",industry:"Cross-industry",criteria:"Compare the lot disposition.",threshold:1,judgeId:judge.id};
+  const reference=bench.graders.save({...common,name:"Reference disposition",requiredEvidence:["reference"]},[judge]);
+  const trajectory=bench.graders.save({...common,name:"Disposition steps",requiredEvidence:["trajectory"]},[judge]);
   const start=(datasetId:string,id:string)=>bench.start({mode:"dataset",datasetId,candidateIds:[model.id],graderIds:[id]});
   assert.equal(bench.datasetGraderOptions(mixed).expectedAnswerCount,1);
   assert.throws(()=>start(plain,reference),/0 of 1 have one/);

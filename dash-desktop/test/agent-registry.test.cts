@@ -98,7 +98,7 @@ test("the manifest rejects duplicate or external prompt files before a role can 
 test("changing shared grading guidance revises only its consumers and rejects an external guide",t=>{
   const {assets,manifest,manifestFile}=setup(t);
   const registry=readAgentRegistry(assets);
-  const file="prompts/grading-evidence-v1.md";
+  const file="prompts/grading-evidence-v2.md";
   const consumers=manifest.agents.filter(entry=>entry.guidance===file);
   assert.deepEqual(consumers.map(a=>a.id).sort(),["grader-designer","report-analyzer","report-reporter","workflow-expert","workflow-metric-auditor"]);
   fs.appendFileSync(path.join(assets,file),"\nSynthetic revision to the shared evidence policy.\n");

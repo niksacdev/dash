@@ -55,6 +55,7 @@ export interface RunManifest {
   measureGraders?:PinnedMeasure[];
   /** Automatic local decisions see only the candidate-visible task and answer. */
   taskAnswerDecisionGraderIds?:string[];
+  deliverableChecklistHashes?:Record<string,string>;
   datasetScorer?:DatasetScorer|null; approvedPromptId?:string|null; approvedPrompt?:ApprovedPrompt|null;
   prompt:string|null; objective?:string|null; effectiveSystem?:string|null; promptSource?:string;
   tokenBudget?:{inputCap:number|null;outputCap:number|null}; datasetId:string|null; datasetMetadata?:StoredMetadata|null;
@@ -68,7 +69,7 @@ export interface RunManifest {
 }
 export type CurrentManifest = RunManifest & {tokenBudget:{inputCap:number|null;outputCap:number|null}};
 export interface RunData {status:RunStatus;manifest:RunManifest;results:RunResult[];assessments:RecordedAssessment[];partial:RunPartial|null}
-export interface RunDetail extends RunData {hasSourcedInspectionDecision?:boolean;hasInspectionReference?:boolean;hasInspectionRangeReference?:boolean;liveLaneProgressVersion?:1;candidatePartials?:RunCandidatePartial[];decisionReviewTargets?:Record<string,import("./saved-score-review.cjs").DecisionReviewTarget>;savedReviews?:import('./saved-score-review.cjs').SavedReview[];reviewedVerdict?:import('./saved-score-review.cjs').ReviewSummary;quickFieldGraderIds?:string[];hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;report:RunReport|null;liveRevision:number|null}
+export interface RunDetail extends RunData {conflictingReviewGraderIds?:string[];hasSourcedInspectionDecision?:boolean;hasInspectionReference?:boolean;hasInspectionRangeReference?:boolean;liveLaneProgressVersion?:1;candidatePartials?:RunCandidatePartial[];decisionReviewTargets?:Record<string,import("./saved-score-review.cjs").DecisionReviewTarget>;savedReviews?:import('./saved-score-review.cjs').SavedReview[];reviewedVerdict?:import('./saved-score-review.cjs').ReviewSummary;quickFieldGraderIds?:string[];hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;report:RunReport|null;liveRevision:number|null}
 export interface StartRun {
   mode:RunMode; candidateIds:string[]; datasetId?:string; caseId?:string; parentId?:string;
   approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[]; allowHostedDecision?:boolean;

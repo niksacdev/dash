@@ -1,6 +1,9 @@
+import {isCompleteness} from "./semantic-completeness.cjs";
+import {hash} from "./packs.cjs";
 import {randomUUID} from "node:crypto";
 import type {DatabaseSync} from "node:sqlite";
 import {z} from "zod";
+import type {JudgeComparison} from "./judge-independence.cjs";
 import type {Graders} from "./graders.cjs";
 import {graderEvidence} from "./evaluation-cases.cjs";
 import {graderRequiredEvidence,requireAssessmentEvidence,storedAssessment,type GraderSpec} from "./grader-types.cjs";
@@ -16,14 +19,14 @@ export const reviewRequest=z.strictObject({run:z.string().min(1).max(200),caseId
 const record=storedAssessment.extend({candidate:z.string(),caseId:z.string()});
 const reviewSchema=z.object({id:z.string(),caseId:z.string(),graderId:z.string(),graderName:z.string(),version:z.number(),created:z.string(),
   source:z.enum(["saved run","dataset case","supplied for review","task and answer"]),status:z.enum(["grading","completed","interrupted"]),
-  comparisonIssue:z.string().optional(),finding:z.object({status:z.enum(["higher","equal","inconclusive"]),candidateId:z.string().optional()}).optional(),grades:z.array(record).max(2)});
+  checklistHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),comparisonIssue:z.string().optional(),finding:z.object({status:z.enum(["higher","equal","inconclusive"]),candidateId:z.string().optional()}).optional(),grades:z.array(record).max(2)});
 export type SavedReview=z.infer<typeof reviewSchema>;
 export type ReviewSummary=Pick<RunReport,"verdict"|"winnerId"|"summary">;
 
 // Reuse the verdict's pinned-receipt validation, including served revision and decision abstention.
 function reviewMetric(run:RunData,review:SavedReview,grader:GraderSpec) {
   return analyzeOutputs({
-    manifest:{...run.manifest,caseIds:[review.caseId],graders:[grader],pack:null},
+    manifest:{...run.manifest,...(review.checklistHash && !run.manifest.deliverableChecklistHashes?.[review.caseId] && {deliverableChecklistHashes:{[review.caseId]:review.checklistHash}}),caseIds:[review.caseId],graders:[grader],pack:null},
     results:run.results.filter(result=>result.caseId===review.caseId),assessments:review.grades,
   }).metrics[0];
 }
@@ -97,7 +100,7 @@ export class SavedScoreReviews {
     return this.db.prepare("SELECT record FROM saved_score_reviews WHERE run=? ORDER BY rowid").all(run).map(r=>reviewSchema.parse(jsonText(r.record)));
   }
   async assess(request:z.infer<typeof reviewRequest>,run:RunDetail,g:GraderSpec,row:CaseRow,
-    originalAnswer:string|null,graders:Graders,adapters:RuntimeAdapters) {
+    originalAnswer:string|null,graders:Graders,adapters:RuntimeAdapters,comparison:JudgeComparison) {
     if(this.busy)throw Error("A saved-answer review is already running. Wait for it to finish.");
     if(!run.report || (!["incomplete","ungraded"].includes(run.report.verdict) && !canChallengeVerdict(run.report,run)))
       throw Error("Open a finished comparison with saved answers before requesting a review.");
@@ -123,6 +126,7 @@ export class SavedScoreReviews {
     });
     const id=randomUUID(),created=new Date().toISOString();
     const review:SavedReview={id,created,caseId:request.caseId,graderId:g.id,graderName:g.name,version:g.version,
+      ...(isCompleteness(g) && prepared[0]?.evidence.completenessChecklist && {checklistHash:hash(prepared[0].evidence.completenessChecklist)}),
       status:"grading",source:request.expectedAnswer?"supplied for review":!needs?"task and answer":run.manifest.mode==="quick"?"saved run":"dataset case",grades:[]};
     const prior=this.list(run.manifest.id);
     const coverage=reviewCoverage(run,run.report,prior,g);
@@ -133,7 +137,7 @@ export class SavedScoreReviews {
     const save=()=>this.db.prepare("UPDATE saved_score_reviews SET record=? WHERE id=?").run(JSON.stringify(review),id);
     try {
       for(const {candidate,evidence} of prepared) {
-        const grade=await graders.assess(g,evidence,adapters,AbortSignal.timeout(190000),!!request.allowHostedDecision);
+        const grade=await graders.assess(g,evidence,adapters,AbortSignal.timeout(190000),!!request.allowHostedDecision,comparison);
         review.grades.push({...grade,id:randomUUID(),created:new Date().toISOString(),candidate,caseId:request.caseId});
         save();
       }

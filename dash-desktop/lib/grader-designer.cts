@@ -1,4 +1,5 @@
 import {rubricEvidenceInstruction} from "./measure-graders.cjs";
+import {isCompleteness} from "./semantic-completeness.cjs";
 import {isInspectionCheck} from "./inspection-decision.cjs";
 import {z} from "opik";
 import {PlanningRoute,type PlannerAdapters,type PlanningAttempt} from "./planner-routing.cjs";
@@ -124,7 +125,9 @@ function reviewedSource(g:GraderSpec) {
   return {id:g.id,name:g.name,version:g.version,scope:g.library?.scope ?? "customer",criteria:g.criteria,threshold:g.threshold,requiredEvidence:graderRequiredEvidence(g),
     hosted,model:g.type==="decision" ? g.decision.model : g.judge ? g.judge.provider+" · "+g.judge.model : null};
 }
-function hasRequiredEvidence(g:GraderSpec,brief:ReturnType<typeof gradingBrief>):boolean {
+function plannerCanUse(g:GraderSpec,brief:ReturnType<typeof gradingBrief>):boolean {
+  // An operator chooses the item checklist explicitly in the run picker.
+  if(isCompleteness(g))return false;
   if(g.type==="opik" && g.requiredEvidence?.some(e=>e==="reference" ? !brief.canSupplyReference : brief.target!=="agent"))return false;
   if(g.type==="trajectory")return brief.target==="agent";
   if(g.type==="field")return brief.referenceFields.length>0;
@@ -136,7 +139,7 @@ function candidatesFor(options:CatalogOptions,brief:ReturnType<typeof gradingBri
   const terms=(value:string)=>new Set(value.toLowerCase().match(/[a-z0-9]{3,}/g)||[]);
   const wanted=terms([brief.objective,...brief.metrics,...brief.criteria].join(" "));
   const seen=new Set<string>();
-  return options.available.filter(g=>hasRequiredEvidence(g,brief) && !options.automatic.some(a=>a.id===g.id) && !g.library?.automatic)
+  return options.available.filter(g=>plannerCanUse(g,brief) && !options.automatic.some(a=>a.id===g.id) && !g.library?.automatic)
     .sort((a,b)=>b.version-a.version).filter(g=>{
       const family=g.library?.familyId ?? g.id;
       if(seen.has(family))return false;
@@ -414,7 +417,7 @@ export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
     }
     const draft=draftSchema.parse(JSON.parse(row.draft)),brief=gradingBrief(bench,draft.request),literal=literalRules(brief);
     const options=choicesFor(bench,draft.request,brief.industry);
-    const available=options.available.filter(g=>hasRequiredEvidence(g,brief) && !options.automatic.some(a=>a.id===g.id));
+    const available=options.available.filter(g=>plannerCanUse(g,brief) && !options.automatic.some(a=>a.id===g.id));
     const models=bench.servers.filter(s=>s.online).flatMap(s=>s.models);
     const ids=choices.map(choice=>{
       const check=draft.checks[choice.index];

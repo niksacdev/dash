@@ -20,10 +20,11 @@ export const pinnedMeasure=z.object({
 });
 export type PinnedMeasure=z.infer<typeof pinnedMeasure>;
 export interface MeasureOption {
-  metric:string;criterion:string|null;generated:GraderDefinition|null;reason:string|null;
+  canMapRequestedItems?:boolean;metric:string;criterion:string|null;generated:GraderDefinition|null;reason:string|null;
 }
 
-export function measureOptions(approved:ApprovedPrompt,preferredJudge:string|null):MeasureOption[] {
+type ApprovedMeasures=Pick<ApprovedPrompt,"domain"|"metrics"|"metricCriteria"|"metricAudit">;
+export function measureOptions(approved:ApprovedMeasures,preferredJudge:string|null):MeasureOption[] {
   const pairs=approved.metricCriteria ?? approved.metricAudit;
   if(!pairs)return [];
   return approved.metrics.map(metric=>{
@@ -41,8 +42,22 @@ export function measureOptions(approved:ApprovedPrompt,preferredJudge:string|nul
         rubricEvidenceInstruction,
         "Score this measure alone. Full credit (10) requires every requested element to be present and correct. Zero credit (0) if any required element is missing, contradicted or wrong. A correct field elsewhere cannot offset a wrong decision. Use only 0 or 10."].join("\n"),
     };
-    return {metric,criterion,generated,reason:null};
+    const option={metric,criterion,generated,reason:null};
+    return {...option,canMapRequestedItems:matchesCompletenessMeasure(option,approved)};
   });
+}
+
+// A whole-task coverage check cannot establish the correctness of a named field or one selected deliverable.
+function matchesCompletenessMeasure(row:MeasureOption,approved:ApprovedMeasures):boolean {
+  const audit=approved.metricAudit?.find(entry=>entry.metric===row.metric);
+  if(!row.generated || !row.criterion || audit?.evidenceBasis!=="task-answer" || row.reason)return false;
+  const label=row.metric.trim().toLowerCase().replace(/[.!?]$/,"");
+  const coverageLabel=/^(?:requested (?:items|deliverables) present|(?:requested |explicit )(?:item|deliverable) coverage|(?:all |requested )deliverables addressed)$/;
+  const criterion=row.criterion.toLowerCase().trim().replace(/[.!?]$/,"");
+  const object="(?:all|each|every) (?:the )?(?:(?:explicitly )?requested |explicit |required )?(?:deliverables?|items?|parts?)(?: (?:of|in|from) the (?:task|request|checklist))?";
+  const covers=new RegExp("^(?:(?:the |a )?(?:answer|response|candidate(?: answer| response)?) (?:explicitly )?)?(?:address(?:es)?|covers?|includes?|lists?|provides?) "+object+"$");
+  const covered=new RegExp("^"+object+" (?:are|is) (?:addressed|covered|included|provided)(?: in the (?:answer|response))?$");
+  return coverageLabel.test(label) && (covers.test(criterion) || covered.test(criterion));
 }
 
 export function pinMeasure(option:MeasureOption,grader:GraderSpec|null):PinnedMeasure {

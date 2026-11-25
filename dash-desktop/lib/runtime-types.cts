@@ -25,6 +25,7 @@ interface CandidateIdentity {
 }
 export interface LocalCandidate extends CandidateIdentity {
   nativeKey?:string;
+  nativePublisher?:string;
   provider: LocalProvider;
   kind: "model";
 }

@@ -56,8 +56,9 @@ test("new runs pin the chosen cross-industry metric, reruns retain their exact r
 
 test("a reference-free default can score input-only cases while rubric and reference requirements remain explicit", async t=>{
   const judge:LocalCandidate = {kind:"model",provider:"ollama",model:"qa",id:"ollama/qa",revision:"local-v1",loaded:true};
+  const candidate={...judge,model:"candidate-qa",id:"ollama/candidate-qa"};
   const b = new Bench(":memory:", {
-    discover:async()=>[inventory([judge])],
+    discover:async()=>[inventory([judge,candidate])],
     invoke:async(_model,_messages,options)=>options.judging
       ? reply(JSON.stringify({answer_relevance_score:1,reason:"The response addresses the task."}))
       : reply("Hold for review."),
@@ -67,7 +68,7 @@ test("a reference-free default can score input-only cases while rubric and refer
   const row={case_id:"input",dataset_version:"1",split:"development",prompt:"Name the disposition."};
   const plain=b.import("reference","Input only",JSON.stringify(row));
   const rubrics=b.import("reference","Graded",JSON.stringify({...row,rubric:"The answer must request supervisor review."}));
-  const run=(datasetId:string)=>b.start({mode:"dataset",datasetId,candidateIds:[judge.id]});
+  const run=(datasetId:string)=>b.start({mode:"dataset",datasetId,candidateIds:[candidate.id]});
   const bind=(key:"hallucination"|"answer-relevance")=>{
     const metric=getOpikTemplate(key);
     const id=b.graders.save({name:metric.name,type:"opik-metric",intent:"create",metricKey:key,

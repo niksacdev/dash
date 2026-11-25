@@ -24,7 +24,8 @@ function pendingDatasetGrading(snapshot:string|null):DatasetGradingRead {
 let datasetGradingRead=pendingDatasetGrading(null);
 async function fetchDatasetGrading(snapshot:string):Promise<DatasetGradingRead> {
   try {
-    const options=await api.datasetGraderOptions(snapshot);
+    const approved=workflows.dataset.approved;
+    const options=await api.datasetGraderOptions(snapshot,approved?.datasetId===snapshot?approved.id:undefined);
     if(!isRecord(options) || ![options.automatic,options.available].every(list=>Array.isArray(list) && list.every(g=>isRecord(g) && typeof g.id==="string")))
       throw Error("The dataset grader list was incomplete.");
     if(options.scoringVersion!==1)return {snapshot,options:null,message:"Restart DASH to verify scoring coverage for this dataset.",restart:true};
@@ -42,6 +43,22 @@ function datasetGradingFailure() {
   if(!datasetGradingRead.restart)return readFailure("Couldn’t load dataset graders",datasetGradingRead.message,"Retry");
   return '<section class="wf-error spacer" role="alert" data-dataset-grading-restart><strong>Restart DASH to choose graders</strong>'+
     '<p>Your dataset setup is saved. Quit DASH completely, reopen it and return to Dataset run to verify scoring coverage.</p></section>';
+}
+function judgeOverlap(mode:UiMode,map:Record<string,string[]>|undefined,id:string) {
+  const candidates=selectedModels(mode);
+  if(!candidates.length)return "";
+  if(!map)return "Restart DASH to verify that the judge is independent of the selected candidates.";
+  const overlap=(map[id] ?? []).find(candidate=>candidates.includes(candidate));
+  if(!overlap)return "";
+  const lane=rosterModels().find(m=>m.id===overlap);
+  return (lane?.model ?? overlap)+" is on the starting line. Choose an independent judge or a different grader.";
+}
+function savedJudgeIssue(mode:UiMode,options:UiGraderOptions|null,g:UiGrader) {
+  if(!g.judge && g.type!=="decision")return "";
+  return judgeOverlap(mode,options?.judgeCandidateConflicts,g.id);
+}
+function gradingOption(id:string,label:string,chosen:string,issue:string) {
+  return '<option value="'+esc(id)+'" '+(id===chosen?"selected ":"")+(issue?"disabled ":"")+'>'+esc(label+(issue?" · "+issue:""))+'</option>';
 }
 function graderScope(g:UiGrader):UiGraderScope{return g.library?.scope || "customer";}
 function graderScenario(g:UiGrader) {
@@ -99,9 +116,14 @@ function runGraderDesign(scope:string,automatic:UiGrader[]) {
   const checks=automatic.length?automaticChecks(automatic):'<section class="gc-auto"><h3>Automatic checks</h3><p>No automatic checks for this run.</p></section>';
   return '<div data-run-grader-design>'+checks+gradeDesignerView(scope)+'</div>';
 }
+function requestedItemsLink(mode:UiMode) {
+  if(!state.completenessPreset)return "";
+  return '<p class="wf-hint"><a class="link" data-run-requested-items href="#'+esc(runLibraryPath(mode)+"?setup=requested-items")+
+    '">Requested items present · local decision grader</a></p>';
+}
 function runGraderPanel(mode:UiMode,scope:string,versions:string,controls:string,automatic?:UiGrader[]) {
   return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+runGraderHeader(mode)+
-    '<div class="qc-attached">'+versions+'</div>'+(automatic?runGraderDesign(scope,automatic):"")+controls+'</section>';
+    '<div class="qc-attached">'+versions+'</div>'+(automatic?runGraderDesign(scope,automatic):"")+requestedItemsLink(mode)+controls+'</section>';
 }
 function graderPicker(){
   const scope=activeDatasetGraderScope(),chosen=datasetGradeSelection(scope),issue=referenceScoringIssue();
@@ -158,7 +180,7 @@ function scoreRows(rows:UiAssessment[]){
     const native=r.opikMetric?'<small class="block">Opik '+(r.opikMetric.direction==="higher-is-risk"?"raw risk":"native score")+' · '+esc(r.opikMetric.nativeScore)+'</small>':"";
     const outcome=r.pass==null ? d ? "Abstained · unscored" : "Unscored" : r.pass ? "Passed" : (d || r.engine==="decision") ? "Failed" : "Review";
     return [esc(r.name+" v"+r.version)+model+requested+usedFallback,esc(r.datasetCase ? [r.datasetCase.datasetName,r.datasetCase.datasetVersion,r.datasetCase.caseId].join(" · ") : [r.candidate,r.caseId].filter(Boolean).join(" / ") || "Provided output"),
-      r.value==null?"—":esc(metricNumber(r.value)),esc(outcome),esc(r.pass==null?gradingExplanation(r.reason):r.reason)+probability+native];
+      r.value==null?"—":esc(metricNumber(r.value)),esc(outcome),esc(r.pass==null?gradingExplanation(r.reason):r.reason)+probability+native+requestedItemEvidence(r.completeness)];
   })):"";
 }
 let gradeFilter="",graderDraft:UiGrader|null=null,graderTemplate:UiOpikLibraryTemplate|null=null;
@@ -183,14 +205,12 @@ function decisionViewOptions(view:UiDecisionView,required:boolean){
 }
 const hostedDecisionModels=["liquid/d1.2","liquid/d1.2-ultra","typesafe/jev-1.14"];
 const decisionStarters = {
-  completeness:{name:"Requested deliverables addressed",industry:"Cross-industry",category:"Task completeness",
-    criteria:"Does the candidate answer itself address each explicit deliverable in the task, including any requested declaration that evidence is unavailable? Evaluate coverage only. Ignore accuracy and unrequested details."},
   disclosure:{name:"Requested missing-evidence disclosure",industry:"Cross-industry",category:"Evidence disclosure",
-    criteria:"The task explicitly identifies missing evidence and asks the respondent to flag it and withhold a dependent conclusion. Does the candidate answer itself both identify that gap and withhold the dependent conclusion?"},
+    criteria:"The task explicitly states that a reconciliation is missing. Does the candidate tell the reader that the reconciliation is unavailable, even using different wording?"},
   earnings:{name:"GAAP diluted EPS support",industry:"Financial Services",category:"Financial fact accuracy",
-    criteria:"Does the answer report the requested diluted EPS using the reference’s GAAP figure for that period, keeping it distinct from adjusted EPS?"},
+    criteria:"Does the candidate describe the referenced EPS figure as GAAP earnings rather than adjusted EPS? Assess its accounting-basis label; use the amount-matching rule for the numeric value."},
   inspection:{name:"Inspection disposition evidence",industry:"Manufacturing",category:"Inspection disposition",
-    criteria:"Does the answer support its disposition of the inspected sample using the current drawing revision, measured value and receiving rule in the inspection reference?"},
+    criteria:"Does the answer communicate the hold instruction required by the current drawing revision in the verified reference? Accept equivalent hold wording. Use the deterministic inspection rule for limits and measurements."},
 };
 function decisionFields(g:UiGraderDefinition) {
   const d=g.decision,local=d?.provider!=="openrouter",enabled=g.type==="decision",mlx=d?.protocol==="mlx-vlm";
@@ -265,7 +285,7 @@ function gradeCreate(){
   const editing=!!(graderDraft || graderTemplate);
   const manual='<form id="grade-create" data-method="'+esc(g.type)+'" class="spacer">'+(graderDraft?'<p class="muted">'+esc((graderEditIntent==="derive"?"Based on ":"Previous revision · ")+graderDraft.name+" v"+graderDraft.version+
       (inherited?" · "+graderScenario(graderDraft):""))+'</p>':'')+
-    (!editing?'<details class="wf-options"><summary>Decision examples · grade an answer</summary><p>Choose a yes/no question for a decision judge such as local D1. The earnings question checks the answer against a reference with reported and adjusted EPS. The inspection question checks the answer against a reference with the active drawing, reading and receiving rule. Both require a reference.</p><p>The two cross-industry questions use the task and answer. Test these experimental questions with labeled examples before saving a grader for your runs.</p>'+
+    (!editing?'<details class="wf-options"><summary>Decision examples · grade an answer</summary><p>Choose a yes/no question for a decision judge such as local D1. The earnings example checks the reported accounting basis. The inspection example checks whether the answer communicates a required hold. Both need a verified reference.</p><p>The disclosure question uses the task and answer. Test these questions with labeled examples before saving a grader for your runs.</p>'+
       (Object.keys(decisionStarters) as (keyof typeof decisionStarters)[]).map(key=>'<button type="button" data-decision-starter="'+key+'">'+esc(decisionStarters[key].name)+'</button>').join(" ")+'</details>':'')+'<div class="cols">'+
     formField("Grader name",'<input name="name" required maxlength="100" value="'+esc(g.name)+'">')+
     formField("Category",'<input name="category" required maxlength="100" value="'+esc(g.category)+'" placeholder="e.g. Factual accuracy">')+'</div><div class="cols">'+
@@ -487,6 +507,7 @@ const scoringRuleLabels:Record<UiGradeType,string>={
 };
 
 function graderInputs(g:UiGrader):string {
+  if(g.presetId)return "The explicit deliverable list, candidate-visible task and candidate answer.";
   if(g.type==="catalog"){
     if(inspectionDecisionRule(g))return "The approved inspection facts and the JSON decision from the candidate.";
     if(g.library?.scenario)return "Model answer and the labeled "+(graderScenario(g) || "scenario")+" case.";
@@ -510,6 +531,8 @@ function metricInputs(key:UiOpikMetricKey|undefined):string {
   return key==="hallucination" ? "Task, model answer and supporting facts from the case." : "Task and model answer.";
 }
 function gradingOutcome(g:UiGrader):string {
+  if(g.presetId && g.decision)return "Each requested item gets a separate decision. Pass at P(yes) ≥ "+g.threshold+", fail at ≤ "+g.decision.failAt+
+    ". All items must pass. A failed item fails coverage. An unfinished assessment or unresolved coverage stays unscored.";
   if(g.type==="decision" && g.decision)
     return "Pass when P(yes) ≥ "+g.threshold+". Fail when P(yes) ≤ "+g.decision.failAt+". Between the cutoffs the answer stays unscored.";
   if(g.type==="exact")return "1 for an exact match after trimming outer whitespace, 0 otherwise.";
@@ -552,6 +575,47 @@ function catalogRevision(g:UiGrader,latest:boolean) {
     (replaced?'<small>Using this version on new runs replaces '+esc(replaced.name+' v'+replaced.version)+' as the automatic grader.</small>':'')+
     '<div class="gc-uses" data-grade-uses hidden role="status"></div></details></article>';
 }
+function requestedItemsSetup() {
+  const preset=state.completenessPreset;
+  if(!preset)return "";
+  const scoped=!!runLibraryRoute(),open=new URLSearchParams(visibleHash.split("?")[1]).get("setup")==="requested-items";
+  const bound=state.graders.filter(g=>g.presetId===preset.id);
+  return '<article data-requested-items-preset class="grader-row gc-card gc-template" data-filter="'+esc((preset.name+" D1 local decision checklist").toLowerCase())+'">'+
+    '<h4>'+esc(preset.name)+'</h4><p>Check each explicitly requested item against the answer. A paraphrase can count. This check measures coverage only.</p>'+
+    '<p class="wf-hint">Add a “Required deliverables:” bullet list to the task or supply the dataset’s candidate-visible input.required_deliverables. Use up to eight items. Use a separate rule for accuracy and JSON field validation.</p>'+
+    (scoped && bound.length?'<p>Choose a saved version below to review its assignment.</p>':'')+
+    '<details data-own-open '+(open && !bound.length?"open":"")+'><summary>'+(bound.length?"Connect another native judge":"Set up a local decision judge")+'</summary>'+
+    '<form id="requested-items-setup"><p>Connect a loopback runtime with a native D1 model loaded, then save a reusable grader. Each explicit item gets one yes/no decision.</p>'+
+    nativeJudgeFields({...nativeDraft(),protocol:"mlx-vlm"},false)+
+    '<p class="wf-hint">Pass at P(yes) ≥ 0.80, fail at ≤ 0.20. Other results need review. Test a known omission before using this grader on a dataset.</p>'+
+    '<button type="submit">Save grader version</button></form></details></article>';
+}
+async function saveRequestedItemsPreset(form:HTMLFormElement) {
+  const preset=state.completenessPreset;
+  if(!preset || form.hasAttribute("data-nav-saving") || form.hasAttribute("data-nav-saved"))return;
+  const here=currentVisit(),scoped=!!runLibraryRoute();
+  try{
+    const endpoint=formText(form,"decision-endpoint").trim(),protocol=formText(form,"decision-protocol"),model=formText(form,"decision-discovered");
+    if(!model || (protocol!=="systemone" && protocol!=="mlx-vlm"))throw Error("Find decision models and select the native model to bind to this grader.");
+    form.querySelector(":scope > [data-action-error]")?.remove();
+    const unlock=lockNavigationWrite(form);
+    let id:string;
+    try{id=await api.saveGrader({presetId:preset.id,decision:{provider:"local",endpoint,protocol,model,failAt:.2},threshold:.8});}
+    finally{unlock();}
+    if(!here() || !form.isConnected)return;
+    consumeSavedForm(form);
+    if(!scoped)recordWorkspaceSave([{id,label:preset.name}]);
+    await render();
+    if(!here())return;
+    const entry=document.querySelector<HTMLElement>('[data-grade-version="'+CSS.escape(id)+'"]');
+    if(scoped){
+      const attach=entry?.querySelector<HTMLButtonElement>("[data-quick-attach]");
+      if(attach){attach.click();attach.focus();}
+      else if(entry){const group=entry.closest("details");if(group)group.open=true;entry.tabIndex=-1;entry.focus();}
+    }else document.getElementById("grader-receipt")?.focus();
+    message("Saved "+preset.name+".");
+  }catch(error){if(here() && form.isConnected)inlineError(form,error);}
+}
 function nativeMetricTemplates() {
   if(!state.opikLibraryTemplates.length)return "";
   return '<div class="gc-templates"><h4>Opik metric templates</h4><div class="gc-grid">'+state.opikLibraryTemplates.map(t=>
@@ -577,7 +641,7 @@ function catalogSection(scope:UiGraderScope,title:string) {
     return '<section class="gc-industry"><div class="gc-shelf-head"><span class="gc-domain-mark '+icon+'">'+svg(icon)+'</span><h4>'+esc(industry)+'</h4>'+
       '<small>'+count+' '+(count===1?'grader':'graders')+'</small></div>'+familyRevisionList(graders)+'</section>';
   }).join("")+'</div>':familyRevisionList(items);
-  const templates=scope==="general"?nativeMetricTemplates():"";
+  const templates=scope==="general"?requestedItemsSetup()+nativeMetricTemplates():"";
   return '<section class="panel gc-section" data-catalog-scope="'+scope+'" tabindex="-1"><h3>'+title+'</h3>'+body+templates+
     (!items.length && !templates?'<p class="muted">'+(scope==="customer"?"Save a grader or customize a shipped version to start your collection.":"No graders in this section.")+'</p>':'')+'</section>';
 }
@@ -738,6 +802,7 @@ document.addEventListener("change",e=>{
     $("#judge-choice",f).hidden=!["opik","judge","opik-metric"].includes(e.target.value);
     resetDecisionDiscovery(f);
   }
+  if(e.target.name==="decision-protocol" && e.target.form?.id==="requested-items-setup")resetDecisionDiscovery(e.target.form);
   if(e.target.name==="decision-protocol" && e.target.form?.id==="grade-create"){
     const form=e.target.form,mlx=e.target.value==="mlx-vlm";
     const model=form.querySelector("[name=decision-model]")?.closest("label");
@@ -754,7 +819,7 @@ document.addEventListener("change",e=>{
 document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
   if(e.target.form?.id==="grade-sample")editSampleRetry(e.target.form);
-  if(e.target.name==="decision-endpoint" && e.target.form?.id==="grade-create")resetDecisionDiscovery(e.target.form);
+  if(e.target.name==="decision-endpoint" && e.target.form && ["grade-create","requested-items-setup"].includes(e.target.form.id))resetDecisionDiscovery(e.target.form);
   if(e.target.id==="grade-filter"){if(runLibraryRoute())quickChooserFilter=e.target.value;else gradeFilter=e.target.value;applyCatalogFilter();}
 });
 document.addEventListener("change",e=>{
@@ -812,8 +877,8 @@ document.addEventListener("click",async e=>{
   if(retry){retry.disabled=true;await refreshSampleHistory();return;}
   const starter=e.target.closest<HTMLButtonElement>("[data-decision-starter]");
   const kind=starter?.dataset.decisionStarter;
-  if(starter?.form && (kind==="earnings" || kind==="inspection" || kind==="completeness" || kind==="disclosure")){
-    const form=starter.form,example=decisionStarters[kind],general=kind==="completeness" || kind==="disclosure";
+  if(starter?.form && (kind==="earnings" || kind==="inspection" || kind==="disclosure")){
+    const form=starter.form,example=decisionStarters[kind],general=kind==="disclosure";
     const method=requireElement("#grade-type",HTMLSelectElement,form);
     method.value="decision";method.dispatchEvent(new Event("change",{bubbles:true}));
     form.dataset.nativeStarter=String(general);
@@ -830,7 +895,7 @@ document.addEventListener("click",async e=>{
     requireElement("input[value=trajectory]",HTMLInputElement,form).checked=false;
     const criteria=requireElement("[name=criteria]",HTMLTextAreaElement,form);
     criteria.focus();
-    message(kind==="disclosure"?"Use only for tasks that identify missing evidence and ask the answer to disclose it.":"Starter applied. Review the criterion and save your grader version.");
+    message(kind==="disclosure"?"Use for tasks asking the answer to flag a missing reconciliation.":"Starter applied. Review the criterion and save your grader version.");
     return;
   }
   const discover=e.target.closest<HTMLButtonElement>("[data-native-discover]");
@@ -932,6 +997,7 @@ async function scoreSample(form:HTMLFormElement) {
 document.addEventListener("submit",async e=>{
   if (!(e.target instanceof HTMLFormElement)) return;
 
+  if(e.target.id==="requested-items-setup"){e.preventDefault();await saveRequestedItemsPreset(e.target);return;}
   if(e.target.id==="grade-sample"){e.preventDefault();await scoreSample(e.target);return;}
   if(!["grade-case","grade-create"].includes(e.target.id))return;
   e.preventDefault();const f=e.target,b=requireElement("button:not([type=button])",HTMLButtonElement,f);

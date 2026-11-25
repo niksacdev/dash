@@ -203,6 +203,14 @@ function updateGrid(picker:HTMLElement) {
   $("#roster-groups",picker).innerHTML = rosterGroups(mode);
   $("#pick-count",picker).textContent = selectedModels(mode).length + " / 2 selected";
   if (mode === "quick") {
+    const plan=quickGradePlan();
+    if(plan?.options){
+      refreshQuickDefaults(plan);
+      for(const host of document.querySelectorAll<HTMLElement>("[data-qc-measure]")){
+        const index=Number(host.dataset.qcMeasure),row=quickGradingRows(plan.options)[index];
+        if(row)host.outerHTML=quickMeasureRow(row,index,plan,plan.options);
+      }
+    }
     rememberQuickLineup(true);
     updateQuickGradingControls();
     scheduleBudgetPreview();

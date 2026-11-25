@@ -60,7 +60,7 @@ function nativeScoreName(metric:Metric, grader:GraderSpec|undefined) {
   if (!metric.lineage) return metric.label+" ["+metric.id.slice(-8)+"]";
   const catalogName=grader?.type==="catalog" ? catalogRules.find(rule=>rule.key===grader.ruleKey)?.name :
     grader?.type==="opik-metric" ? getOpikTemplate(grader.metricKey).name : undefined;
-  const title=metric.lineage.scope==="customer" ? "Customer grader" : catalogName || (metric.lineage.scope==="industry" ? "Industry grader" : "General grader");
+  const title=grader?.type==="decision" && grader.presetId ? "Requested items present" : metric.lineage.scope==="customer" ? "Customer grader" : catalogName || (metric.lineage.scope==="industry" ? "Industry grader" : "General grader");
   return title+" ["+opaqueId(metric.id)+"]";
 }
 const options = { maxRetries: 0, timeoutInSeconds: 35 };
@@ -379,6 +379,10 @@ export class OpikExperiments {
           ? [{grader_id:metric.lineage?opaqueId(metric.id):metric.id,grader_version:metric.version,...grade.decision}] : []);
         const caseGrades=caseEvidence.map(({metric,grade})=>({...graderPin(metric),score:grade.score,pass:grade.pass,
           status:grade.score===null ? (grade.decision?.status==="review"?"abstained":"unscored") : grade.pass?"passed":"failed",
+          ...(grade.completeness && {requested_item_coverage:{preset_id:grade.completeness.presetId,usage:grade.completeness.usage,
+            items:grade.completeness.items.map((item,i)=>({item:i+1,value:item.value,pass:item.pass,
+              ...(item.decision && {actual_model:item.decision.actualModel,probability_yes:item.decision.probabilityYes,
+                fail_at:item.decision.failAt,pass_at:item.decision.passAt,usage:item.decision.usage})}))}}),
           ...(grade.opikMetric && {native_metric:grade.opikMetric})}));
         const trace:NativeTrace={id:traceId,projectName,name:result.caseId,startTime,endTime,input,output,source:"experiment",
           metadata:privacy.metadata({dash_trace_id:result.trace?.id,dash_steps:result.trace?.steps,case_id:result.caseId,candidate_id:candidate.id,

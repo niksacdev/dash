@@ -28,6 +28,7 @@ const devicePowerSummary=z.object({scope:z.literal("Whole device"),source:nullab
 const manifest=z.object({executionMode:z.enum(["single-lane","parallel-lanes"]).optional(),sharedDevicePower:devicePowerSummary.optional(),format:num,id:str,created:str,title:str,mode:z.enum(["quick","dataset"]),fixture:z.boolean(),
   candidates:z.array(candidate),caseIds:z.array(str),pack:z.custom<ScenarioPack>(isScenarioPack).nullable(),
   graders:z.array(z.unknown().transform(decodeGraderSpec)).default([]),approvedPrompt:z.unknown().transform(v=>v==null?v:decodeApprovedPrompt(v)).optional(),
+  deliverableChecklistHashes:z.record(z.string(),z.string().regex(/^[a-f0-9]{64}$/)).optional(),
   inspectionOnly:z.literal(true).optional(),measureGraders:z.array(pinnedMeasure).max(8).optional(),taskAnswerDecisionGraderIds:z.array(z.string().min(1)).optional(),
   approvedPromptId:nullable.optional(),datasetScorer:z.enum(["scenario","selected-graders","exact-reference"]).nullable().optional(),
   prompt:nullable,effectiveSystem:nullable.optional(),objective:nullable.optional(),promptSource:str.optional(),tokenBudget:budget.optional(),

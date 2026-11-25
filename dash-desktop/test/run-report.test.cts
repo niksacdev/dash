@@ -299,6 +299,7 @@ test("normal fixture completion persists a report before detail is opened; old r
 
 test("a two-model run compares actual persisted judge and deterministic assessments without sending judge evidence to candidates", async t => {
   const local: LocalCandidate[] = candidates.map(c => ({ ...c, model: c.id === "a" ? "lfm3-qa" : c.model, provider: "lmstudio", loaded: true }));
+  local.push({...local[0],id:"qa-judge",model:"qa-judge"});
   const requests: ChatTurn[][] = [];
   const bench: Bench = new Bench(":memory:", {
     discover: async () => [inventory(local)],
@@ -338,7 +339,7 @@ test("a two-model run compares actual persisted judge and deterministic assessme
   const draft = await bench.designPrompt({ mode: "quick", domain: "Manufacturing", objective: "Find the incoming lot needing review." });
   const approval = bench.workflow.approve({ draftId: draft.draftId, prompt: draft.prompt });
   const grader = { industry: "Manufacturing", category: "Traceability", threshold: .6 };
-  const judgeId = bench.graders.save({ ...grader, name: "Evidence", type: "judge", judgeId: "a", criteria: "PRIVATE_RUBRIC_MARKER" }, local);
+  const judgeId = bench.graders.save({ ...grader, name: "Evidence", type: "judge", judgeId: "qa-judge", criteria: "PRIVATE_RUBRIC_MARKER" }, local);
   const ruleId = bench.graders.save({ ...grader, name: "Cites lot", type: "contains", criteria: "712" }, []);
   const runId = bench.start({ mode: "quick", candidateIds: ["a", "b"], approvedPromptId: approval.id, graderIds: [judgeId, ruleId], measureGraders: [{metric:approval.metrics[0],kind:"saved",graderId:judgeId}] });
   await present(bench.active).done;
@@ -359,6 +360,7 @@ test("a two-model run compares actual persisted judge and deterministic assessme
 
 test("a reference dataset compares the original case prompts using only the operator's selected scoring method", async t => {
   const local: LocalCandidate[] = candidates.map(c => ({ ...c, provider: "ollama", loaded: true }));
+  local.push({...local[0],id:"qa-judge",model:"qa-judge"});
   const candidateMessages: ChatTurn[][] = [], judgeEvidence: {sme_rationale:string;rubric:string}[] = [];
   const bench: Bench = new Bench(":memory:", {
     discover: async () => [inventory(local)],
@@ -375,7 +377,7 @@ test("a reference dataset compares the original case prompts using only the oper
   t.after(() => bench.db.close());
   await bench.refresh();
   const row = { case_id: "inspection", dataset_version: "1", split: "development", prompt: "Which disposition should be selected?", reference: "Operator review", sme_rationale: "PRIVATE_SME_HOLD" };
-  const graderId = bench.graders.save({ name: "SME disposition", category: "Quality", industry: "Manufacturing", criteria: "Compare the output to the SME disposition.", type: "judge", threshold: .8, judgeId: "a" }, local);
+  const graderId = bench.graders.save({ name: "SME disposition", category: "Quality", industry: "Manufacturing", criteria: "Compare the output to the SME disposition.", type: "judge", threshold: .8, judgeId: "qa-judge" }, local);
   for (const mode of ["exact-reference", "selected-graders"] as const) {
     const item = mode === "exact-reference" ? row : { ...row, dataset_version: "2", rubric: "PRIVATE_RUBRIC: check the disposition." };
     const datasetId = bench.import("reference", "Reference " + mode, JSON.stringify(item),{industry:"Manufacturing",family:"Reference inspection "+mode,category:"Lot disposition"});

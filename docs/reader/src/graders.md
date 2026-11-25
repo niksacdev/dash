@@ -159,3 +159,24 @@ For another inspection, choose the relevant saved grader in Quick or Dataset set
 ```
 
 Use millimetres and decimal strings. An approved route such as `{"disposition":"accept"}` supplies enough evidence for the decision check alone. The candidate reports its decision in `disposition` or `routing`. For the range check, it can use `revision`, `lower_mm`, `upper_mm` and `measured_mm`, or name the active drawing range in `applicable_drawing` and the measurement in `reading`. When the schema separates `limit_range_lower` and `limit_range_upper`, DASH checks both fields against that revision. Use a separately reviewed rubric for free-text answers or different decision policies. Saved answers can be verified in the run report without invoking either candidate.
+
+## Check specific deliverables with local D1
+
+Use **Valid JSON** for JSON syntax and **Generation completed** for the runtime stop reason. If the provider reports a token limit, the generation check fails. If it supplies no recognizable stop reason, the check stays unscored. Neither diagnostic establishes that the answer addressed the business task.
+
+For a receiving handoff, ask for the lot ID, measured diameter with its unit, and hold or release decision. These are three deliverables. A note that gives all three can earn full coverage even if the stated disposition is wrong. Attach the drawing-based decision check as a separate measure when correctness matters.
+
+In **Graders → General**, open **Requested items present → Set up a local decision judge**, discover your native local D1 model and save the version. In Quick compare or Dataset run, attach that version from **Choose graders**. The candidate task can carry a checklist such as this one.
+
+```text
+Required deliverables:
+- A concrete identifier for the inspected lot
+- A numeric measured diameter with its unit
+- An explicit hold or release instruction for that lot
+```
+
+For an imported dataset, you can instead put the same list of strings in the candidate-visible `input.required_deliverables` field. DASH checks for the list before launching the candidates.
+
+D1 checks each approved item against the answer. All items must be present to pass. A definite omission fails the coverage check. If D1 is uncertain about an item and cannot identify a definite omission, the overall result stays unscored. The probability shown for an item is the judge’s estimate that the answer supplies it. Test a known omission before using it on a dataset. In one local eight-answer calibration, D1 referred all eight absent items for review. An explicit checklist makes it possible to inspect what was actually evaluated.
+
+Use an independent model for grading when comparing model outputs. LFM3 can prepare the prompt and participate as a candidate. For selected checks of explicit deliverables, select a separate local decision judge. For overall adequacy, use a reviewed rubric with the applicable source, success criteria and an independent judge. Verify the native endpoint in the setup form. A model appearing in LM Studio's chat inventory alone does not establish that its decision endpoint is ready. [Local decision grader setup](https://github.com/niksacdev/dash/blob/main/docs/guides/workbench.md#use-a-decision-model-as-a-grader)

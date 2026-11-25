@@ -34,6 +34,8 @@ When every missing case has a complete review under the original rubric versions
 
 Choose **Challenge verdict** on the case. Select a different grader version, inspect its evidence requirements, then choose **Grade saved answers**. For the shipped Manufacturing inspection sample, DASH can use its versioned case facts to check the disposition independently. An unrelated inspection requires its own verified facts. The range check evaluates the active drawing revision, both endpoints and the observed reading. The disposition check evaluates the decision, required action and recheck status. You can apply both versions to the same pair. Each deterministic check uses no model tokens. A model-based check invokes its pinned evaluator after submission.
 
+If a candidate also judged an earlier comparison, the original result remains visible. Choose an independent judge or a deterministic grader under **Challenge verdict** to check both saved answers. This uses the grader alone and preserves the original scores.
+
 The report shows the supplementary result and reason beside each answer. **Scored higher on this check** applies to that case and grader version. If the decision cannot be established, the check stays unscored. The original rubric grades, winner or tie, and Opik experiment retain their recorded values.
 
 A canceled or interrupted candidate may have saved a **Partial candidate output**. Inspect its case trace before requesting another response. For a historical provider failure, DASH shows the recoverable HTTP status or a short diagnostic and action.

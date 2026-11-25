@@ -1,3 +1,5 @@
+import {independentJudgeIssue,servedJudgeConflict,type JudgeComparison} from "./judge-independence.cjs";
+import {activation,assessCompleteness,completenessPreset,isCompleteness} from "./semantic-completeness.cjs";
 import {measureOptions,measureGraderRequest,pinMeasure,rubricEvidenceInstruction,type PinnedMeasure} from "./measure-graders.cjs";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 import { randomUUID } from "node:crypto";
@@ -170,6 +172,7 @@ function legacyFamilyId(g:{name:string;industry:string;origin?:RubricOrigin}) {
 function familyIdOf(g:GraderSpec) { return g.library?.familyId ?? legacyFamilyId(g); }
 /** Existing Opik defaults share a slot by metric. Each local decision criterion has its own family. */
 export function generalDefaultKey(grader:GraderSpec):string | null {
+  if (isCompleteness(grader))return null;
   if (!["General","Cross-industry"].includes(grader.industry) || grader.library?.scenario) return null;
   if (grader.type === "opik-metric") return grader.metricKey;
   if (grader.type === "decision" && grader.decision.provider === "local" && !grader.requiredEvidence?.length)
@@ -230,8 +233,8 @@ function outcomeRubric(approved:ApprovedPrompt, judges:LocalCandidate[], type:Ju
 }
 function localJudges(models:ModelCandidate[]) { return models.filter((m):m is LocalCandidate => m.provider==="lmstudio" || m.provider==="ollama"); }
 function pinnedJudge(m:LocalCandidate):LocalCandidate {
-  const {id,kind,provider,model,revision,quantization,nativeChat,reasoningOff}=m;
-  return {id,kind,provider,model,revision,quantization,nativeChat,reasoningOff};
+  const {id,kind,provider,model,revision,quantization,nativeChat,reasoningOff,nativeKey,nativePublisher}=m;
+  return {id,kind,provider,model,revision,quantization,nativeChat,reasoningOff,...(nativeKey && {nativeKey}),...(nativePublisher && {nativePublisher})};
 }
 export class Graders {
   // Discovery results belong to this desktop session. Never treat a chat roster entry as a decision endpoint.
@@ -309,6 +312,17 @@ export class Graders {
   }
   save(input:unknown, models:LocalCandidate[], origin:RubricOrigin|null = null,producer?:GraderProducer):string {
     if(!isRecord(input))throw Error("Provide a grader definition.");
+    if (Object.hasOwn(input,"presetId"))return this.atomic(()=>{
+      const parsed=activation.safeParse(input);
+      if(!parsed.success)throw Error("Activate the shipped requested-items preset using one discovered local D1 model and the fixed 0.2 and 0.8 cutoffs.");
+      const {decision,threshold,presetId}=parsed.data;
+      this.requireDiscovered(decision);
+      const familyId="dash/semantic-completeness/"+hash([decision,threshold,opikVersion,presetId]), id=familyId+"/v1";
+      const spec=savedGrader.parse({...completenessPreset,id,presetId,decision,threshold,type:"decision",judge:null,decisionView:"task-answer",
+        version:1,library:{scope:"general",familyId},opikEngine:opikVersion});
+      this.db.prepare("INSERT INTO graders(id,family,version,spec) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING").run(id,familyId,1,JSON.stringify(spec));
+      return id;
+    });
     return this.atomic(()=>this.saveRevision(input,models,origin,producer));
   }
   private saveRevision(input:Record<string,unknown>, models:LocalCandidate[], origin:RubricOrigin|null,producer?:GraderProducer):string {
@@ -316,6 +330,7 @@ export class Graders {
     const based=intent==="derive"||intent==="revise";
     if (!based && input.sourceGraderId!=null) throw Error("Choose derive or revise when providing a source grader.");
     const source=based ? this.get(text(input.sourceGraderId,250)) : undefined;
+    if(source && isCompleteness(source))throw Error("The requested-items preset uses its pinned item-by-item rubric. Create a separate custom grader to change its behavior.");
     if (source && intent==="revise") {
       if (source.library && source.library.scope!=="customer") throw Error("Derive a customer copy to change a shipped grader.");
       const head=this.heads().find(g=>familyIdOf(g)===familyIdOf(source));
@@ -435,6 +450,7 @@ export class Graders {
       let grader:GraderSpec;
       if(choice.kind==="saved"){
         grader=this.get(choice.graderId);
+        if(isCompleteness(grader) && !option.canMapRequestedItems)throw Error("Requested items present can only grade an approved measure of named deliverable presence. Choose a separate grader for correctness or quality.");
         if(!inIndustry(grader,approved.domain) || !quickCompatible(grader,judges,approved))
           throw Error("Choose an applicable saved grader for this measure. This grader needs different evidence, a different industry, or an unavailable judge.");
       }else{
@@ -473,7 +489,7 @@ export class Graders {
     const id = this.save(input, [pinnedJudge(judge)], origin);
     return this.select([...new Set([...selected.map(g => g.id), id])]);
   }
-  async assess(g:GraderSpec,e:GraderEvidence,adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false):Promise<GraderAssessment> {
+  async assess(g:GraderSpec,e:GraderEvidence,adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false,comparison?:JudgeComparison):Promise<GraderAssessment> {
     const base:Omit<GraderAssessment,"reason"|"value"|"pass">={graderId:g.id,name:g.name,version:g.version,category:g.category,engine:g.type,threshold:g.threshold,judge:g.type==="decision" ? g.decision.model : g.judge?.id || null,...(e.inputSource && {inputSource:e.inputSource})};
     try {
       signal.throwIfAborted();
@@ -504,9 +520,14 @@ export class Graders {
           throw new GradingIssue(missingExpectedAnswer);
         if (g.requiredEvidence?.includes("trajectory") && !Array.isArray(e.trajectory))
           throw new GradingIssue("This decision criterion requires an observed agent trajectory. The case has none.");
+        if(isCompleteness(g))return {...base,...await assessCompleteness(g.decision,g.threshold,e,signal),evaluator:"dash/semantic-completeness/v1 · "+opikVersion+" · decision_criterion"};
         const result=await evaluateDecision(g.decision,g.threshold,g.criteria,disclosedEvidence(e),signal,g.decisionView);
         const evaluator=`dash-decision/1 · ${opikVersion} · decision_criterion`;
         signal.throwIfAborted();
+        if(comparison && result.decision.actualModel!==model && independentJudgeIssue(
+          [{...g,decision:{...g.decision,model:result.decision.actualModel}}],comparison.inventory,comparison.candidates)){
+          return {...base,decision:result.decision,judgeConflict:true,evaluator,value:null,pass:null,reason:servedJudgeConflict};
+        }
         return {...base,...result,evaluator};
       }
       let value:unknown,reason:unknown;
@@ -559,8 +580,8 @@ export class Graders {
         ...(err instanceof DecisionDispatchError && {decisionAttempt:err.attempt})};
     }
   }
-  async record(g:GraderSpec,e:GraderEvidence,where:{run?:string;candidate?:string;caseId?:string;datasetCase?:DatasetCaseSource},adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false){
-    const verdict=await this.assess(g,e,adapters,signal,allowHostedDecision), id=randomUUID(),created=new Date().toISOString();
+  async record(g:GraderSpec,e:GraderEvidence,where:{run?:string;candidate?:string;caseId?:string;datasetCase?:DatasetCaseSource},adapters:RuntimeAdapters,signal:AbortSignal,allowHostedDecision=false,comparison?:JudgeComparison){
+    const verdict=await this.assess(g,e,adapters,signal,allowHostedDecision,comparison), id=randomUUID(),created=new Date().toISOString();
     // A catalog test can recover its source labels from the saved snapshot.
     const sample=where.datasetCase ? {datasetCase:where.datasetCase,evidence:{output:e.output}} : {evidence:disclosedEvidence(e)};
     const item={...verdict,id,created,...(where.run?{}:sample)};

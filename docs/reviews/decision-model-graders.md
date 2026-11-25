@@ -98,3 +98,58 @@ We fixed two binary criteria and six synthetic examples before grading. Each jud
 | Order receipt absent | Unscored | No request | No request |
 
 Each judge decided three of four cases with evidence correctly and left the same false EPS claim unresolved. D1 made four native calls using 588 input tokens and zero generated tokens. G-Eval made six model calls using 2,213 input and 503 output tokens. The sample establishes behavior on these cases only. Conditional escalation on the D1 abstention would have resolved zero additional cases. The two missing-source cases demonstrate the preflight behavior. These results use synthetic labels and the open Omni checkpoint. They do not measure hosted D1.2 or establish production accuracy. [Evidence policy and holdout design](../adr/0045-shared-grading-evidence.md)
+
+## Grade completeness with an independent judge
+
+An operator wants to compare an LFM3 answer with a Gemma answer on an approved handoff. The supervisor asks for a lot identifier, a diameter with its unit, and a hold or release decision. A note that supplies all three can be complete even if its disposition is wrong. A fluent note that omits the disposition is incomplete. Neither a nonempty response nor a successful generation measures completeness.
+
+The operator should be able to opt into a versioned local D1 check for the presence of each named deliverable in Quick compare or Dataset run. The run needs an explicit set of deliverables for each evaluated answer. A case without those requirements needs attention before inference. A suitable version already approved for that measure should stay pinned. A broad objective like “provide a complete answer” must not automatically select the item-presence check. JSON syntax, schema conformance and provider stop reasons already have direct evidence. Keep the coverage result separate from a check of whether the decision agrees with the drawing.
+
+Before either candidate generates an answer, check each selected scoring model against both candidates. Cover automatic, saved, case-specific and measure-specific judges. Reapplying a grader to saved responses follows the same rule. A planner can also be a candidate because it does not award the score. Preserve original scores and identify historical overlaps in the report.
+
+Independent product review found that the former automatic chat judge could be the first loaded candidate, and that the existing decision-model starter required creating a customer copy. Technical review found that a native D1 response carries model identity and probabilities. A high-confidence classification can still endorse a wrong accounting basis. Use labeled omissions to calibrate completeness and an independently verified source for correctness.
+
+
+### Whole-answer adequacy, response diagnostics and bounded choices
+
+| Operator question | Use in DASH |
+| --- | --- |
+| Does the answer parse as JSON? | Run Opik’s deterministic IsJson metric when the task has a JSON contract. Validate required fields and types separately against the approved schema. |
+| Did generation stop normally? | Inspect the runtime’s recorded finish reason. Distinguish a normal stop, token limit and unknown reason. |
+| Does the handoff text instruct the operator to hold this lot? | A bounded semantic decision can recognize paraphrases. Fix the question, permissible outcomes, source and abstention policy before scoring. |
+| Was holding the lot the right action? | Look up the current drawing, compare the measurement to the applicable limits and apply the receiving rule. |
+| Is the handoff adequate for the next shift? | Combine the approved business criteria with their sources. A structural check or inventory of mentioned items cannot establish overall adequacy. |
+
+We evaluated native yes/no, Choice and ordered Score with a locally loaded Liquid d1 Omni 2B FP16 on MLX-VLM 0.8.0. Choice returned a category and its distribution. Score returned an expected level on a fixed 0–2 scale. On a finance answer that listed both EPS figures but reversed their accounting bases, Choice selected “supported” at 0.8687, and Score returned 1.8339/2. Both modes recognized an accurately described pending cancellation and rejected an unsupported claim of completion. These probes used synthetic inputs and the local native endpoint. They do not establish an advantage for replacing direct factual comparisons.
+
+### Item-presence prototype calibration
+
+Two independently specified requests each had three deliverables. The financial handoff requested diluted EPS with a per-share unit, its accounting basis, and its reporting quarter. The manufacturing handoff requested a lot identifier, measured diameter with its unit, and a hold or release disposition. Each had four human-authored answers: a fully supplied correct answer, a fluent omission, a fully supplied but incorrect answer, and an echo of the request. The checklist labels were fixed before the judge saw any output. The presence labels for the four answers were 111, 110, 111 and 000, respectively. Task facts could establish what was requested. Only the answer could establish that an item was supplied.
+
+| Strategy on eight answers | Correct passes or failures | False passes | False failures | Unscored |
+| --- | ---: | ---: | ---: | ---: |
+| D1, one question for all items | 4 | 1 | 0 | 3 |
+| Opik G-Eval, one question for all items | 3 | 3 | 0 | 2 |
+| D1, combine three item decisions | 4 | 0 | 0 | 4 |
+| Opik G-Eval, combine three item decisions | 5 | 1 | 0 | 2 |
+
+D1 used a native yes/no question for each requested item, with pass at or above 0.80 and fail at or below 0.20. An intermediate probability required review. On the 24 individual items D1 returned 15 correct decisions and 9 abstentions. Opik G-Eval using independent local LFM3 1.7B returned 15 correct, 4 false passes, 2 false failures and 3 abstentions. D1 used 4,368 input tokens and zero generated tokens across the 24 item requests. G-Eval used 11,349 input tokens and 2,331 generated tokens across 30 local calls. All results concern the same synthetic texts. In two additional scenarios with no checklist, the calibration harness withheld the request. This small sample tests operator expectations and provides no production error-rate estimate.
+
+In the polished finance omission, D1’s whole-answer probability of 0.8394 passed the note despite its missing quarter. The per-item question about the quarter returned 0.7409 and therefore blocked a full pass. The wrong manufacturing disposition illustrates a different limitation: “Release the lot” supplies a disposition, even when the drawing requires a hold. The coverage label and the independently verified decision belong in separate report rows. [Liquid’s native decision model](https://huggingface.co/LiquidAI/d1-Omni-2B) · [Opik G-Eval](https://www.comet.com/docs/opik/evaluation/metrics/g_eval/)
+
+
+### Prototype dataset run through the local D1 endpoint
+
+In a disposable profile, we connected the native MLX-VLM endpoint, saved **Requested items present** twice and verified the same immutable grader revision. A two-case Dataset run used human-authored answers supplied by a simulated candidate and four real item decisions from the local Omni checkpoint. The checklist asked for a lot identifier and an explicit hold or release disposition. On a note that named the lot and omitted the disposition, D1 returned 0.8384 for the lot and 0.0953 for the disposition. The coverage grade was zero. On a wrong but complete release, it returned 0.9015 and 0.5466. The coverage result stayed unscored. A separate source-based grader is needed to reject the release as incorrect.
+
+DASH saved the two item observations per case. The native requests used 784 input tokens and zero generated tokens. A separate unlisted case was rejected before candidate or judge dispatch. The published labels describe these two fixture answers; providers and model versions can change the outcome.
+
+### Release calibration with a fixed grading instruction
+
+The release sends the item in its own structured case field alongside the candidate task and answer. Every judgment uses the same instruction. Source references, private rubrics and prior assistant responses stay outside this check. The prototype above placed the item text in the question; its results are historical.
+
+On the same eight human-authored answers, the local D1 release configuration recognized 15 of the 16 present items and abstained on the remaining present item. It abstained on **all eight absent items**. Across all 24 judgments there were 15 correct decisions, no false passes or false failures, and nine abstentions. Across the eight whole answers, three complete answers passed and five required review. There were no definite failures in this set. The 24 calls used 4,560 input tokens and zero generated tokens. The independent per-item G-Eval baseline produced 15 correct decisions, six errors and three abstentions on the same 24 items. Both missing-checklist setups stopped before any request.
+
+A separate public Dataset run used two different handwritten answers on the lot-and-disposition checklist. D1 gave the explicit but incorrect release 0.8160 for the lot and 0.8317 for the disposition. The resulting coverage grade was 1. The affirmative instruction was present, though the drawing required a hold. A second note omitted the disposition. D1 returned 0.7251 for the lot and 0.1180 for the disposition, so its coverage grade was 0. The four decisions used 816 input tokens and zero generated tokens. Running a case without this checklist stopped before either candidate or judge dispatch. This exercise used a simulated candidate and the actual local decision model through the normal DASH Dataset path.
+
+These results support offering D1 as an optional semantic check with visible uncertainty. They do not establish better overall completeness grading. For a new domain, calibrate the precise criterion against a known positive, a fluent omission and an answer that repeats the instruction without supplying the requested item.
