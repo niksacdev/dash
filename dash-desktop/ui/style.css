@@ -240,8 +240,11 @@ header {
 #appearance .icon { width: 14px; height: 14px; }
 #appearance b { font-size: 12px; font-weight: 550; }
 @media (max-width: 680px) {
-  .header-actions { gap: 6px; }
-  .app-version { max-inline-size: 15ch; white-space: normal; line-height: 1.15; }
+  header { padding-inline: 10px; }
+  .breadcrumb { flex: 1 1 0; }
+  .header-actions { min-width: 0; flex: 0 1 auto; gap: 6px; margin-left: 4px; }
+  .header-actions > :is(fieldset, .button) { flex: none; }
+  .app-version { min-inline-size: 8ch; max-inline-size: 13ch; white-space: normal; overflow-wrap: anywhere; line-height: 1.15; }
   #appearance b { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
   #appearance label > span { min-width: 32px; min-height: 32px; padding: 0; }
 }

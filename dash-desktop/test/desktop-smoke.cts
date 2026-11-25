@@ -321,17 +321,20 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
     await key("Escape",27);
     await wait("!" + open);
 
-    await send("Emulation.setDeviceMetricsOverride", {width:390, height:844, deviceScaleFactor:1, mobile:false});
     await send("Emulation.setTouchEmulationEnabled", {enabled:true,maxTouchPoints:1});
-    await wait("innerWidth === 390");
-    const bounds = await js(`(() => {
-      const rect = selector => document.querySelector(selector).getBoundingClientRect();
-      const hero = rect('.hero'), controls = rect('#appearance'), label = rect('.app-version'), count = rect('#overview-total-runs');
-      return {overflow:document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        left: hero.left - rect('aside').right, top: hero.top - rect('header').bottom,
-        controlsFit:label.width > 0 && label.left >= hero.left && label.right <= controls.left && controls.right <= innerWidth, countFits:count.right <= innerWidth};
-    })()`);
-    assert.deepEqual(bounds,{overflow:0,left:0,top:0,controlsFit:true,countFits:true});
+    for(const width of [360,375,390]){
+      await send("Emulation.setDeviceMetricsOverride", {width, height:844, deviceScaleFactor:1, mobile:false});
+      await wait("innerWidth === "+width);
+      const bounds=await js(`(() => {
+        const rect=selector=>document.querySelector(selector).getBoundingClientRect();
+        const viewport=document.documentElement.clientWidth,hero=rect('.hero'),controls=rect('#appearance');
+        const label=rect('.app-version'),action=rect('.header-actions .button'),count=rect('#overview-total-runs');
+        return {overflow:document.documentElement.scrollWidth-viewport,left:hero.left-rect('aside').right,
+          top:hero.top-rect('header').bottom,controlsFit:label.width>0 && label.left>=hero.left && label.right<=controls.left &&
+          controls.right<=action.left && action.right<=viewport,countFits:count.right<=viewport};
+      })()`);
+      assert.deepEqual(bounds,{overflow:0,left:0,top:0,controlsFit:true,countFits:true},"Overview controls at "+width+" px");
+    }
     await js("document.activeElement.blur()");
     const tap = async (position:z.infer<typeof pointShape>) => {
       await send("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[position]});
