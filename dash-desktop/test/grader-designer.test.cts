@@ -242,6 +242,11 @@ test("reference-dependent semantic rubric preserves the success measure and neve
   const brief={datasetId:scenario.id,objective:"Check the cited accounting basis.",metrics:"Citation basis"};
   await assert.rejects(designGraderPlan(bench,brief),/distinct observable anchors/);
   sameAnchors=false;
+  const standalone=await designGraderPlan(bench,{objective:"Grade a stated basis against a verified record.",metrics:"Citation basis",domainId:"Financial Services"});
+  assert.deepEqual(standalone.checks[0].requiredEvidence,["reference"]);
+  const proposed=standalone.checks[0];
+  assert.throws(()=>confirmGraderPlan(bench,{draftId:standalone.draftId,choices:[{index:0,action:"create",definition:{
+    name:proposed.name,category:proposed.category,criteria:proposed.criteria,threshold:proposed.threshold,type:"contains"}}]}),/evidence required/);
   const plan=await designGraderPlan(bench,brief),check=present(plan.checks[0]);
   assert.match(check.criteria,/Success measure: Citation basis/);
   assert.match(check.criteria,/Full credit \(10\)/);assert.match(check.criteria,/Partial credit \(5\)/);assert.match(check.criteria,/Zero credit \(0\)/);
@@ -304,6 +309,7 @@ test("the earnings brief keeps aggregate gaps separate from an anchored task rub
   let requests=0;
   const b=new Bench(":memory:",{discover:async()=>inv,invoke:async(_model,messages,options)=>{
     requests++;
+    assert.match(messages[0].content,/Match each claim to evidence/);
     const input=z.object({objective:z.string(),focus:z.string(),automatic:z.array(z.unknown())}).parse(JSON.parse(messages[1].content));
     assert.equal(input.objective,objective);
     if(input.focus==="success-measures"){
@@ -320,7 +326,7 @@ test("the earnings brief keeps aggregate gaps separate from an anchored task rub
   t.after(()=>b.db.close());b.servers=inv;
   const ds=present(b.list().datasets.find(d=>d.pack==="earnings"));
   const plan=await designGraderPlan(b,{datasetId:ds.id,objective,metrics:metric});
-  assert.equal(requests,3);assert.equal(plan.agent.version,6);
+  assert.equal(requests,3);assert.equal(plan.agent.version,7);
   assert.deepEqual(plan.gaps,[{measure:metric,reason:"The denominator across all releases is unavailable."}]);
   const rule=present(plan.checks[0]);
   assert.equal(rule.type,"opik");assert.equal(rule.evidenceView,"case");
@@ -355,4 +361,139 @@ test("automatically proposed measures stay grounded and explicitly requested mea
   const review=(selected:{metric:string;criterion:string}[]|null)=>validateMetricAudit({audit:[earnings,drift]},objective,null,undefined,"",[],selected);
   assert.deepEqual(review(null).map(r=>r.metric),[earnings.metric]);
   assert.deepEqual(review([{metric:drift.metric,criterion:drift.criterion}]).map(r=>r.metric),[drift.metric]);
+});
+
+test("an audited share requires the source ID before a handoff qualifies for its numerator",async t=>{
+  const model:LocalCandidate={kind:"model",id:"lmstudio/lfm3-test",provider:"lmstudio",model:"lfm3-test",loaded:true};
+  const servers=[inventory([model])];
+  const metric="Share of handoff notes that identify the lot.";
+  const criterion="The lot identifier in the handoff equals the receiving ledger entry.";
+  const objective="Prepare the handoff for a receiving inspection.";
+  const gap="The receiving ledger entry is unavailable for these cases.";
+  const full="The cited identifier equals the lot identifier in the receiving ledger.";
+  const zero="The identifier is absent or differs from the receiving ledger.";
+  let adapt=false, offAnchor=false, scores=0;
+  const adapters:RuntimeAdapters={discover:async()=>servers,invoke:async(_model,messages,options)=>{
+    if(!options.planning){
+      const request=opikJudgeRequest(messages);
+      if(request?.stage!=="geval-score")return reply("Compare the reported lot with the receiving ledger entry.");
+      scores++;
+      const evidence=z.object({output:z.string(),reference:z.object({lot:z.string()})}).parse(request.evidence);
+      const matches=evidence.output===evidence.reference.lot;
+      return reply(JSON.stringify({score:offAnchor?5:matches?10:0,reason:matches?"The identifiers agree.":"The identifiers differ."}));
+    }
+    const properties=z.object({properties:z.record(z.string(),z.unknown())}).parse(options.structured).properties;
+    if(properties.requirements)return reply(JSON.stringify({title:"Receiving handoff",metrics:[metric],requirements:[criterion]}));
+    if(properties.audit)return reply(JSON.stringify({audit:[{metric,criterion,evidenceBasis:"reference",status:"needs-evidence",
+      evidence:"The receiving ledger entry and candidate handoff note.",method:"Compare the identifiers for each eligible handoff.",
+      reason:"A plausible lot number can identify the wrong incoming lot."}]}));
+    if(properties.prompt)return reply(JSON.stringify({prompt:"Prepare the inspection handoff and identify its lot."}));
+    const payload=z.object({focus:z.string(),referenceCoverage:z.string(),catalog:z.array(z.object({option:z.string(),name:z.string()}))})
+      .parse(JSON.parse(present(messages.at(-1)).content));
+    if(payload.referenceCoverage==="none"){
+      assert.ok(allowedChoices(options.structured,"M1").includes("SKIP"),"The actual constrained schema must permit a missing ledger.");
+      return reply(JSON.stringify({M1:{choice:"SKIP",reason:gap}}));
+    }
+    assert.equal(payload.focus,"success-measures");
+    const source=adapt?present(payload.catalog.find(g=>g.name==="Lot mention")):null;
+    return reply(JSON.stringify({M1:{choice:source?"ADAPT:"+source.option:"NEW:judge",name:"Receiving ledger agreement",
+      criteria:criterion,reason:"The receiving ledger supplies the authoritative identifier.",threshold:1,
+      anchors:{full,partial:"Names a lot without resolving its identity.",zero,evidence:"reference"}}}));
+  }};
+  const bench=new Bench(":memory:",adapters);
+  t.after(()=>bench.db.close());
+  bench.servers=servers;
+  async function approveDataset(withReference:boolean){
+    const title=withReference?"Labeled handoffs":"Unlabeled handoffs";
+    const datasetId=bench.importRows("reference",title,[{case_id:"incoming",dataset_version:"1",split:"development",
+      prompt:"Identify the inspected lot in the handoff.",...(withReference && {reference:{lot:"R-402"}})}],
+      {industry:"Manufacturing",family:title,category:"Receiving"});
+    const draft=await bench.designPrompt({mode:"dataset",datasetId,objective,measures:{metrics:[metric],criteria:[criterion]}});
+    const approved=bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
+    assert.deepEqual(approved.metricAudit?.map(row=>[row.metric,row.evidenceBasis]),[[metric,"reference"]]);
+    return approved;
+  }
+  const unlabeled=await approveDataset(false);
+  const missingPlan=await designGraderPlan(bench,{promptId:unlabeled.id});
+  assert.deepEqual(missingPlan.gaps,[{measure:metric,reason:gap}]);
+  assert.equal(missingPlan.checks.length,0);
+
+  const labeled=await approveDataset(true);
+  const plan=await designGraderPlan(bench,{promptId:labeled.id});
+  const check=present(plan.checks[0]);
+  assert.deepEqual(check.requiredEvidence,["reference"]);
+  assert.ok(check.criteria.includes("Full credit (10): "+full));
+  assert.ok(check.criteria.includes("Zero credit (0): "+zero));
+  assert.match(check.criteria,/unavailable for this binary count/);
+  assert.match(check.criteria,/Use only 0 or 10/);
+  const definition={name:check.name,category:check.category,criteria:check.criteria,threshold:0.5,judgeId:model.id};
+  const [id]=confirmGraderPlan(bench,{draftId:plan.draftId,choices:[{index:0,action:"create",definition}]});
+  const grader=bench.graders.get(id);
+  const score=(output:string,reference:{lot:string}|null)=>bench.graders.assess(grader,{input:objective,output,reference},adapters,AbortSignal.timeout(5000));
+  for(const [answer,expected] of [["R-402",1],["R-420",0]] as const){
+    const result=await score(answer,{lot:"R-402"});
+    assert.deepEqual([result.value,result.pass],[expected,expected===1],result.reason);
+  }
+  assert.ok(grader.type==="opik" && grader.scoreScale==="binary");
+  offAnchor=true;
+  const partial=await score("R-420",{lot:"R-402"});
+  assert.deepEqual([partial.value,partial.pass],[null,null]);
+  offAnchor=false;
+  const noLedger=await score("R-402",null);
+  assert.deepEqual([noLedger.value,noLedger.pass,scores],[null,null,3]);
+
+  const old=bench.graders.save({type:"contains",name:"Lot mention",category:"Receiving",criteria:"R-",threshold:1,industry:"Manufacturing"},[]);
+  adapt=true;
+  const adapted=await designGraderPlan(bench,{promptId:labeled.id});
+  const fork=present(adapted.checks[0]);
+  assert.equal(fork.source?.id,old);
+  assert.deepEqual(fork.source.requiredEvidence,[]);
+  assert.deepEqual(fork.requiredEvidence,["reference"]);
+  assert.throws(()=>confirmGraderPlan(bench,{draftId:adapted.draftId,choices:[{index:0,action:"reuse"}]}),/original version does not use all the evidence/);
+  const [derivedId]=confirmGraderPlan(bench,{draftId:adapted.draftId,choices:[{index:0,action:"derive",
+    definition:{...definition,name:fork.name,criteria:fork.criteria}}]});
+  const derived=bench.graders.get(derivedId);
+  assert.equal(derived.library?.parentRevisionId,old);
+  assert.equal(bench.graders.get(old).type,"contains");
+  assert.ok(derived.type==="opik");
+  assert.deepEqual(derived.requiredEvidence,["reference"]);
+  const unscored=await bench.graders.assess(derived,{input:objective,output:"R-402",reference:null},adapters,AbortSignal.timeout(5000));
+  assert.deepEqual([unscored.value,unscored.pass,scores],[null,null,3]);
+});
+
+test("converting proposed field and trajectory checks to G-Eval retains their implicit evidence",async t=>{
+  const model:LocalCandidate={kind:"model",id:"lmstudio/lfm3-test",provider:"lmstudio",model:"lfm3-test",loaded:true};
+  const servers=[inventory([model])];
+  for(const method of ["field","trajectory"] as const){
+    await t.test(method,async t=>{
+      const required=method==="field"?"reference":"trajectory";
+      const mechanical=method==="field"?JSON.stringify({outputField:"lot",referenceField:"lot"}):"lookup";
+      const adapters:RuntimeAdapters={discover:async()=>servers,invoke:async(_model,_messages,options)=>{
+        assert.ok(options.planning,"Missing evidence must stop the judge before dispatch.");
+        assert.ok(allowedChoices(options.structured,"M1").includes("NEW:"+method));
+        return reply(JSON.stringify({M1:{choice:"NEW:"+method,criteria:mechanical,name:"Verify the handoff",threshold:1,
+          reason:"Use the recorded case evidence to confirm the lot handoff."}}));
+      }};
+      const bench=new Bench(":memory:",adapters);
+      t.after(()=>bench.db.close());
+      bench.servers=servers;
+      const target=method==="field"?{datasetId:bench.importRows("reference","Lot ledger",[{case_id:"receiving",dataset_version:"1",
+        split:"development",prompt:"Record the incoming lot.",reference:{lot:"R-402"}}],{industry:"Manufacturing",family:"Lots",category:"Receiving"})}:
+        {domainId:"Manufacturing",target:"agent"};
+      const plan=await designGraderPlan(bench,{...target,objective:'Verify the incoming lot handoff. Include the literal "LOT".',metrics:"Lot handoff verification"});
+      const check=present(plan.checks[0]);
+      assert.deepEqual(check.requiredEvidence,[required]);
+      const definition={name:check.name,category:check.category,criteria:"LOT",threshold:1};
+      const save=(type:string,criteria:string)=>confirmGraderPlan(bench,{draftId:plan.draftId,choices:[{index:0,action:"create",
+        definition:{...definition,type,criteria,...(type==="opik" && {judgeId:model.id})}}]});
+      assert.throws(()=>save("contains","LOT"),/evidence required/);
+      const [id]=save("opik",method==="field"?"Compare the lot identifier with the ledger.":"Verify the lookup from the recorded tool events.");
+      const grader=bench.graders.get(id);
+      assert.ok(grader.type==="opik");
+      assert.deepEqual(grader.requiredEvidence,[required]);
+      const result=await bench.graders.assess(grader,{input:"Check the lot.",output:"LOT",reference:null},adapters,AbortSignal.timeout(5000));
+      assert.deepEqual([result.value,result.pass],[null,null],result.reason);
+      assert.match(result.reason,method==="field"?/expected answer/i:/agent|trajectory|action/i);
+    });
+  }
 });

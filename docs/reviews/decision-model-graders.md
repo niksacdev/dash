@@ -82,3 +82,19 @@ Use **Workspace → Graders → Test one output** with a saved, versioned local 
 For the direct relevance rows, create a task-and-answer decision grader with the question “Does the candidate answer directly respond to what the task asks for?” A pass here measures relevance. The EPS and inspection checks cover factual accuracy. For task B, the explicit statement that a document is missing is sufficient evidence to grade the requested disclosure.
 
 Run these examples again when you change the question, model, precision or thresholds. To establish accuracy for your own cases, use independently labeled data and the holdout procedure above. The [recorded manufacturing pilot](../adr/0005-decision-model-graders.md) used different cases.
+
+
+## Blind cross-domain smoke test, 2026-11-25
+
+We fixed two binary criteria and six synthetic examples before grading. Each judge saw the same task, candidate response and verified reference, independently. The native judge was the local Liquid d1 Omni 2B FP16 checkpoint served by MLX-VLM 0.8.0. Its pass cutoff was 0.80 and its fail cutoff was 0.20. The other grader used the Opik TypeScript SDK 2.2.144 with local LFM3 1.7B and a binary G-Eval rubric.
+
+| Case | Expected | D1 probability and result | G-Eval result |
+| --- | --- | --- | --- |
+| Q2 diluted GAAP EPS agrees with the sourced $0.74 figure | Pass | 0.9408 · pass | Pass |
+| The answer substitutes adjusted $0.85 for GAAP EPS | Fail | 0.6515 · abstain | Unscored · judge returned partial credit on a binary rubric |
+| Governing release absent | Unscored | No request | No request |
+| The order response correctly acknowledges a pending cancellation | Pass | 0.9202 · pass | Pass |
+| The response claims a completed cancellation from a pending receipt | Fail | 0.1135 · fail | Fail |
+| Order receipt absent | Unscored | No request | No request |
+
+Each judge decided three of four cases with evidence correctly and left the same false EPS claim unresolved. D1 made four native calls using 588 input tokens and zero generated tokens. G-Eval made six model calls using 2,213 input and 503 output tokens. The sample establishes behavior on these cases only. Conditional escalation on the D1 abstention would have resolved zero additional cases. The two missing-source cases demonstrate the preflight behavior. These results use synthetic labels and the open Omni checkpoint. They do not measure hosted D1.2 or establish production accuracy. [Evidence policy and holdout design](../adr/0045-shared-grading-evidence.md)

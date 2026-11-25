@@ -77,6 +77,7 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-25 | [0042 · Motorsport timing display](0042-motorsport-timing-display.md) | Proposed | Show recorded work on calibrated timing scales and confine race photography to the Overview comparison. | [Operator scenario](../reviews/outcome-workflow.md#follow-the-selected-candidates-during-a-run) |
 | 2026-11-25 | [0043 · Concurrent candidate workers](0043-concurrent-candidate-workers.md) | Proposed | Run up to two candidates independently after preflight and measure whole-device energy once across the workers. | [Inspection scenario](../reviews/outcome-workflow.md#run-two-candidates-against-the-same-inspection) |
 | 2026-11-25 | [0044 · Challenge a verdict](0044-challenge-a-verdict.md) | Proposed | Preserve original grades and compare both saved responses against an independent case-specific check. | [Operator guide](../reader/src/results.md#challenge-a-completed-verdict) |
+| 2026-11-25 | [0045 · Shared grading evidence](0045-shared-grading-evidence.md) | Proposed | Share claim-specific evidence rules across the planning, grading and report agents. Evaluate conditional decision-model escalation against labeled holdouts. | [Operator workflow](../reader/src/graders.md#match-a-grader-to-the-claim) |
 
 ## Maintaining the history
 

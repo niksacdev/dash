@@ -304,6 +304,9 @@ test("a two-model run compares actual persisted judge and deterministic assessme
     discover: async () => [inventory(local)],
     async reportStage(model, messages, options) {
       assert.equal(model.model, "lfm3-qa");
+      assert.match(messages[0].content,/Match each claim to evidence/);
+      const scoped=z.object({criteria:z.array(z.object({method:z.string(),paired:z.number(),expected:z.number()}))}).parse(JSON.parse(messages[1].content));
+      assert.ok(scoped.criteria.some(c=>c.method==="deterministic" && c.paired===1 && c.expected===1));
       assert.equal(bench.detail(present(bench.active).id).status, "running");
       assert.doesNotMatch(JSON.stringify(messages), /PRIVATE_RUBRIC_MARKER/);
       const ids = z.array(z.object({id:z.string()}));

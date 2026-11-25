@@ -14,6 +14,8 @@ These definitions run inside DASH’s existing planning, grading and reporting s
 
 To change how a Manufacturing expert reasons, edit its Markdown. To change how every expert translates a business goal into measurable criteria, edit the shared workflow expert. The expert assignment supports the literal placeholder `{{objective}}`. The runner supplies the operator's objective when preparing the request.
 
+The shared [grading evidence guide](../../dash-desktop/agents/prompts/grading-evidence-v1.md) is appended to the evaluator roles that declare its versioned Markdown path as `guidance` in the manifest. Their existing agent pins hash both the role and the effective guide. To revise the guide, add its next version, point the affected roles to it, and increment those role versions. Candidate-facing prompt writers have independent instructions.
+
 1. Edit the appropriate Markdown or source references. Increment that agent's integer `version` in the manifest and retain its ID. Preserve each domain role's `legacyHash`. It identifies the original SQLite default during migration.
 2. Build and test in `dash-desktop` using the commands in the [setup guide](../../README.md). The deployment includes the manifest and its Markdown next to the compiled registry. Review the change and its synthetic test through a pull request.
 3. Restart DASH with the new build. Agent definitions are loaded once per process. A new prompt approval records the effective domain role revisions, instruction hashes, and workflow agent pins. A pin records the manifest ID, version, path and SHA-256 of the normalized instructions and definition metadata. Use the matching Git revision to inspect that bundle.

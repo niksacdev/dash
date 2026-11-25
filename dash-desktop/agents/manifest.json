@@ -103,8 +103,9 @@
     },
     {
       "id": "workflow-expert",
-      "version": 1,
-      "path": "prompts/workflow-expert.md"
+      "version": 2,
+      "path": "prompts/workflow-expert-v2.md",
+      "guidance": "prompts/grading-evidence-v1.md"
     },
     {
       "id": "workflow-implementer",
@@ -113,18 +114,21 @@
     },
     {
       "id": "grader-designer",
-      "version": 6,
-      "path": "prompts/grader-designer-v6.md"
+      "version": 7,
+      "path": "prompts/grader-designer-v7.md",
+      "guidance": "prompts/grading-evidence-v1.md"
     },
     {
       "id": "report-analyzer",
-      "version": 1,
-      "path": "prompts/report-analyzer.md"
+      "version": 2,
+      "path": "prompts/report-analyzer-v2.md",
+      "guidance": "prompts/grading-evidence-v1.md"
     },
     {
       "id": "report-reporter",
-      "version": 1,
-      "path": "prompts/report-reporter.md"
+      "version": 2,
+      "path": "prompts/report-reporter-v2.md",
+      "guidance": "prompts/grading-evidence-v1.md"
     },
     {
       "id": "workflow-expert-assignment",
@@ -143,8 +147,9 @@
     },
     {
       "id": "workflow-metric-auditor",
-      "version": 2,
-      "path": "prompts/workflow-metric-auditor-v2.md"
+      "version": 3,
+      "path": "prompts/workflow-metric-auditor-v3.md",
+      "guidance": "prompts/grading-evidence-v1.md"
     }
   ]
 }

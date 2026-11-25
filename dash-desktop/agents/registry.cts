@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
-import { join, dirname, relative, isAbsolute, sep } from "node:path";
+import { join, dirname, relative, isAbsolute } from "node:path";
 
 export const domains = ["Financial Services", "Manufacturing", "General"] as const;
 export type Domain = typeof domains[number];
@@ -48,6 +48,15 @@ export function readAgentRegistry(directory = __dirname):AgentRegistry {
     throw Error("Invalid DASH agent manifest. Expected schemaVersion 1 and an agents array.");
   const definitions = new Map<string,AgentDefinition>();
   const roles = new Map<string,DomainAgent>();
+  function readPrompt(path:unknown):string {
+    if(typeof path!=="string" || !/^prompts\/[a-z0-9-]+\.md$/.test(path))throw Error("Invalid bundled Markdown path.");
+    const resolved=realpathSync(join(root,path));
+    const rel=relative(root,resolved);
+    if(isAbsolute(rel) || dirname(rel)!=="prompts")throw Error("Agent Markdown must be inside the bundled prompts directory.");
+    const source=readFileSync(resolved,"utf8").replace(/\r\n/g,"\n").trim();
+    if(!source || source.length>12000)throw Error("Bundled Markdown must contain 1–12,000 characters.");
+    return source;
+  }
   const entries:unknown[] = raw.agents;
   for (const item of entries) {
     if (!isRecord(item)) throw Error("Invalid agent manifest entry.");
@@ -56,14 +65,11 @@ export function readAgentRegistry(directory = __dirname):AgentRegistry {
         typeof version !== "number" || !Number.isSafeInteger(version) || version < 1 ||
         typeof path !== "string" || !/^prompts\/[a-z0-9-]+\.md$/.test(path))
       throw Error("Invalid or duplicate agent identity, version or Markdown path: " + String(id));
-    const resolved = realpathSync(join(root,path));
-    const rel = relative(root,resolved);
-    if (rel.startsWith(".." + sep) || rel === ".." || isAbsolute(rel) || dirname(rel) !== "prompts")
-      throw Error("Agent Markdown must be inside the bundled prompts directory.");
-    const instructions = readFileSync(resolved, "utf8").replace(/\r\n/g,"\n").trim();
+    const roleInstructions=readPrompt(path);
+    const instructions=item.guidance===undefined ? roleInstructions : roleInstructions+"\n\n"+readPrompt(item.guidance);
     if (!instructions || instructions.length > 12000) throw Error(id + " needs 1–12,000 characters of instructions.");
     const sources = readSources(item.sources ?? []);
-    const hash = createHash("sha256").update(JSON.stringify({id,version,path,domain,role,sources,instructions})).digest("hex");
+    const hash = createHash("sha256").update(JSON.stringify({id,version,path,domain,role,sources,instructions,...(item.guidance!==undefined && {guidance:item.guidance})})).digest("hex");
     const base = {id,version,path,hash,instructions,sources};
     if (domain !== undefined || role !== undefined) {
       if (!isDomain(domain) || (role !== "expert" && role !== "implementer")) throw Error("Invalid domain role for " + id);

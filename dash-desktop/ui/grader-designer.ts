@@ -53,6 +53,11 @@ function editableJudgeCheck(el:Element):UiEditableGrader|undefined {
   const row=el.closest<HTMLElement>("[data-gd-check]"),panel=el.closest<HTMLElement>("[data-gd-scope]");
   return row && panel?.dataset.gdScope?gradeDesignerDraft(panel.dataset.gdScope,panel.hasAttribute("data-gd-workspace")).checks[Number(row.dataset.gdCheck)]:undefined;
 }
+function designMethods(g:UiEditableGrader,methods:UiDesignMethod[]){
+  const available:UiDesignMethod[]=g.source?["opik","decision"]:methods;
+  return available.filter(method=>method==="opik" || method==="decision" || !g.requiredEvidence?.some(kind=>
+    kind==="reference"?method!=="field":method!=="trajectory"));
+}
 function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],scope:string,comparison:boolean) {
   const source=g.source, reuse=g.action==="reuse", binary=!reuse && g.type==="decision", judge=!binary && (g.action==="derive" || ["opik","judge"].includes(g.type));
   const editableIndustry=!g.source && scope==="custom" && !gradeDesignerDraft(scope,true).planner?.approved;
@@ -61,16 +66,17 @@ function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],
   const basis=source ? '<p><strong>'+esc(source.scope+' grader · '+source.name+' v'+source.version)+'</strong></p><p class="gd-source-rule">'+esc(source.criteria)+'</p><small>'+esc(source.threshold==null?'':'Saved pass threshold · '+source.threshold+' / 1')+'</small>'+
     (source.model && !source.hosted?'<p>Saved scoring model · '+esc(source.model)+'</p>':'')+
     (source.hosted ? '<p>Uses OpenRouter · '+esc(source.model)+'. Running this grader requires confirmation before case evidence is sent.</p>' : '') : '';
+  const canReuse=g.action==="reuse" || !g.requiredEvidence?.some(kind=>!source?.requiredEvidence?.includes(kind));
   const name=(reuse?source?.name:g.name) || "Proposed grader";
   const heading=comparison ? '<div class="gd-inclusion gd-run-choice"><span>'+esc(name)+'</span>'+
     graderSelectionButton("data-gd-action","toggle",g.included?"Remove":"Restore",name+" in this proposal")+'</div>' :
     '<label class="gd-inclusion"><input type="checkbox" data-gd-field="included" '+(g.included?"checked":"")+'><span>'+esc(name)+'</span></label>';
   return '<article class="gd-check" data-gd-check="'+i+'">'+heading+'<fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
-    basis+(source ? field("action","After approval",'<select GD_FIELD>'+opt("reuse","Use this exact version",g.action)+opt("derive","Create a customer rubric from this version",g.action)+'</select>') : '<p>New customer grader</p>')+
+    basis+(source ? field("action","After approval",'<select GD_FIELD>'+(canReuse?opt("reuse","Use this exact version",g.action):"")+opt("derive","Create a customer rubric from this version",g.action)+'</select>') : '<p>New customer grader</p>')+
     (reuse ? '' : rubric+'<div class="cols">'+field("name","Grader name",'<input GD_FIELD maxlength="100" value="'+esc(g.name)+'">')+
     field("category","Category",'<input GD_FIELD maxlength="100" value="'+esc(g.category)+'">')+'</div><div class="cols">'+
     field("industry","Applies to industry",'<select GD_FIELD '+(editableIndustry?'':'disabled')+'>'+[...new Set([g.industry,"Cross-industry","Financial Services","Manufacturing","General"])].map(v=>opt(v,v,g.industry)).join("")+'</select>')+
-    field("type","Scoring method",'<select GD_FIELD>'+(g.source?(["opik","decision"] as const):methods).map(v=>opt(v,graderTypes[v],g.type)).join("")+'</select>')+'</div>'+
+    field("type","Scoring method",'<select GD_FIELD>'+designMethods(g,methods).map(v=>opt(v,graderTypes[v],g.type)).join("")+'</select>')+'</div>'+
     field("threshold",binary?"Pass when P(yes) is at or above":"Pass threshold (0–1)",'<input GD_FIELD type="number" min="0" max="1" step="any" value="'+esc(g.threshold)+'">')+
     (judge?field("evidenceView","Evidence shown to the judge",'<select GD_FIELD>'+decisionViewOptions(g.evidenceView || "case",!!g.requiredEvidence?.length)+'</select>'):'')+
     (judge && g.requiredEvidence?.length?'<small>Cases without '+g.requiredEvidence.map(kind=>kind==="reference"?'a reference':'observed agent steps').join(" or ")+' stay unscored.</small>':'')+
@@ -289,11 +295,12 @@ function updateDesignerField(t:EventTarget|null) {
   if (!g) return;
   if (key==="included" && t instanceof HTMLInputElement) g.included=t.checked;
   else if(key==="action" && g.source && (t.value==="reuse" || t.value==="derive") && g.action!==t.value){
+    if(t.value==="reuse" && g.requiredEvidence?.some(kind=>!g.source?.requiredEvidence?.includes(kind)))return;
     g.action=t.value;
     if(g.action==="derive" && !g.derivationStarted){g.type="opik";g.derivationStarted=true;}
   }
   else if(key==="type" && t.value!==g.type){
-    const method=(g.source?(["opik","decision"] as const):draft.editableMethods).find(m=>m===t.value);
+    const method=designMethods(g,draft.editableMethods).find(m=>m===t.value);
     if(!method)return;
     if(method==="decision"){
       g.rubricCriteria=g.criteria;g.rubricThreshold=g.threshold;

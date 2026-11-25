@@ -123,6 +123,19 @@ Use one known pass, one near miss, and one case with the required evidence missi
 
 In a local LFM3 1.7B test with a synthetic earnings release, the judge awarded full credit to an answer that omitted a required reconciliation warning. Test this omission explicitly when calibrating your own judge. For a labeled earnings dataset, **Requested financial fact** and **Analyst review routing** can check the recorded figure and routing decision directly.
 
+## Match a grader to the claim
+
+| What the task asks | Evidence the grader needs | Appropriate check |
+| --- | --- | --- |
+| Report a figure on the requested basis | The applicable source or a verified case label and the candidate’s stated figure and basis | Compare structured fields or use the matching industry rule. A response can quote a real figure under the wrong basis. |
+| Identify whether a reply acknowledges a required limitation | The request, the reply and a reviewed yes/no criterion | Try a decision grader calibrated on positive and negative examples. Review results in its abstention band. |
+| Explain a decision clearly using the available evidence | The answer, relevant source and anchored criteria for the explanation | Use Opik G-Eval and check agreement with independent reviewers. |
+| Confirm an agent finished a requested operation | A receipt or recorded state confirming the result | A successful order receipt supports completion. A rejection contradicts a success claim. A trace ending before acknowledgement leaves completion unknown. If your adapter only records the tool name, you can grade the call, while completion still needs evidence. |
+
+You can design a reusable reference-based rubric before choosing cases. In Quick compare, supply the verified answer during setup. For a dataset run, use the references in the selected case snapshot. A grader for an approved measure that requires a reference must retain that requirement.
+
+DASH’s metric planner, grader designer and report agents share these evidence rules across domains. A report citation names the score a grader awarded. For a disputed case, inspect the source and compare both saved answers with a separately approved check. Decision probabilities and an LLM’s explanation can each be wrong. The current workflow uses the grader versions you approve. [Review a recorded verdict](results.md#challenge-a-completed-verdict)
+
 ## Calibrate an LLM judge
 
 Write down what a subject-matter expert would accept before scoring either candidate. Use the drawing, policy, verified answer or observed tool receipt for the expected result. Use the candidate output for evidence of what it actually did. A grader can assess clarity from an answer alone. Factual correctness needs an independent source.

@@ -37,8 +37,8 @@ const assignmentSchema=z.union([
   z.strictObject({...baseAssignment,name:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),anchors:anchorSchema.optional()}),
 ]);
 const sourceSchema=z.object({id:textId,name:z.string(),version:z.number().int().positive(),scope:z.enum(["general","industry","customer"]),
-  criteria:z.string(),threshold:z.number().optional(),hosted:z.boolean(),model:z.string().nullable()});
-const proposedSchema=z.object({measures:z.array(z.string()).max(8).optional(),name:z.string(),category:z.string(),industry:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),
+  criteria:z.string(),requiredEvidence:z.array(z.enum(["reference","trajectory"])).optional(),threshold:z.number().optional(),hosted:z.boolean(),model:z.string().nullable()});
+const proposedSchema=z.object({scoreScale:z.literal("binary").optional(),measures:z.array(z.string()).max(8).optional(),name:z.string(),category:z.string(),industry:z.string(),criteria:z.string(),threshold:z.number().gt(0).lte(1),
   type:z.enum(["contains","exact","field","trajectory","judge","opik","decision","catalog","opik-metric"]),reason:z.string(),
   evidenceView:rubricEvidenceView.optional(),requiredEvidence:z.array(z.enum(["reference","trajectory"])).optional(),action:z.enum(["reuse","derive","create"]),source:sourceSchema.nullable()});
 type Proposed=z.infer<typeof proposedSchema>;
@@ -75,7 +75,7 @@ function gradingBrief(bench:DesignerBench, request:z.infer<typeof designRequest>
     .filter(k=>references.every(item=>isRecord(item) && Object.hasOwn(item,k)));
   const referenceCount=references.filter(value=>value!=null && value!=="").length;
   const referenceCoverage=referenceCount===0?"none":referenceCount===references.length?"all":"partial";
-  return { objective, ...(approved && {approvedPrompt:approved.prompt,metricAudit:approved.metricAudit?.filter(row=>metrics.includes(row.metric))}), metrics, industry, target, criteria:approved?.requirements || [], referenceFields,referenceCoverage,
+  return { objective, ...(approved && {approvedPrompt:approved.prompt,metricAudit:approved.metricAudit?.filter(row=>metrics.includes(row.metric))}), metrics, industry, target, criteria:approved?.requirements || [], referenceFields,referenceCoverage,canSupplyReference:!dataset || referenceCount>0,
     outputFields:Object.keys(pack?.outputSchema?.properties || {}), existingScorer:pack?.kind==="reference"?null:pack?.scorer };
 }
 
@@ -121,15 +121,15 @@ function choicesFor(bench:DesignerBench,request:Request,industry:string):Catalog
 }
 function reviewedSource(g:GraderSpec) {
   const hosted=g.type==="decision" && g.decision.provider==="openrouter";
-  return {id:g.id,name:g.name,version:g.version,scope:g.library?.scope ?? "customer",criteria:g.criteria,threshold:g.threshold,
+  return {id:g.id,name:g.name,version:g.version,scope:g.library?.scope ?? "customer",criteria:g.criteria,threshold:g.threshold,requiredEvidence:graderRequiredEvidence(g),
     hosted,model:g.type==="decision" ? g.decision.model : g.judge ? g.judge.provider+" · "+g.judge.model : null};
 }
 function hasRequiredEvidence(g:GraderSpec,brief:ReturnType<typeof gradingBrief>):boolean {
-  if(g.type==="opik" && g.requiredEvidence?.some(e=>e==="reference" ? brief.referenceCoverage==="none" : brief.target!=="agent"))return false;
+  if(g.type==="opik" && g.requiredEvidence?.some(e=>e==="reference" ? !brief.canSupplyReference : brief.target!=="agent"))return false;
   if(g.type==="trajectory")return brief.target==="agent";
   if(g.type==="field")return brief.referenceFields.length>0;
-  if(g.type==="opik-metric")return !getOpikTemplate(g.metricKey).requiresReference || brief.referenceCoverage!=="none";
-  if(g.type==="decision")return !g.requiredEvidence?.some(e=>e==="reference" ? brief.referenceCoverage==="none" : brief.target!=="agent");
+  if(g.type==="opik-metric")return !getOpikTemplate(g.metricKey).requiresReference || brief.canSupplyReference;
+  if(g.type==="decision")return !g.requiredEvidence?.some(e=>e==="reference" ? !brief.canSupplyReference : brief.target!=="agent");
   return true;
 }
 function candidatesFor(options:CatalogOptions,brief:ReturnType<typeof gradingBrief>) {
@@ -206,6 +206,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
     const localDefaults=options.automatic.map((g,i)=>({...describeDefault(g),option:"A"+(i+1)}));
     const defaultSource=new Map(localDefaults.map((entry,i)=>[entry.option,options.automatic[i]]));
     const methods=supportedMethods(brief,literals);
+    const needsApprovedReference=(metric:string)=>brief.metricAudit?.some(row=>row.metric===metric && row.evidenceBasis==="reference")===true;
     const goals=[...new Set(brief.metrics)].map((metric,i)=>({key:"M"+(i+1),metric,external:brief.metricAudit?.some(row=>row.metric===metric && row.status==="external") || isExternalOutcomeMetric(metric),answerContent:asksForAnswerContent(metric)}));
     if(!goals.length)throw Error("Enter at least one success measure.");
     const route=await PlanningRoute.start(bench.adapters,{powerSampler:bench.powerSampler,openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),
@@ -216,23 +217,30 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
     type Goals=typeof goals;
     function proposalSchema(goals:Goals,visible:Visible,defaults:Defaults){
       const catalogOptions=visible.map(x=>x.option);
-      const simple=(metric:string)=>["SKIP",...catalogOptions,...defaults.filter(d=>!d.diagnostic || d.name.toLowerCase()===metric.toLowerCase()).map(d=>d.option)];
+      const referenceOptions=new Set(choices.filter((_,i)=>graderRequiredEvidence(candidates[i]).includes("reference")).map(c=>c.option));
+      const simple=(metric:string)=>["SKIP",...visible.filter(c=>!needsApprovedReference(metric) || referenceOptions.has(c.option)).map(c=>c.option),
+        ...defaults.filter(d=>(!d.diagnostic || d.name.toLowerCase()===metric.toLowerCase()) &&
+          (!needsApprovedReference(metric) || graderRequiredEvidence(defaultSource.get(d.option)).includes("reference"))).map(d=>d.option)];
       const comment={type:"string",minLength:1,maxLength:400};
       const writeFields={reason:comment,name:{type:"string",minLength:1,maxLength:100},criteria:{type:"string",minLength:1,maxLength:1900},
         threshold:{type:"number",exclusiveMinimum:0,maximum:1}};
       const anchor={type:"string",minLength:1,maxLength:600};
-      const evidence=["response",...(brief.referenceCoverage==="none"?[]:["reference"]),...(brief.target==="agent"?["trajectory"]:[]),
-        ...(brief.referenceCoverage!=="none" && brief.target==="agent"?["reference-and-trajectory"]:[])];
-      const mechanical=methods.filter(m=>m!=="judge").map(m=>"NEW:"+m);
-      const resolution=(answerContent:boolean,metric:string)=>({anyOf:[
-        ...(!answerContent || catalogOptions.length?[{type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:answerContent?catalogOptions:simple(metric)},reason:comment}}]:[]),
+      const evidence=["response",...(brief.canSupplyReference?["reference"]:[]),...(brief.target==="agent"?["trajectory"]:[]),
+        ...(brief.canSupplyReference && brief.target==="agent"?["reference-and-trajectory"]:[])];
+      const resolution=(answerContent:boolean,metric:string)=>{
+        const needsReference=needsApprovedReference(metric);
+        const mechanical=methods.filter(m=>m!=="judge" && (!needsReference || m==="field")).map(m=>"NEW:"+m);
+        const admittedEvidence=evidence.filter(kind=>!needsReference || kind.includes("reference"));
+        return {anyOf:[
+        ...(!answerContent || needsApprovedReference(metric) || catalogOptions.length?[{type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:answerContent && !needsApprovedReference(metric)?catalogOptions:simple(metric)},reason:comment}}]:[]),
         ...(mechanical.length?[{type:"object",additionalProperties:false,required:["choice","reason","name","criteria","threshold"],
           properties:{choice:{type:"string",enum:mechanical},...writeFields}}]:[]),
-        {type:"object",additionalProperties:false,required:["choice","reason","name","criteria","threshold","anchors"],properties:{
+        ...(admittedEvidence.length?[{type:"object",additionalProperties:false,required:["choice","reason","name","criteria","threshold","anchors"],properties:{
           choice:{type:"string",enum:["NEW:judge",...visible.map(x=>"ADAPT:"+x.option)]},...writeFields,
           anchors:{type:"object",additionalProperties:false,required:["full","partial","zero","evidence"],
-            properties:{full:anchor,partial:anchor,zero:anchor,evidence:{type:"string",enum:evidence}}}}},
-      ]});
+            properties:{full:anchor,partial:anchor,zero:anchor,evidence:{type:"string",enum:admittedEvidence}}}}}]:[]),
+        ]};
+      };
       return {type:"object",additionalProperties:false,required:goals.map(g=>g.key),
         properties:Object.fromEntries(goals.map(g=>[g.key,g.external?{anyOf:[{type:"object",additionalProperties:false,required:["choice","reason"],properties:{choice:{type:"string",enum:["SKIP"]},reason:comment}}]}:resolution(g.answerContent,g.metric)]))};
     }
@@ -258,7 +266,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
         const editing=pick.choice.startsWith("ADAPT:"), creating=pick.choice.startsWith("NEW:");
         if(!editing && !creating && "criteria" in pick)throw Error("An exact reuse or skip cannot contain modified criteria. Choose ADAPT for a changed rubric.");
         if(pick.choice==="SKIP"){
-          if(answerContent || /\bskip (?:is not|isn\x27t) appropriate\b/i.test(rationale) || skipsFutureAnswer(rationale))throw Error(key+": the candidate answer is guaranteed at scoring time. Design the per-answer check. Skip only if a specific independent source is required and unavailable");
+          if((answerContent && !needsApprovedReference(metric)) || /\bskip (?:is not|isn\x27t) appropriate\b/i.test(rationale) || skipsFutureAnswer(rationale))throw Error(key+": the candidate answer is guaranteed at scoring time. Design the per-answer check. Skip only if a specific independent source is required and unavailable");
           gaps.push({measure:metric,reason:rationale});
           summaries.push(metric+" — unscored. "+rationale);continue;
         }
@@ -266,6 +274,8 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
         if(auto){
           const source=defaultSource.get(auto.option);
           if(!source)throw Error("The automatic grader version is unavailable. Prepare a new plan.");
+          if(needsApprovedReference(metric) && !graderRequiredEvidence(source).includes("reference"))
+            throw Error("This approved measure requires a verified case reference. Choose a grader that uses it or report the evidence gap.");
           covered.push({measure:metric,reason:rationale,grader:{id:source.id,name:source.name,version:source.version}});
           summaries.push(metric+" — already checked by "+source.name+" v"+source.version+".");
           continue;
@@ -292,6 +302,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
             throw Error("Choose the offered catalog option for exact reuse or ADAPT its criterion explicitly.");
           const anchors=pick.anchors;
           let requiredEvidence:("reference"|"trajectory")[]|undefined;
+          let binaryCount=false;
           if(method==="judge"){
             if(!anchors || new Set([anchors.full,anchors.partial,anchors.zero].map(v=>v.toLowerCase())).size!==3)
               throw Error("Provide three distinct observable anchors for full, partial and zero credit.");
@@ -306,21 +317,23 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
             requiredEvidence=[];
             if(anchors.evidence==="reference" || anchors.evidence==="reference-and-trajectory")requiredEvidence.push("reference");
             if(anchors.evidence==="trajectory" || anchors.evidence==="reference-and-trajectory")requiredEvidence.push("trajectory");
-            if(requiredEvidence.includes("reference") && brief.referenceCoverage==="none" || requiredEvidence.includes("trajectory") && brief.target!=="agent")
+            if(requiredEvidence.includes("reference") && !brief.canSupplyReference || requiredEvidence.includes("trajectory") && brief.target!=="agent")
               throw Error("The proposed semantic rubric depends on unavailable evidence. Use an observable criterion or skip it.");
             // A share counts whether each response qualifies. Partial membership cannot contribute to that numerator.
-            const binaryCount=answerContent && /^(?:the\s+)?(?:share|percent(?:age)?|proportion|fraction|number|count)\s+of\b/i.test(metric);
+            binaryCount=answerContent && /^(?:the\s+)?(?:share|percent(?:age)?|proportion|fraction|number|count)\s+of\b/i.test(metric);
             const instructions=binaryCount?["Count this answer once if it meets every stated condition in the measure.",
-              "Full credit (10): the candidate answer explicitly includes every element required by this measure.","Partial credit (5): unavailable for this binary count.",
-              "Zero credit (0): one or more required conditions are absent. Use only 0 or 10."]:
+              criteria,"Full credit (10): "+(requiredEvidence.length?anchors.full:"the candidate answer explicitly includes every element required by this measure."),"Partial credit (5): unavailable for this binary count.",
+              "Zero credit (0): "+(requiredEvidence.length?anchors.zero:"one or more required conditions are absent.")+" Use only 0 or 10."]:
               [criteria,"Full credit (10): "+anchors.full,"Partial credit (5): "+anchors.partial,"Zero credit (0): "+anchors.zero,
               "Apply the zero-credit condition first. Use partial credit only if that condition is absent. For a binary policy, use only 0 or 10."];
             criteria=bounded(["Success measure: "+metric,...instructions,rubricEvidenceInstruction,requiredEvidence.length?"Missing "+requiredEvidence.join(" or ")+" evidence leaves the case unscored.":
                 "Use the selected evidence view. External outcomes require separate records."].join("\n"),6000,"grading criteria");
           } else if(anchors)throw Error("Select a rubric to use semantic scoring anchors.");
           check={action:editing?"derive":"create",source:source?reviewedSource(source):null,name,category:metric.slice(0,100),
-            industry:brief.industry,type:method==="judge"?"opik":method,criteria,threshold:pick.threshold,reason:rationale,...(method==="judge" && {evidenceView:answerContent && !requiredEvidence?.length?"answer-only":"case"}),...(requiredEvidence?.length && {requiredEvidence})};
+            industry:brief.industry,type:method==="judge"?"opik":method,criteria,threshold:pick.threshold,reason:rationale,...(binaryCount && {scoreScale:"binary"}),...(method==="judge" && {evidenceView:answerContent && !requiredEvidence?.length?"answer-only":"case"}),...(requiredEvidence?.length && {requiredEvidence})};
         }
+        if(check.type==="field")check.requiredEvidence=["reference"];
+        if(check.type==="trajectory")check.requiredEvidence=["trajectory"];
         if(source){
           const required=[...new Set([...graderRequiredEvidence(source),...(check.requiredEvidence ?? [])])];
           const scope=graderEvidenceView(source);
@@ -328,6 +341,10 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
           if(required.length){check.requiredEvidence=required;check.evidenceView="case";}
           else if(scope)check.evidenceView=scope;
         }
+        const usesReference=check.action==="reuse" ? graderRequiredEvidence(source).includes("reference") :
+          check.type==="field" || check.requiredEvidence?.includes("reference");
+        if(needsApprovedReference(metric) && !usesReference)
+          throw Error("This approved measure requires a verified case reference. Choose a reference-based check or report the evidence gap.");
         const identity=check.action==="reuse"?JSON.stringify(["reuse",check.source?.id]):
           JSON.stringify([check.action,check.source?.id,check.name,check.type,check.criteria,check.threshold,check.industry,check.category]);
         const duplicate=byDefinition.get(identity);
@@ -359,7 +376,8 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
       const sharedDefaults=focus==="task-objective"?[]:publicDefaults;
       const payload={evaluationPhase:{now:"Design a grader BEFORE inference.",atScoring:"Every grader receives the dispatched task and the candidate's generated answer, even without a dataset.",
         aggregate:"A per-answer check can define a numerator. Do not claim to have measured a population or an operational outcome.",
-        references:brief.referenceCoverage,observedAgentSteps:brief.target==="agent"?"when recorded":"none"},
+        references:brief.referenceCoverage,referenceCollection:brief.canSupplyReference && brief.referenceCoverage==="none"?
+            "A reusable or Quick grader can require a verified answer supplied before grading. If the task only mentions a source, its contents are not evidence." : undefined,observedAgentSteps:brief.target==="agent"?"when recorded":"none"},
         ...brief,focus,goals:measures,allowedLiterals:literals,automatic:defaults,catalog:choices};
       return route.ask("Grader designer",agent.instructions,payload,proposalSchema(measures,choices,defaults),
         Math.min(4500,820*measures.length+320),output=>parsePlan(measures,output,choices,defaults),{
@@ -403,8 +421,14 @@ export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
       if(!check)throw Error("This proposal is outside the reviewed plan.");
       const source=check.source ? available.find(g=>g.id===check.source?.id) : undefined;
       if(check.source && !source)throw Error("The source grader is no longer applicable. Propose a new plan.");
+      const required=new Set(check.requiredEvidence ?? []);
+      if(check.type==="field")required.add("reference");
+      if(check.type==="trajectory")required.add("trajectory");
+      for(const kind of graderRequiredEvidence(source))required.add(kind);
       if(choice.action==="reuse"){
         if(!source)throw Error("This proposal has no pinned source to reuse.");
+        if([...required].some(kind=>!graderRequiredEvidence(source).includes(kind)))
+          throw Error("Create the reviewed grader version. The original version does not use all the evidence this measure requires.");
         return source.id;
       }
       if((choice.action==="derive")!==!!source)throw Error("Keep the source grader attached when customizing.");
@@ -415,7 +439,9 @@ export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
         throw Error("Keep the grader applicable to the reviewed domain and source.");
       if(source && type!=="opik" && type!=="decision")throw Error("Choose a scoring rubric, a binary decision, or reuse the exact version.");
       const {name,category,criteria,threshold,judgeId}=choice.definition;
-      const required=[...new Set([...graderRequiredEvidence(source),...(check.requiredEvidence ?? [])])];
+      if(required.has("reference") && !["field","opik","judge","decision"].includes(type) ||
+          required.has("trajectory") && !["trajectory","opik","judge","decision"].includes(type))
+        throw Error("Keep a grading method that can use the evidence required by the reviewed measure.");
       const scope=graderEvidenceView(source) ?? check.evidenceView;
       if(type==="decision"){
         const config=choice.definition.decision, view=choice.definition.decisionView;
@@ -424,7 +450,7 @@ export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
         if(criteria===check.criteria && check.type!=="decision")
           throw Error("Write one yes/no criterion before switching the proposed grader to a decision model.");
         return bench.graders.save({intent:source?"derive":"create",...(source && {sourceGraderId:source.id}),
-          type,name,category,criteria,threshold,industry,decision:config,decisionView:view,confirmNative:true,requiredEvidence:required},models,null,draft.producer);
+          type,name,category,criteria,threshold,industry,decision:config,decisionView:view,confirmNative:true,requiredEvidence:[...required]},models,null,draft.producer);
       }
       if(choice.definition.decision || choice.definition.decisionView)throw Error("Decision settings require the native decision grading method.");
       if(type==="catalog" || type==="opik-metric")throw Error("Choose a supported new customer rubric.");
@@ -432,7 +458,8 @@ export function confirmGraderPlan(bench:DesignerBench,raw:unknown):string[]{
       if(!supportedMethods(brief,literal).includes(method))throw Error("Choose a method supported by the available evidence.");
       checkCriteria(method,criteria,brief,literal);
       return bench.graders.save({intent:source?"derive":"create",...(source && {sourceGraderId:source.id}),
-        type,name,category,criteria,threshold,judgeId,industry,...(type==="opik" && {requiredEvidence:required}),...(type==="opik" && {evidenceView:choice.definition.evidenceView ?? scope})},models,null,draft.producer);
+        type,name,category,criteria,threshold,judgeId,industry,...(type==="opik" && {requiredEvidence:[...required]}),
+        ...(type==="opik" && check.scoreScale==="binary" && criteria===check.criteria && {scoreScale:"binary"}),...(type==="opik" && {evidenceView:choice.definition.evidenceView ?? scope})},models,null,draft.producer);
     });
     if(new Set(ids).size!==ids.length)throw Error("Remove duplicate graders before confirming.");
     db.prepare("UPDATE grader_design_drafts SET ids=?,approval=? WHERE id=?").run(JSON.stringify(ids),signature,draftId);

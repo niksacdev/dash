@@ -1,6 +1,6 @@
 type UiDesignMethod="opik"|"decision"|"contains"|"exact"|"field"|"trajectory";
 type UiPlanAction = "create" | "derive" | "reuse";
-interface UiPlanSource {id:string;name:string;scope:"general"|"industry"|"customer";version:number;threshold?:number;criteria:string;hosted:boolean;model:string|null}
+interface UiPlanSource {requiredEvidence?:("reference"|"trajectory")[];id:string;name:string;scope:"general"|"industry"|"customer";version:number;threshold?:number;criteria:string;hosted:boolean;model:string|null}
 interface UiProposedGrader {measures?:string[];name:string;category:string;industry:string;type:UiGradeType;criteria:string;threshold:number;
  evidenceView?:UiDecisionView;requiredEvidence?:("reference"|"trajectory")[];action:UiPlanAction;source:UiPlanSource|null;reason:string}
 interface UiGraderGap {measure:string;reason:string}
