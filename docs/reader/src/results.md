@@ -34,6 +34,14 @@ A winner requires complete scores on the same cases, a lead on at least one rubr
 | The local result is available but the Opik service failed. | Inspect the case scores in DASH. Follow the sync message for the selected destination and resume the saved sync when available. |
 | DASH reports a workspace write failure. | Check drive space and folder access. Inspect the last durable case in Run history before deciding which work to repeat. |
 
+## Read device energy
+
+**Device energy (est.)** appears beside input and output tokens on candidate responses, in case telemetry, and in AI planning query details. For example, **12 J · 1.5 s sampled** means that the DASH host used an estimated 12 joules during 1.5 seconds covered by whole-device power readings. The observation window can include adapter preparation or a failed request. Other applications contribute to the reading. For a hosted request, the value covers your local device only. The provider’s server energy is unavailable.
+
+DASH integrates successive power readings about one second apart. A sensor failure or a gap longer than three seconds breaks the interval. A single watt reading can show device power but cannot establish energy. A short planning query may finish before two readings arrive. **Pending** changes to the recorded estimate or **Unmeasured** when the observation ends. Older runs display any energy already recorded. Fixture replay supplies no inference measurements.
+
+Run history shows the mean energy per measured case and the number of measured cases. Compare the sampled durations along with the joules. The grader verdict depends on the approved success measures.
+
 ## Find measured performance
 
 | Question | Where to look |

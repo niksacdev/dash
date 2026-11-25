@@ -81,6 +81,8 @@ const savedPlanningCall = z.object({
   startedAt:z.int().nonnegative().optional().catch(undefined), elapsedMs:z.int().nonnegative().optional().catch(undefined),
   discoveryMs:z.int().nonnegative().optional().catch(undefined), firstTokenMs:z.int().nonnegative().optional().catch(undefined),
   tokensPerSecond:z.number().positive().optional().catch(undefined),
+  energy:z.object({scope:z.literal("Whole device"),source:z.string().max(240).nullable(),sampled_seconds:z.number().nonnegative(),
+    estimated_energy_j:z.number().nonnegative().nullable()}).optional().catch(undefined),
   usage:z.object({inputTokens:z.int().nonnegative().nullable(),outputTokens:z.int().nonnegative().nullable(),
     estimatedCostUsd:z.number().nonnegative().nullable()}).optional().catch(undefined),
 });

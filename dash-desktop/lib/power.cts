@@ -21,36 +21,44 @@ export function parseWatts(xml: string): number | null {
   const mw = value ? Number(value[1]) : null;
   return mw !== null && Number.isSafeInteger(mw) && mw > 0 && mw < 2000000 ? mw / 1000 : null;
 }
-export async function readPower(): Promise<PowerReading> {
+export async function readPower(signal?:AbortSignal): Promise<PowerReading> {
   let watts: number | null = null;
   if (process.platform === "darwin") {
     try {
-      const { stdout } = await exec("/usr/sbin/ioreg", ["-r","-n","AppleSmartBattery","-a"], { timeout:1200, maxBuffer:2_000_000 });
+      const { stdout } = await exec("/usr/sbin/ioreg", ["-r","-n","AppleSmartBattery","-a"], { signal, timeout:1200, maxBuffer:2_000_000 });
       watts = parseWatts(stdout);
     } catch { /* Some Macs lack the whole-device sensor. */ }
   }
   return { watts, source, at: new Date().toISOString() };
 }
 export async function startPower(
-  read: () => Promise<Pick<PowerReading, "watts">> = readPower, interval = 1000
+  read: (signal?:AbortSignal) => Promise<Pick<PowerReading, "watts">> = readPower, interval = 1000,
+  mode:"boundary"|"passive" = "boundary"
 ): Promise<() => Promise<PowerSummary>> {
   const samples: Sample[] = [];
   let pending: Promise<void> | null = null;
+  const controller = new AbortController();
   const started = performance.now();
   async function sample(): Promise<void> {
     let watts: number | null = null;
-    try { watts = (await read()).watts; } catch { /* Preserve a gap when a telemetry read fails. */ }
-    samples.push({ ms: Math.round(performance.now() - started), watts });
+    try { watts = (await read(controller.signal)).watts; } catch { /* Preserve a gap when a telemetry read fails. */ }
+    if (!controller.signal.aborted) samples.push({ ms: Math.round(performance.now() - started), watts });
   }
-  await sample();
-  const timer = setInterval(() => {
+  function tick() {
     if (!pending) pending = sample().finally(() => { pending = null; });
-  }, interval);
+  }
+  if (mode==="passive") tick(); else await sample();
+  const timer = setInterval(tick, interval);
   timer.unref();
   return async () => {
     clearInterval(timer);
-    if (pending) await pending;
-    await sample();
+    if (mode==="passive") {
+      // Planning uses only reads completed during this attempt. A fast reply never waits for a sensor.
+      controller.abort();
+    } else {
+      if (pending) await pending;
+      await sample();
+    }
     let joules = 0, covered = 0;
     for (let i = 1; i < samples.length; i++) {
       const a = samples[i-1], b = samples[i], dt = (b.ms - a.ms) / 1000;

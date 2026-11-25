@@ -93,7 +93,7 @@ export class Bench {
     this.endpoints = new Endpoints(this.db);
     this.catalog = new Catalog(this.db, this.packs);
     this.plannerSettings = new PlannerSettings(this.db,this.endpoints);
-    this.workflow = new OutcomeWorkflow(this.db, adapters, {openaiFallback:()=>this.plannerSettings.fallback()});
+    this.workflow = new OutcomeWorkflow(this.db, adapters, {powerSampler:this.powerSampler,openaiFallback:()=>this.plannerSettings.fallback()});
     this.designing = false;
     this.servers = [];
     this.active = null;

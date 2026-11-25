@@ -127,6 +127,8 @@ interface UiCandidateMetrics {
   outputCount: number;
   watts: number | null;
   powerCount: number;
+  energy?:number|null;
+  energyCount?:number;
 }
 
 interface UiSyncedExperiment {

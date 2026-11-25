@@ -413,7 +413,7 @@ function workflowCaseSummary(m:UiManifest, r:UiResult) {
     esc(actual.input_tokens ?? "Unreported")+'</dd>'+
     (input?'<dt>Checked input</dt><dd>'+esc(input.tokens+(input.cap!=null?" of "+input.cap:"")+" · "+input.source)+'</dd>':'')+'<dt>Output tokens</dt><dd>'+
     esc(actual.output_tokens ?? "Unreported")+(m.tokenBudget?.outputCap ? ' · limit '+esc(m.tokenBudget.outputCap) : '')+
-    '</dd></dl></div>';
+    '</dd><dt>Device energy (est.)</dt><dd>'+deviceEnergyReading(actual.device_power,m.candidates.find(c=>c.id===r.candidateId)?.provider)+'</dd></dl></div>';
 }
 function workflowDesignInput(w:UiWorkflow) {
   return {

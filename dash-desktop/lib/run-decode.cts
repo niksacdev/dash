@@ -38,7 +38,7 @@ const manifest=z.object({format:num,id:str,created:str,title:str,mode:z.enum(["q
   guardrailFailure:z.object({...guardrailShape,candidateId:str,caseId:str}).passthrough().optional(),
 }).passthrough();
 const power=z.object({source:nullable,scope:str,interval_ms:num.optional(),samples:z.union([num,z.array(z.object({ms:num,watts:n}))]),
-  average_w:n,peak_w:n.optional(),sampled_seconds:num.optional(),estimated_energy_j:n.optional()});
+  average_w:n,peak_w:n.optional(),sampled_seconds:num.optional().catch(undefined),estimated_energy_j:n.optional().catch(undefined)});
 const telemetry=z.object({
   latency_ms:num.optional(),first_token_ms:n.optional(),input_tokens:n.optional(),output_tokens:n.optional(),provider_first_token_ms:n.optional(),
   reasoning_tokens:n.optional(),tokens_per_second:n.optional(),load_ms:n.optional(),model_instance_id:nullable.optional(),load_ns:n.optional(),

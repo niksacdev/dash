@@ -10,6 +10,13 @@ interface UiMeasurementRow {
   input?: number | null;
   output?: number | null;
   watts?: number | null;
+  energy?: UiDeviceEnergy | null;
+}
+
+function measuredDeviceEnergy(power?:UiDeviceEnergy|null):number|null {
+  const joules=power?.estimated_energy_j;
+  return power?.scope==="Whole device" && typeof power.sampled_seconds==="number" && Number.isFinite(power.sampled_seconds) &&
+    power.sampled_seconds>0 && typeof joules==="number" && Number.isFinite(joules) && joules>=0 ? joules : null;
 }
 
 function candidateMetrics(candidates: UiPerformanceCandidate[], records: UiMeasurementRow[]): UiCandidateMetrics[] {
@@ -20,11 +27,11 @@ function candidateMetrics(candidates: UiPerformanceCandidate[], records: UiMeasu
     const cases = records.filter(r=>r.candidate===c.id);
     const scored = cases.filter(r=>r.pass!=null);
     const times=sorted(cases.map(r=>r.latency)), out=sorted(cases.map(r=>r.output)), inp=sorted(cases.map(r=>r.input));
-    const watts=sorted(cases.map(r=>r.watts));
+    const watts=sorted(cases.map(r=>r.watts)), energy=sorted(cases.map(r=>measuredDeviceEnergy(r.energy)));
     return { id:c.id,model:c.model,provider:c.provider,recorded:cases.length,errors:cases.filter(r=>r.error).length,
       scored:scored.length,passed:scored.filter(r=>r.pass).length,review:scored.filter(r=>r.review).length,
       timed:times.length,p50:percentile(times,.5),p95:percentile(times,.95),input:average(inp),inputCount:inp.length,
-      output:average(out),outputCount:out.length,watts:average(watts),powerCount:watts.length };
+      output:average(out),outputCount:out.length,watts:average(watts),powerCount:watts.length,energy:average(energy),energyCount:energy.length };
   });
 }
 // SQLite history and the legacy renderer fallback use the same aggregation.

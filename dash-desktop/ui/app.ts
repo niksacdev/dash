@@ -373,7 +373,7 @@ async function developerPage(id?:string) {
   try{run=await api.diagnostics(key);}
   catch(error){return out+'</div>'+readFailure("Couldn’t read the saved run traces",error,"Retry traces");}
   out+='<div class="row">'+tag(run.status, true) +
-    tag(run.fixture ? "Fixture replay" : "Local inference") +
+    tag(run.fixture ? "Fixture replay" : "Live inference") +
     "</div>";
   const counts = run.candidates.map((c) => {
     const cases = run.traces.filter((r) => r.candidateId === c.id);
@@ -421,6 +421,7 @@ async function developerPage(id?:string) {
         "Latency",
         "Input tokens",
         "Output tokens",
+        "DASH device energy (est.)",
       ],
       run.traces.map((r) => [
         link(esc(r.caseId), "run/" + key + "/" + r.index, "link"),
@@ -430,9 +431,10 @@ async function developerPage(id?:string) {
         developerMetric(r.telemetry?.latency_ms, " ms"),
         developerMetric(r.telemetry?.input_tokens),
         developerMetric(r.telemetry?.output_tokens),
+        deviceEnergyReading(r.telemetry?.device_power),
       ]),
     ) +
-    "</div>" +
+    "<small>Energy covers this device, including other activity. Remote server energy is unavailable.</small></div>" +
     bar("Trace details") +
     '<div class="stack">' +
     run.traces
@@ -622,13 +624,14 @@ function observationLabel(result:UiResult):string|null {
   if (result.dispatchState==="interrupted") return "Observation interrupted";
   return null;
 }
-function responseTokenUsage(row:UiResult|undefined,checked:number|undefined,running:boolean) {
+function responseTokenUsage(row:UiResult|undefined,checked:number|undefined,running:boolean,provider:string) {
   const actual=row?.telemetry?.input_tokens, output=row?.telemetry?.output_tokens;
   const verified=row?.inputBudget?.tokens ?? checked;
   const waiting=running?"Pending":"Unreported";
   const input=actual!=null?actual.toLocaleString():verified!=null?verified.toLocaleString()+" checked":waiting;
   return '<p class="muted response-token-usage">Input tokens <strong>'+esc(input)+'</strong> · Output tokens <strong>'+
-    esc(output!=null?output.toLocaleString():waiting)+'</strong></p>';
+    esc(output!=null?output.toLocaleString():waiting)+'</strong> · Device energy (est.) <strong>'+
+    deviceEnergyReading(row?.telemetry?.device_power,provider,running)+'</strong></p>';
 }
 function quickExecutionProgress(run:UiRunDetail) {
   const {manifest,partial}=run;
@@ -683,6 +686,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
       '</div><div class="panel"><h3>' + (r.dispatchState ? "Partial candidate output" : "Candidate output") + '</h3><pre>' +
       esc(r.output ?? (r.dispatchState ? "No response text was observed." : r.error)) +
       "</pre>" +
+      (!m.fixture && !m.approvedPrompt ? responseTokenUsage(r,undefined,false,m.candidates.find(c=>c.id===r.candidateId)?.provider ?? "") : "") +
       (r.error ? box(observationLabel(r) ?? "Runtime error", r.error) : "") +
       (r.gradingError ? '<p class="note">'+esc(r.gradingError)+'</p>' : "") +
       (r.score ? box("Score explanation", r.score) : "") +
@@ -748,7 +752,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
                 (live ? "Waiting…" : "No response"),
             ) +
             "</pre>" +
-            (r || part ? responseTokenUsage(r,part?.checkedInputTokens,live && (!r || r.dispatchState==="pending")) : "")+
+            (r || part ? responseTokenUsage(r,part?.checkedInputTokens,live && (!r || r.dispatchState==="pending"),c.provider) : "")+
             (r && observationLabel(r) ? tag(observationLabel(r) ?? "") : "") +
             (r ? link("Inspect trace", "run/" + id + "/" + i, "link") : "") +
             "</article>"
@@ -834,6 +838,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
           "First token",
           "Input tokens",
           "Output tokens",
+          "Device energy (est.)",
         ],
         run.results.map((r) => {
           const t = r.telemetry ?? {};
@@ -845,10 +850,11 @@ async function runPage(id:string, record:string|undefined, seq:number) {
             t.first_token_ms != null ? t.first_token_ms + " ms" : "—",
             t.input_tokens ?? "—",
             t.output_tokens ?? "—",
+            deviceEnergyReading(t.device_power,m.candidates.find(c=>c.id===r.candidateId)?.provider),
           ];
         }),
       ) +
-      "<small>Power covers the whole device during each call. Case traces include sensor samples and estimated joules over the sampled interval.</small></div>";
+      "<small>Energy covers sampled intervals on the device running DASH, including other activity. Remote server energy is unavailable.</small></div>";
   return (
     out +
     '<details class="card spacer"><summary>Run manifest</summary><pre>' +

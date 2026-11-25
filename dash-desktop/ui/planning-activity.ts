@@ -3,6 +3,17 @@
 const planningMoney = new Intl.NumberFormat("en-US", {style:"currency", currency:"USD", maximumSignificantDigits:4});
 const planningOutcome = {running:"Working",succeeded:"Completed",failed:"Failed",canceled:"Canceled"} as const;
 
+const energyNumber = (value:number) => value.toLocaleString(undefined,{maximumSignificantDigits:3});
+function deviceEnergyReading(power:UiDeviceEnergy|null|undefined,provider?:string,pending=false) {
+  const joules=measuredDeviceEnergy(power);
+  const hostOnly=provider==="openai" || provider==="compatible";
+  const note=hostOnly?" · DASH device only":"";
+  const description="Whole-device energy, including other activity, over the sampled interval. Remote server energy is unavailable.";
+  const coverage=power?.sampled_seconds;
+  const label=joules!==null && typeof coverage==="number" ? energyNumber(joules)+" J · "+energyNumber(coverage)+" s sampled" :
+    pending ? "Pending" : "Unmeasured";
+  return '<span title="'+esc(description)+'">'+esc(label+note)+'</span>';
+}
 function planningSeconds(ms:number) {
   return (ms/1000).toFixed(1) + " s";
 }
@@ -47,6 +58,7 @@ function planningQueryRow(call:UiPlanningAttempt) {
     (running ? activityMeter(phase, call.progress?.phase==="processing-prompt" ? {value:call.progress.percent,max:100} : undefined) : '')+
     '<dl class="ai-usage"><div><dt>Input tokens</dt><dd>'+esc(input?.toLocaleString() ?? awaitingInput)+'</dd></div>' +
     '<div><dt>Output tokens</dt><dd>'+esc(output?.toLocaleString() ?? liveOutput)+'</dd></div>' +
+    '<div><dt>Device energy (est.)</dt><dd>'+deviceEnergyReading(call.energy,call.provider,running)+'</dd></div>'+
     '<div><dt>API cost</dt><dd>'+esc(cost)+'</dd></div>'+
     (elapsed?'<div><dt>Elapsed</dt><dd>'+elapsed+'</dd></div>':'')+
     (call.firstTokenMs!=null?'<div><dt>First token</dt><dd>'+esc(planningSeconds(call.firstTokenMs))+'</dd></div>':'')+
