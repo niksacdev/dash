@@ -1550,8 +1550,9 @@ async function smoke() {
         await wait(()=>js("document.querySelector('#grade-create [name=criteria]').value==='QA'"),"Reopen customer v2");
         await fill("#grade-create [name=criteria]","QA version three");await click("#grade-create button.yellow");
         await wait(()=>loadVersion(alias,3),"Published successor");
-        await route("new");
         const v3=z.string().parse(loadVersion(alias,3));
+        await wait(()=>exists('#grader-receipt [data-use-version="'+v3+'"]'),"The new grader receipt is visible before leaving");
+        await route("new");
         await wait(()=>exists(optionFor(v3)),"Successor offered alongside earlier revision");
         assert.equal(await js("document.querySelector("+q(optionFor(v3))+").checked"),false);
       }
