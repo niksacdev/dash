@@ -4,6 +4,18 @@ interface Starter {
   packId:string;domain:Domain;title:string;task:string;quickObjective:string;
 }
 
+// The approved source for the published example also feeds its local disposition grader.
+export const starterInspectionV1={lot:"K7",sample:"S1",active:"B",previous:"A",lower_mm:"9.97",upper_mm:"10.03",measured_mm:"10.04",
+  rule:"inclusive_limits",required_action:"signed_recheck",recheck_complete:false} as const;
+
+// Keep this source revision available when a later starter supersedes it. Saved grades
+// and saved-answer reviews can then establish exactly which task the candidate saw.
+export const inspectionHandoffObjectiveV1=[
+      "Write a two-sentence handoff for the incoming-quality shift lead. Give the disposition of sample S1 and cite the applicable drawing limit and reading. Identify the next action and say whether the shift note establishes that it was completed.",
+      `Synthetic inspection record: Lot ${starterInspectionV1.lot}, shaft sample ${starterInspectionV1.sample}. Active drawing ${starterInspectionV1.active} permits ${starterInspectionV1.lower_mm}–${starterInspectionV1.upper_mm} mm inclusive. Superseded drawing ${starterInspectionV1.previous} permitted 9.95–10.05 mm. Reading: ${starterInspectionV1.measured_mm} mm.`,
+      "Receiving rule: Accept an in-limit sample. Send an out-of-limit sample to Quality for a signed recheck. Shift note: “Recheck after changeover.” The record contains no signed recheck.",
+    ].join("\n\n");
+
 // Dataset objectives apply to each row under its existing scenario contract.
 // Quick objectives include one synthetic record the candidate can actually inspect.
 export const domainStarters:readonly Starter[]=[
@@ -19,11 +31,7 @@ export const domainStarters:readonly Starter[]=[
   {
     packId:"manufacturing",domain:"Manufacturing",title:"Prepare a quality handoff",
     task:"For each sampled dimension, cite the active drawing and recorded reading, apply the supplied decision rule, and route the sample using the scenario’s output fields.",
-    quickObjective:[
-      "Write a two-sentence handoff for the incoming-quality shift lead. Give the disposition of sample S1 and cite the applicable drawing limit and reading. Identify the next action and say whether the shift note establishes that it was completed.",
-      "Synthetic inspection record: Lot K7, shaft sample S1. Active drawing B permits 9.97–10.03 mm inclusive. Superseded drawing A permitted 9.95–10.05 mm. Reading: 10.04 mm.",
-      "Receiving rule: Accept an in-limit sample. Send an out-of-limit sample to Quality for a signed recheck. Shift note: “Recheck after changeover.” The record contains no signed recheck.",
-    ].join("\n\n"),
+    quickObjective:inspectionHandoffObjectiveV1,
   },
 ];
 

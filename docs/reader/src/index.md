@@ -4,7 +4,7 @@
 
 DASH helps you test whether a model makes the right business decision. A Financial Services team can check whether an earnings extractor reports GAAP EPS. A Manufacturing team can check whether an inspector releases a part against the correct drawing revision.
 
-The header shows your DASH version beside **Light** and **Dark**. In a Git build, hover over the version to see its source revision.
+The header shows the app version and, in Git builds, the short commit ID beside **Light** and **Dark**. Include both when reporting a problem.
 
 Use the banner arrows on **Overview** to walk through the six slides in order.
 

@@ -241,6 +241,7 @@ header {
 #appearance b { font-size: 12px; font-weight: 550; }
 @media (max-width: 680px) {
   .header-actions { gap: 6px; }
+  .app-version { max-inline-size: 15ch; white-space: normal; line-height: 1.15; }
   #appearance b { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
   #appearance label > span { min-width: 32px; min-height: 32px; padding: 0; }
 }
@@ -610,13 +611,11 @@ a.link:hover {
 .catalog-import {margin-bottom:18px}
 
 .group-name,.roster-model,.launch-strip,.grid-slot {display:flex;align-items:center}
-.slot-track+div small,.roster-model small,.grid-slot small {font:11px var(--mono);color:var(--muted)}
+.roster-model small,.grid-slot small {font:11px var(--mono);color:var(--muted)}
 .starting-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .grid-slot {min-width:0;gap:14px;position:relative;padding:14px;background:var(--surface-soft);border:1px solid var(--border);border-left:3px solid var(--brand);border-radius:8px}
 .grid-slot:nth-child(2){border-left-color:var(--series-b)}.grid-slot strong,.grid-slot small,.roster-model small,.roster-model b {display:block;overflow-wrap:anywhere}
 .grid-slot strong {font-size:17px;line-height:1.2;margin:4px 0}.grid-slot small {font-size:10px}
-.slot-track {width:58px;flex-shrink:0;border-block:1px dashed var(--control-border);padding:3px 0}.grid-car {width:50px;height:31px;color:var(--brand)}.grid-slot:nth-child(2) .grid-car {color:var(--series-b)}
-.grid-slot:not(.occupied) .grid-car {opacity:.27}
 .remove-model {margin-left:auto;min-height:44px;min-width:44px;padding:0}.launch-strip {align-items:stretch;gap:14px;margin:15px 0}
 .launch-strip>.field {flex:1;margin:0}.launch-strip textarea {min-height:80px}.launch-side {width:165px;display:grid;gap:6px}.launch-side .field {margin:0}
 .go-button {min-height:44px;font:italic 850 21px/1 Arial;letter-spacing:.03em}

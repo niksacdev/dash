@@ -13,7 +13,7 @@ export type QuickOutputSchema = {
 export interface QuickTaskInput {task:string;inputs:Record<string,string>}
 export interface StructuredOutputCheck {valid:boolean;message:string}
 
-const maxFields = 12;
+export const maxQuickOutputFields = 12;
 const validName = (name:unknown):name is string => typeof name === "string" &&
   /^[A-Za-z][A-Za-z0-9_]{0,47}$/.test(name) && !Object.hasOwn(Object.prototype,name) && name !== "prototype";
 const isPrimitive = (value:unknown):value is Primitive => primitives.some(t=>t===value);
@@ -21,7 +21,7 @@ const exactKeys = (record:Record<string,unknown>, keys:string[]) =>
   Object.keys(record).length === keys.length && keys.every(key=>Object.hasOwn(record,key));
 
 export const plannerFieldsSchema = {
-  type:"array", minItems:1, maxItems:maxFields, items:{
+  type:"array", minItems:1, maxItems:maxQuickOutputFields, items:{
     type:"object", properties:{name:{type:"string"},type:{type:"string",enum:primitives},nullable:{type:"boolean"}},
     required:["name","type","nullable"],additionalProperties:false,
   },
@@ -31,17 +31,19 @@ export const plannerFieldsSchema = {
 const noteText=z.string().trim().min(1).max(220);
 const fieldNote=z.strictObject({name:z.string().max(48),quote:noteText,explanation:noteText});
 export const plannerFieldNotesSchema={
-  type:"array",maxItems:maxFields,items:{type:"object",additionalProperties:false,required:["name","quote","explanation"],
+  type:"array",maxItems:maxQuickOutputFields,items:{type:"object",additionalProperties:false,required:["name","quote","explanation"],
     properties:{name:{type:"string",maxLength:48},quote:{type:"string",maxLength:220},explanation:{type:"string",maxLength:220}}},
 };
+const intervalEndpoint=z.enum(["lower","upper","text"]);
+export type IntervalEndpoint=z.infer<typeof intervalEndpoint>;
 export const schemaReviewRecord=z.strictObject({taskEdited:z.boolean(),declaredKeys:z.boolean().optional(),
   fields:z.array(z.strictObject({name:z.string().refine(validName),type:z.enum(primitives),nullable:z.boolean(),
-    note:fieldNote.pick({quote:true,explanation:true}).nullable()})).min(1).max(maxFields)});
+    note:fieldNote.pick({quote:true,explanation:true}).nullable(),interval:intervalEndpoint.optional()})).min(1).max(maxQuickOutputFields)});
 export type SchemaReview=z.infer<typeof schemaReviewRecord>;
 
-export function reviewProposedFields(schema:QuickOutputSchema,raw:unknown,objective:string,declaredKeys=false):SchemaReview {
+export function reviewProposedFields(schema:QuickOutputSchema,raw:unknown,objective:string,declaredKeys=false,intervals:ReadonlyMap<string,IntervalEndpoint>=new Map()):SchemaReview {
   const notes=new Map<string,{quote:string;explanation:string}|null>();
-  if (Array.isArray(raw) && raw.length<=maxFields) for (const row of raw) {
+  if (Array.isArray(raw) && raw.length<=maxQuickOutputFields) for (const row of raw) {
     const parsed=fieldNote.safeParse(row);
     if (!parsed.success) continue;
     const {name,quote,explanation}=parsed.data;
@@ -53,12 +55,12 @@ export function reviewProposedFields(schema:QuickOutputSchema,raw:unknown,object
       notes.set(name,notes.has(name) ? null : {quote,explanation});
   }
   return {taskEdited:false,...(declaredKeys && {declaredKeys:true}),fields:Object.entries(schema.properties).map(([name,field])=>({
-    name,type:Array.isArray(field.type) ? field.type[0] : field.type,nullable:Array.isArray(field.type),note:notes.get(name) ?? null,
+    name,type:Array.isArray(field.type) ? field.type[0] : field.type,nullable:Array.isArray(field.type),note:intervals.has(name) ? null : notes.get(name) ?? null,...(intervals.has(name) && {interval:intervals.get(name)}),
   }))};
 }
 
 export function schemaFromFields(raw:unknown):QuickOutputSchema {
-  if (!Array.isArray(raw) || !raw.length || raw.length > maxFields)
+  if (!Array.isArray(raw) || !raw.length || raw.length > maxQuickOutputFields)
     throw Error("Choose between 1 and 12 output fields.");
   const entries:[string,Field][] = [];
   for (const field of raw) {
@@ -76,7 +78,7 @@ export function decodeQuickOutputSchema(raw:unknown):QuickOutputSchema {
     throw Error("Use a closed JSON object with properties, required fields and additionalProperties set to false.");
   const names=Object.keys(raw.properties);
   const required:unknown[]=raw.required;
-  if (!names.length || names.length>maxFields || names.length !== required.length || names.some(name=>!required.includes(name)))
+  if (!names.length || names.length>maxQuickOutputFields || names.length !== required.length || names.some(name=>!required.includes(name)))
     throw Error("List every output field once in required. Use 1–12 fields.");
   return schemaFromFields(Object.entries(raw.properties).map(([name,field])=>{
     if (!isRecord(field) || !exactKeys(field,["type"]))
@@ -118,9 +120,10 @@ export function decodeQuickTaskInput(raw:unknown,task:string):QuickTaskInput {
   return {task,inputs:Object.fromEntries(entries.map(([name,value])=>[name,String(value)]))};
 }
 
+export const quickSchemaInstruction="Complete the task in the JSON input. Return a single JSON object conforming to this schema.\n";
 export function quickStructuredMessages(input:QuickTaskInput,schema:QuickOutputSchema):ChatTurn[] {
   return [
-    {role:"system",content:"Complete the task in the JSON input. Return a single JSON object conforming to this schema.\n"+JSON.stringify(schema)},
+    {role:"system",content:quickSchemaInstruction+JSON.stringify(schema)},
     {role:"user",content:JSON.stringify(input)},
   ];
 }

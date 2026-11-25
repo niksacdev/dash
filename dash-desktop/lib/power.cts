@@ -10,6 +10,7 @@ export interface PowerSummary {
   scope: "Whole device";
   interval_ms: number;
   samples: Sample[];
+  sampleCount?:number;
   average_w: number | null;
   peak_w: number | null;
   sampled_seconds: number;
@@ -33,16 +34,27 @@ export async function readPower(signal?:AbortSignal): Promise<PowerReading> {
 }
 export async function startPower(
   read: (signal?:AbortSignal) => Promise<Pick<PowerReading, "watts">> = readPower, interval = 1000,
-  mode:"boundary"|"passive" = "boundary"
+  mode:"boundary"|"passive"|"aggregate" = "boundary"
 ): Promise<() => Promise<PowerSummary>> {
   const samples: Sample[] = [];
   let pending: Promise<void> | null = null;
   const controller = new AbortController();
   const started = performance.now();
+  let previous:Sample|null=null, sampleCount=0, validCount=0;
+  let joules=0, covered=0, peak:number|null=null;
   async function sample(): Promise<void> {
     let watts: number | null = null;
     try { watts = (await read(controller.signal)).watts; } catch { /* Preserve a gap when a telemetry read fails. */ }
-    if (!controller.signal.aborted) samples.push({ ms: Math.round(performance.now() - started), watts });
+    if (controller.signal.aborted) return;
+    const next={ms:Math.round(performance.now()-started),watts:watts!=null && Number.isFinite(watts) ? watts : null};
+    if (mode!=="aggregate") samples.push(next);
+    sampleCount++;
+    if(next.watts!==null) { validCount++; peak=Math.max(peak ?? next.watts,next.watts); }
+    if(previous && previous.watts!==null && next.watts!==null) {
+      const elapsed=(next.ms-previous.ms)/1000;
+      if(elapsed>0 && elapsed<=3) {joules+=elapsed*(previous.watts+next.watts)/2;covered+=elapsed;}
+    }
+    previous=next;
   }
   function tick() {
     if (!pending) pending = sample().finally(() => { pending = null; });
@@ -59,17 +71,8 @@ export async function startPower(
       if (pending) await pending;
       await sample();
     }
-    let joules = 0, covered = 0;
-    for (let i = 1; i < samples.length; i++) {
-      const a = samples[i-1], b = samples[i], dt = (b.ms - a.ms) / 1000;
-      if (a.watts == null || b.watts == null || dt <= 0 || dt > 3) continue;
-      joules += dt * (a.watts + b.watts) / 2;
-      covered += dt;
-    }
-    const values = samples.map(s => s.watts).filter((w): w is number => w !== null && Number.isFinite(w));
-    return { source, scope: "Whole device", interval_ms: interval, samples,
-      average_w: covered ? joules / covered : (values.length === 1 ? values[0] : null),
-      peak_w: values.length ? Math.max(...values) : null,
+    return { source, scope: "Whole device", interval_ms: interval, samples,...(mode==="aggregate" && {sampleCount}),
+      average_w: covered ? joules / covered : (validCount === 1 ? peak : null), peak_w:peak,
       sampled_seconds: covered, estimated_energy_j: covered ? joules : null };
   };
 }

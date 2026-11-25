@@ -333,7 +333,9 @@ function recordWorkspaceSave(items:SavedGraderChoice[],scope?:string) {
   savedDesignDataset=source && "pack" in source ? source.id : source && "datasetId" in source ? source.datasetId || undefined : undefined;
   showGraderAuthoring=false;samplePanelOpen=false;
 }
+function inspectionDecisionRule(g:UiGrader|undefined){return g?.type==="catalog" && (g.ruleKey==="inspection-sample-decision" || g.ruleKey==="inspection-active-range");}
 function needsGraderReference(g:UiGrader) {
+  if(inspectionDecisionRule(g))return true;
   return g.type==="field" || (g.type==="catalog" && !!g.library?.scenario) || g.metricKey==="hallucination" || !!g.requiredEvidence?.includes("reference");
 }
 function evidencePresent(value:unknown):boolean {
@@ -357,6 +359,8 @@ function includesJsonField(reference:unknown,field:string) {
   return reference!==undefined;
 }
 function expectedAnswerHelp(grader:UiGrader|undefined) {
+  if(grader?.ruleKey==="inspection-active-range")return 'Supply the active revision and dimensions, for example {"active":"C","lower_mm":"1.0","upper_mm":"1.2","measured_mm":"1.1"}.';
+  if(inspectionDecisionRule(grader))return 'Use an approved JSON case decision such as {"disposition":"review","required_action":"signed_recheck","recheck_complete":false}, or provide the inclusive limits and reading in millimetres.';
   const field=referenceFieldFor(grader);
   return field ? "Supply the expected answer as a JSON object containing the field "+field+"." :
     "Supply the facts a correct response should match. For example, “Q2 diluted GAAP EPS was $0.74.” The grader uses this after the candidate has answered. Text and JSON are supported.";
@@ -382,7 +386,7 @@ function showSampleEvidence(g:UiGrader|undefined) {
 function graderUseActions(g:UiGrader,source?:string,versionAction?:"revise"|"customize") {
   const sampleOnly=g.type==="trajectory" || g.requiredEvidence?.includes("trajectory");
   const caseTest=g.type==="catalog" && !!g.library?.scenario;
-  const sampleAvailable=g.type!=="catalog";
+  const sampleAvailable=g.type!=="catalog" || inspectionDecisionRule(g);
   const run=!g.library?.automatic && !sampleOnly;
   if (!run && !sampleAvailable && !caseTest && !versionAction) return "";
   return '<div class="gc-use" data-use-version="'+esc(g.id)+'"'+(source?' data-source-dataset="'+esc(source)+'"':'')+'>'+
@@ -484,6 +488,7 @@ const scoringRuleLabels:Record<UiGradeType,string>={
 
 function graderInputs(g:UiGrader):string {
   if(g.type==="catalog"){
+    if(inspectionDecisionRule(g))return "The approved inspection facts and the JSON decision from the candidate.";
     if(g.library?.scenario)return "Model answer and the labeled "+(graderScenario(g) || "scenario")+" case.";
     if(g.ruleKey==="completion")return "The runtime’s recorded stop reason.";
     if(g.ruleKey==="json-valid")return "Model answer and the run’s JSON output contract.";

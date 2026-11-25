@@ -71,10 +71,9 @@ body:has(.overview) .desk > header .button {
 .capability-reel:where([data-visual="race"])::before {
   clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%);
   background:
-    linear-gradient(0deg, #17161d6b, transparent 46%),
-    url("assets/scarlet-circuit.jpg") 64% 52% / cover no-repeat;
-  mask-image: linear-gradient(105deg, transparent 2%, #0005 32%, #000 78%);
-  opacity: .86;
+    linear-gradient(105deg, #171820ef 0%, #171820af 34%, #14151a25 70%),
+    url("assets/scarlet-circuit.jpg") 80% 58% / cover no-repeat;
+  mask-image: linear-gradient(105deg, transparent, #000 19%);
 }
 .capability-reel::after {
   width: calc(var(--cut) + 2px);
@@ -187,7 +186,7 @@ body:has(.overview) .desk > header .button {
   text-wrap: balance;
 }
 .capability-detail { margin: 0; font-size: 13px; line-height: 1.4; color: var(--track-paper); }
-.capability-reel[data-playing="true"] :is(.capability-frame, .capability-context, .banner-track small) {
+.capability-reel[data-playing="true"] :is(.capability-frame, .capability-context) {
   animation: capability-dissolve 10s ease-in-out -.4s infinite;
 }
 @keyframes capability-dissolve {
@@ -224,69 +223,6 @@ body:has(.overview) .desk > header .button {
   18%, 70% { opacity: .85; }
   100% { stroke-dashoffset: -100; opacity: 0; }
 }
-.banner-track { display: grid; gap: 2px; }
-.banner-track > div {
-  display: grid;
-  grid-template-columns: clamp(112px, 28%, 140px) minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-}
-.banner-track small { white-space: nowrap; color: var(--track-paper); font: 570 11px/1.2 var(--mono); }
-.banner-track span {
-  position: relative;
-  display: block;
-  height: 16px;
-  background: linear-gradient(90deg, #f3f5f433, #f3f5f421) center/100% 1px no-repeat;
-}
-/* The camera follows the pack. Road markings drift back by one tile per cycle. */
-.banner-track span::before {
-  content: "";
-  position: absolute;
-  inset: auto 0 2px;
-  height: 1px;
-  background: linear-gradient(90deg, #f3f5f430 5px, transparent 5px) repeat-x 0 0 / 36px 1px;
-  mask-image: linear-gradient(90deg, transparent, #000 20%, #000 74%, transparent);
-  animation: banner-road 4s linear infinite;
-}
-.banner-track span::after {
-  content: "";
-  position: absolute;
-  inset: 1px 0 1px auto;
-  width: 6px;
-  opacity: .24;
-  background: repeating-conic-gradient(#e6e9e9 0 25%, transparent 0 50%) 0 0 / 6px 6px;
-}
-.banner-car {
-  position: absolute;
-  top: -1px;
-  right: max(40px, 35%);
-  width: 31px;
-  height: 18px;
-  color: #83d6eb;
-  filter: drop-shadow(-4px 0 2px #e5e9eb52);
-  transform: translateX(-11px);
-  animation: banner-pack 18s ease-in-out -2s infinite;
-}
-.banner-track > div:nth-child(2) .banner-car {
-  color: var(--track-paper);
-  transform: translateX(13px);
-  animation-delay: -8s;
-}
-.banner-track > div:nth-child(3) .banner-car {
-  color: #ffcb70;
-  transform: translateX(-2px);
-  animation-delay: -14s;
-}
-.capability-reel[data-playing="false"] .banner-car,
-.capability-reel[data-playing="false"] .banner-track span::before { animation-play-state: paused; }
-@keyframes banner-pack {
-  0%, 100% { transform: translateX(-14px); }
-  50% { transform: translateX(14px); }
-}
-@keyframes banner-road {
-  to { background-position-x: -36px; }
-}
-
 .outcome-track { margin: 0 0 17px; }
 .outcome-track ol {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));

@@ -1,3 +1,4 @@
+import {isInspectionCheck,canScoreInspection,hasInspectionReferenceFor,inspectionEvidenceHelp} from "./inspection-decision.cjs";
 import { z } from "opik";
 import type {MeasureOption} from "./measure-graders.cjs";
 import {decodeAgentPin} from "../agents/registry.cjs";
@@ -42,7 +43,7 @@ export const savedGrader = z.union([
   base.extend({type:z.literal("opik-metric"),metricKey:opikMetricKey,judge:judgeModel}),
   base.extend({type:z.literal("decision"),judge:z.null(),decision:decisionConfig,decisionView:rubricEvidenceView.optional(),requiredEvidence:requiredEvidence.optional()})
     .refine(g => g.decision.failAt < g.threshold, "Invalid decision cutoffs."),
-  base.extend({type:z.enum(["judge","opik"]),judge:judgeModel,requiredEvidence:requiredEvidence.optional(),evidenceView:rubricEvidenceView.optional()}),
+  base.extend({type:z.enum(["judge","opik"]),judge:judgeModel,scoreScale:z.literal("binary").optional(),requiredEvidence:requiredEvidence.optional(),evidenceView:rubricEvidenceView.optional()}),
   base.extend({type:z.enum(["contains","exact","field","trajectory"]),judge:z.null()}),
 ]);
 export type GraderSpec = z.infer<typeof savedGrader>;
@@ -50,6 +51,7 @@ export function graderEvidenceView(source:GraderSpec|undefined) {
   return source?.type==="decision" ? source.decisionView : source?.type==="opik" ? source.evidenceView : undefined;
 }
 export function graderRequiredEvidence(source:GraderSpec|undefined):("reference"|"trajectory")[] {
+  if(isInspectionCheck(source))return ["reference"];
   if(source?.type==="opik" || source?.type==="decision")return source.requiredEvidence ?? [];
   if(source?.type==="trajectory")return ["trajectory"];
   if(source?.type==="field" || (source?.type==="catalog" && source.library?.scenario) ||
@@ -76,11 +78,13 @@ export function quickGradingReference(grader:GraderSpec,text:string|null):unknow
   return grader.type==="field" ? decodeFieldAnswer(text) : text;
 }
 export function hasExpectedAnswerFor(grader:GraderSpec,reference:unknown):boolean {
+  if(isInspectionCheck(grader))return hasInspectionReferenceFor(grader,reference);
   return grader.type==="field" ? jsonField(reference,parseFieldRule(grader.criteria).referenceField)!==undefined : hasEvidence(reference);
 }
 
 // An explicit Test or Grade action can ask for evidence before creating an assessment.
 export function requireAssessmentEvidence(grader:GraderSpec,evidence:GraderEvidence):void {
+  if(isInspectionCheck(grader)){if(!canScoreInspection(grader,evidence))throw Error(inspectionEvidenceHelp(grader));return;}
   if (grader.type==="catalog" && grader.library?.scenario && !evidence.caseContext)
     throw Error("Choose a labeled case from this grader’s industry dataset to test its scenario rule.");
   const needs=graderRequiredEvidence(grader);

@@ -122,3 +122,27 @@ For an observed agent output, you can supply ordered tool actions to a trajector
 Use one known pass, one near miss, and one case with the required evidence missing. Compare the numerical score with the saved rubric boundaries. If the metric is the share of inspection notes containing both a lot ID and a next action, a note earns one only when both are present. A note giving just the lot ID contributes zero to that numerator. If you want partial credit, define a separate graded completeness measure. For a rule with a decisive failure, specify which condition takes precedence. Set the pass threshold separately. [How Opik scores answers](opik.md#which-engine-grades-a-response)
 
 In a local LFM3 1.7B test with a synthetic earnings release, the judge awarded full credit to an answer that omitted a required reconciliation warning. Test this omission explicitly when calibrating your own judge. For a labeled earnings dataset, **Requested financial fact** and **Analyst review routing** can check the recorded figure and routing decision directly.
+
+## Calibrate an LLM judge
+
+Write down what a subject-matter expert would accept before scoring either candidate. Use the drawing, policy, verified answer or observed tool receipt for the expected result. Use the candidate output for evidence of what it actually did. A grader can assess clarity from an answer alone. Factual correctness needs an independent source.
+
+In **Test**, try a known pass, a plausible wrong answer and a case missing its governing evidence. Check the actual score and the reason for each. For the shaft inspection, accepting 10.04 mm against a 10.03 mm maximum is a false acceptance even if the answer identifies drawing B. A missing required action in the answer is a failure. Missing drawing limits in the case leave the disposition unscored. Include an exactly-on-limit case when the policy is inclusive. Save rubric changes as a new version.
+
+For the shipped Manufacturing example, **Inspection sample decision** and **Active drawing range and reading** compare the recorded output with the drawing and receiving rule. A live LFM3 judge gave full credit to a false acceptance even with those verified facts supplied. Use the grounded checks for this decision.
+
+Use deterministic rules for exact facts and limits. Use Opik G-Eval for judgments that allow equivalent wording. DASH supplies the task, available reference, answer and pinned criteria to G-Eval. Opik normalizes the judge's 0–10 scale to 0–1. Compare the reason to both the source and the actual answer before accepting a surprising score. [Opik G-Eval](https://www.comet.com/docs/opik/evaluation/metrics/g_eval) · [Designing and calibrating evaluations](https://www.anthropic.com/research/demystifying-evals-for-ai-agents)
+
+## Verify an inspection handoff against the active drawing
+
+The Manufacturing starter supplies a synthetic drawing, a sample reading and a receiving rule. When the approved structured task carries this record and its decision fields, Quick compare selects the corresponding local grader for each approved range or handoff measure. Review the version on the measure row. You can replace it or remove it. Earlier approved starter prompts without individual measure assignments show the two checks under **Automatic checks**. **Active drawing range and reading** looks for the current revision, both endpoints and the recorded reading in each answer. **Inspection sample decision** applies the inclusive limits and checks the required Quality recheck and its completion status. The two scores are independent. An answer can quote the correct dimensions and still choose the wrong action.
+
+In the starter, drawing B permits 9.97–10.03 mm and the sample measures 10.04 mm. The receiving rule sends it to Quality for a signed recheck. A shift note requesting a recheck supplies no signature. A lone upper endpoint receives no credit for citing the complete range.
+
+For another inspection, choose the relevant saved grader in Quick or Dataset setup and supply reviewed facts for each case. The following reference supports both checks.
+
+```json
+{"active":"C","rule":"inclusive_limits","lower_mm":"4.90","upper_mm":"5.10","measured_mm":"5.12","required_action":"signed_recheck","recheck_complete":false}
+```
+
+Use millimetres and decimal strings. An approved route such as `{"disposition":"accept"}` supplies enough evidence for the decision check alone. The candidate reports its decision in `disposition` or `routing`. For the range check, it can use `revision`, `lower_mm`, `upper_mm` and `measured_mm`, or name the active drawing range in `applicable_drawing` and the measurement in `reading`. When the schema separates `limit_range_lower` and `limit_range_upper`, DASH checks both fields against that revision. Use a separately reviewed rubric for free-text answers or different decision policies. Saved answers can be verified in the run report without invoking either candidate.

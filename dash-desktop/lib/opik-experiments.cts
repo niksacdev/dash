@@ -346,7 +346,7 @@ export class OpikExperiments {
             ...(promptVersion && {promptVersions:[{id:promptVersion.id}]}),
             metadata:privacy.metadata({dash_run_id:m.id,candidate_id:candidate.id,model:candidate.model,revision:candidate.revision,industry:m.industry,
               fixture:m.fixture,dataset_id:m.datasetId,dataset_version:m.datasetVersion,dataset_family:metadata?.family,pinned_dataset_metadata:metadata,case_set_hash:m.caseSetHash,approved_prompt_id:m.approvedPromptId,policy_hash:m.policyHash,
-              token_budget:m.tokenBudget,run_status:saved.status,...(publishedPins.length && {dash_grader_revisions:publishedPins})}),tags:["DASH",...(m.fixture?["fixture"]:[])]},options));
+              token_budget:m.tokenBudget,run_status:saved.status,...(m.executionMode && {dash_execution_mode:m.executionMode}),...(publishedPins.length && {dash_grader_revisions:publishedPins})}),tags:["DASH",...(m.fixture?["fixture"]:[])]},options));
         if(e.name!==name || (e.datasetId && e.datasetId!==datasetId))throw problem("An experiment ID did not match this candidate and dataset.");
         return null;
       });

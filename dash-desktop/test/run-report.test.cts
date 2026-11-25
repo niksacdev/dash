@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "opik";
 import { buildReport, RunReports, reportSchema } from "../lib/run-report.cjs";
 import { assistReport } from "../lib/report-agents.cjs";
+import {domainStarters} from "../lib/domain-starters.cjs";
+import {inspectionRuleId} from "../lib/inspection-decision.cjs";
 import { Bench } from "../lib/bench.cjs";
 import { loadPacks } from "../lib/packs.cjs";
 import { referencePack } from "../lib/evaluation-cases.cjs";
@@ -437,4 +439,43 @@ test("a canceled local review cannot claim a completed comparison or save partia
     reportStage: async () => { controller.abort(); throw Error("Canceled"); },
   }, controller.signal, () => {}), /abort/i);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM run_reports").get()?.n, 0);
+});
+
+test("challenging equal judge receipts scores a saved inspection decision independently without changing the original run",async t=>{
+  const bench=new Bench(":memory:",{discover:async()=>[],invoke:async()=>assert.fail("A deterministic challenge called inference.")},withoutPower);
+  t.after(()=>bench.db.close());
+  const task=present(domainStarters.find(starter=>starter.packId==="manufacturing")).quickObjective;
+  const original=run([1,1,1,1]);
+  const m=original.manifest;
+  Object.assign(m,{mode:"quick",pack:null,industry:"Manufacturing",caseIds:["prompt"],datasetId:null,datasetVersion:null,split:null,
+    prompt:task,approvedPrompt:{...m.approvedPrompt,mode:"quick",objective:task,prompt:task,datasetId:null,packId:null},graders:[judge]});
+  const outputs=[
+    {disposition:"review",next_action:"send to quality for a signed recheck",shift_note_completes_disposition:false},
+    {disposition:"accept",next_action:"None",shift_note_completes_disposition:false},
+  ];
+  bench.db.prepare("INSERT INTO runs VALUES(?,?,?,?)").run(m.id,m.created,"completed",JSON.stringify(m));
+  for(const [index,c] of candidates.entries()){
+    const result={...results[index*2],caseId:"prompt",output:JSON.stringify(outputs[index]),score:null,dispatchedMessages:[{role:"user",content:task}]};
+    bench.db.prepare("INSERT INTO results VALUES(?,?,?,?)").run(m.id,c.id,"prompt",JSON.stringify(result));
+    const receipt={...original.assessments[index*2],caseId:"prompt",value:1,pass:true,reason:"Original judge credited the disposition."};
+    bench.db.prepare("INSERT INTO assessments VALUES(?,?,?,?,?,?)").run(receipt.id,m.id,c.id,"prompt",m.created,JSON.stringify(receipt));
+  }
+  const before=bench.detail(m.id),exported=bench.exportRun(m.id);
+  assert.equal(before.report?.verdict,"tie");
+  assert.equal(before.hasQuickExpectedAnswer,false);
+  assert.equal(before.hasSourcedInspectionDecision,true);
+  const request={run:m.id,caseId:"prompt",grader:inspectionRuleId};
+  await assert.rejects(bench.reviewSavedCase({...request,expectedAnswer:'{"disposition":"accept"}'}),/evidence already saved/);
+  await bench.reviewSavedCase(request);
+  const saved=bench.detail(m.id),review=present(saved.savedReviews?.[0]);
+  assert.equal(review.source,"saved run");
+  assert.deepEqual(review.finding,{status:"higher",candidateId:candidates[0].id});
+  assert.deepEqual(review.grades.map(g=>[g.candidate,g.value,g.pass]),[[candidates[0].id,1,true],[candidates[1].id,0,false]]);
+  assert.match(review.grades[1].reason,/outside|chose accept/i);
+  assert.equal(saved.reviewedVerdict,undefined);
+  assert.deepEqual(saved.assessments,before.assessments);
+  assert.deepEqual(saved.report,before.report);
+  assert.deepEqual(bench.exportRun(m.id),exported);
+  await assert.rejects(bench.reviewSavedCase({...request,grader:judge.id}),/different grader version/);
+  await assert.rejects(bench.reviewSavedCase(request),/already scores/);
 });

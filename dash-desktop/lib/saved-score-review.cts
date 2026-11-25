@@ -5,6 +5,7 @@ import type {Graders} from "./graders.cjs";
 import {graderEvidence} from "./evaluation-cases.cjs";
 import {graderRequiredEvidence,requireAssessmentEvidence,storedAssessment,type GraderSpec} from "./grader-types.cjs";
 import {quickGradingReference,hasExpectedAnswerFor} from "./grader-types.cjs";
+import {inspectionCaseReference,isInspectionCheck} from "./inspection-decision.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
 import {jsonText,type CaseRow,type RunDetail,type RunData} from "./run-types.cjs";
 import {analyzeOutputs,buildReport,type RunReport} from "./run-report.cjs";
@@ -15,7 +16,7 @@ export const reviewRequest=z.strictObject({run:z.string().min(1).max(200),caseId
 const record=storedAssessment.extend({candidate:z.string(),caseId:z.string()});
 const reviewSchema=z.object({id:z.string(),caseId:z.string(),graderId:z.string(),graderName:z.string(),version:z.number(),created:z.string(),
   source:z.enum(["saved run","dataset case","supplied for review","task and answer"]),status:z.enum(["grading","completed","interrupted"]),
-  comparisonIssue:z.string().optional(),grades:z.array(record).max(2)});
+  comparisonIssue:z.string().optional(),finding:z.object({status:z.enum(["higher","equal","inconclusive"]),candidateId:z.string().optional()}).optional(),grades:z.array(record).max(2)});
 export type SavedReview=z.infer<typeof reviewSchema>;
 export type ReviewSummary=Pick<RunReport,"verdict"|"winnerId"|"summary">;
 
@@ -81,6 +82,10 @@ export function reviewResults(run:RunData,original:RunReport|null,history:SavedR
   return {...evidence,decisionReviewTargets,reviewedVerdict};
 }
 
+export function canChallengeVerdict(report:RunReport,run:RunData) {
+  return run.status==="completed" && report.candidates.length===2 && ["tie","winner","mixed","unsafe"].includes(report.verdict);
+}
+
 export class SavedScoreReviews {
   private readonly active=new Set<string>();
   get busy() {return this.active.size>0;}
@@ -94,16 +99,18 @@ export class SavedScoreReviews {
   async assess(request:z.infer<typeof reviewRequest>,run:RunDetail,g:GraderSpec,row:CaseRow,
     originalAnswer:string|null,graders:Graders,adapters:RuntimeAdapters) {
     if(this.busy)throw Error("A saved-answer review is already running. Wait for it to finish.");
-    if(!run.report || !["incomplete","ungraded"].includes(run.report.verdict))
-      throw Error("Open a finished comparison with missing scores before reviewing saved answers.");
+    if(!run.report || (!["incomplete","ungraded"].includes(run.report.verdict) && !canChallengeVerdict(run.report,run)))
+      throw Error("Open a finished comparison with saved answers before requesting a review.");
     if(g.type==="catalog" && isInformationalRule(g.ruleKey))throw Error("Choose a business quality grader for the saved answers.");
     if(g.type==="decision" && g.decision.provider==="openrouter" && !request.allowHostedDecision)
       throw Error("Confirm the hosted decision grader before sending saved answers and any grading facts.");
     if(!graders.appliesToDataset(g,run.manifest.industry ?? "",run.manifest.pack?.id ?? "") && !run.manifest.graders.some(pin=>pin.id===g.id))
       throw Error("Choose a grader for this run’s industry and scenario.");
     const needs=graderRequiredEvidence(g).includes("reference");
-    const captured=run.manifest.mode==="quick" ? quickGradingReference(g,originalAnswer) : row.reference ?? row.gold;
-    if(request.expectedAnswer && (!needs || hasExpectedAnswerFor(g,captured)))
+    const captured=run.manifest.mode==="quick" ? quickGradingReference(g,originalAnswer) :
+      isInspectionCheck(g) ? inspectionCaseReference(g,row,run.manifest.pack) : row.reference ?? row.gold;
+    const sourced=isInspectionCheck(g) && run.hasSourcedInspectionDecision;
+    if(request.expectedAnswer && (!needs || sourced || hasExpectedAnswerFor(g,captured)))
       throw Error("This check uses the evidence already saved for the case. Clear the additional expected answer.");
     const reference=request.expectedAnswer ? quickGradingReference(g,request.expectedAnswer) : captured;
     const prepared=run.manifest.candidates.map(c=>{
@@ -131,7 +138,14 @@ export class SavedScoreReviews {
         save();
       }
       review.status="completed";
-      review.comparisonIssue=reviewMetric(run,review,g)?.comparisonIssue;
+      const metric=reviewMetric(run,review,g);
+      review.comparisonIssue=metric?.comparisonIssue;
+      if(run.manifest.candidates.length===2 && metric) {
+        const [a,b]=metric.values;
+        if(metric.pairedCases!==1 || a.score===null || b.score===null)review.finding={status:"inconclusive"};
+        else if(Math.abs(a.score-b.score)<=1e-12)review.finding={status:"equal"};
+        else review.finding={status:"higher",candidateId:a.score>b.score ? a.candidateId : b.candidateId};
+      }
       save();
     } catch(error) {
       review.status="interrupted";save();throw error;

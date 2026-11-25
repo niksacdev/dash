@@ -4,21 +4,19 @@ import path = require("node:path");
 import type {WebContents} from "electron";
 import {z} from "zod";
 
-export async function verifyLiveRace(wc:WebContents,streaming:string,saved:string) {
+export async function verifyLiveRace(wc:WebContents,ollamaModel:string,studioModel:string) {
   const inspect=(expression:string):Promise<unknown>=>wc.executeJavaScript(expression);
-  const lanes=z.array(z.object({id:z.string(),state:z.string(),label:z.string(),count:z.string().nullable(),name:z.string(),marker:z.string().nullable()})).parse(
+  const lanes=z.array(z.object({id:z.string(),state:z.string(),label:z.string(),count:z.string().nullable(),name:z.string(),clock:z.boolean()})).parse(
     await inspect(`Array.from(document.querySelectorAll(".candidate-race-lane"),lane=>({
-      id:lane.dataset.racer,state:lane.dataset.state,label:lane.querySelector(".candidate-race-state").textContent,
+      id:lane.dataset.racer,state:lane.dataset.state,label:lane.querySelector(".candidate-race-state span").textContent,
       count:lane.querySelector(".race-course").getAttribute("aria-valuenow"),name:lane.querySelector("strong").textContent,
-      marker:lane.querySelector("use").getAttribute("href")
+      clock:!!lane.querySelector("dash-planning-elapsed")
     }))`));
-  assert.equal(lanes.length,2);
-  const executing=lanes.find(l=>l.id==="ollama/"+streaming);
-  const parked=lanes.find(l=>l.id==="lmstudio/"+saved);
-  assert.ok(executing && parked);
-  assert.equal(executing.label,"Generating");assert.equal(executing.state,"active");assert.equal(executing.count,null);
-  assert.equal(parked.label,"Response saved");assert.equal(parked.state,"finished");assert.equal(parked.count,"1");
-  assert.ok(lanes.every(l=>l.name.length>0 && l.marker==="#car"));
+  assert.deepEqual(lanes.map(l=>l.id).sort(),["lmstudio/"+studioModel,"ollama/"+ollamaModel]);
+  for(const lane of lanes){
+    assert.equal(lane.label,"Generating");assert.equal(lane.state,"active");assert.equal(lane.count,null);
+    assert.ok(lane.name);assert.equal(lane.clock,true,"Each dispatched request owns an elapsed-time clock");
+  }
   const samples=await inspect(`(()=>{
     const parse=html=>new DOMParser().parseFromString(html,"text/html");
     const c={id:"one",model:"lane-a",provider:"lmstudio"};
@@ -38,12 +36,17 @@ export async function verifyLiveRace(wc:WebContents,streaming:string,saved:strin
   const original=await inspect("document.documentElement.dataset.appearance");
   const skin=(theme:unknown)=>inspect("document.documentElement.dataset.appearance="+JSON.stringify(theme));
   const motion=(value:string)=>wc.debugger.sendCommand("Emulation.setEmulatedMedia",{features:[{name:"prefers-reduced-motion",value}]});
-  const roadMotion=()=>inspect("getComputedStyle(document.querySelector('.candidate-race-lane[data-state=active] .race-asphalt'),'::before').animationName");
   wc.debugger.attach("1.3");
   try {
-    await motion("reduce");assert.equal(await roadMotion(),"none");
-    await motion("no-preference");assert.equal(await roadMotion(),"race-asphalt");
-    assert.equal(await inspect("getComputedStyle(document.querySelector('.candidate-race-lane[data-state=finished] .race-asphalt'),'::before').animationName"),"none");
+    const pulse=()=>inspect(`(() => {
+      const lane=document.querySelector('.candidate-race-lane[data-state=active]');
+      const signal=lane.querySelector('.timing-signal');
+      signal.getAnimations().forEach(animation=>animation.cancel());
+      showGenerating(lane.dataset.racer);
+      return signal.getAnimations().map(animation=>animation.effect.getTiming().iterations);
+    })()`);
+    await motion("reduce");assert.deepEqual(await pulse(),[]);
+    await motion("no-preference");assert.deepEqual(await pulse(),[1]);
     const directory=process.env.DASH_RACE_PREVIEW_DIR;
     for (const [theme,width,height] of [["light",1180,820],["dark",1180,820],["light",390,844]] as const) {
       await skin(theme);

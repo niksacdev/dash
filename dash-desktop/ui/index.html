@@ -41,23 +41,6 @@
   <body>
     <svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <defs>
-        <symbol id="car" viewBox="0 -18 57 36">
-          <g fill="#090909" stroke="#696969">
-            <rect x="3" y="-15" width="10" height="8" rx="2" />
-            <rect x="3" y="7" width="10" height="8" rx="2" />
-            <rect x="36" y="-15" width="10" height="8" rx="2" />
-            <rect x="36" y="7" width="10" height="8" rx="2" />
-          </g>
-          <path
-            d="M4-10H20L28-6H45L54-3V3L45 6H28L20 10H4Z"
-            fill="currentColor"
-            stroke="#FFF5E4"
-            stroke-width=".7"
-          />
-          <path d="M17-6H26L31-3V3L26 6H17L13 3V-3Z" fill="#202020" />
-          <path d="M7 0H12M32 0H49" stroke="#FFF5E4" />
-          <path d="M1-10V10M52-8V8" stroke="currentColor" stroke-width="4" />
-        </symbol>
         <symbol id="finance-i" viewBox="0 0 24 24"><path d="M3 8l9-5 9 5v2H3z M5 20h14 M3 22h18 M6 12v6m4-6v6m4-6v6m4-6v6"/></symbol>
         <symbol id="factory-i" viewBox="0 0 24 24"><path d="M3 21V9l7 4V8l7 4 1-9h3v18z M6 17h2m3 0h2m3 0h2"/></symbol>
         <symbol id="home-i" viewBox="0 0 24 24">
@@ -104,7 +87,7 @@
       <header>
         <span class="breadcrumb">DASH <i>/</i> <strong id="crumb">Workbench</strong></span>
         <div class="header-actions">
-          <small class="app-version" title="DASH v{{DASH_VERSION}}{{DASH_REVISION}}"><span class="visually-hidden">DASH version </span>v{{DASH_VERSION}}</small>
+          <small class="app-version"><span class="visually-hidden">DASH version </span>v{{DASH_VERSION}}{{DASH_REVISION}}</small>
           <fieldset id="appearance">
             <legend class="visually-hidden">Appearance</legend>
             <label title="Light mode">

@@ -1,3 +1,4 @@
+import {rubricEvidenceInstruction} from "./measure-graders.cjs";
 import {quickStructuredMessages} from "./quick-structure.cjs";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 import { isDeepStrictEqual } from "node:util";
@@ -92,9 +93,9 @@ export async function exactReference(row:CaseRow, text:string):Promise<CaseScore
 
 export function caseJudgeSpec(judge:LocalCandidate|undefined):GraderSpec {
   if (!judge || !["lmstudio","ollama"].includes(judge.provider)) throw Error("Choose a connected local judge for the case references and rubrics.");
-  const criteria = "Apply the case rubric to the candidate response. Use the SME reference and rationale as grading evidence. Accept equivalent wording unless the case explicitly calls for an exact format. On the 0 to 10 scale, award 10 for complete fulfillment, partial credit for partially meeting the criteria, or 0 for a materially wrong answer. Cite the decisive case evidence.";
+  const criteria = rubricEvidenceInstruction+" Apply the case rubric to the candidate response. Use the SME reference and rationale as grading evidence. Accept equivalent wording unless the case explicitly calls for an exact format. On the 0 to 10 scale, award 10 for complete fulfillment, partial credit for partially meeting the criteria, or 0 for a materially wrong answer. Cite the decisive case evidence.";
   const identity = {id:judge.id,model:judge.model,provider:judge.provider,revision:judge.revision ?? null, nativeChat:!!judge.nativeChat, reasoningOff:!!judge.reasoningOff};
-  const spec = {name:"Case reference and rubric",type:"opik" as const,opikEngine:opikVersion,category:"Dataset evaluation",version:2,criteria,threshold:0.8,judge:identity};
+  const spec = {name:"Case reference and rubric",type:"opik" as const,opikEngine:opikVersion,category:"Dataset evaluation",version:3,criteria,threshold:0.8,judge:identity};
   return decodeGraderSpec({...spec,id:"case-judge/"+hash(spec)});
 }
 

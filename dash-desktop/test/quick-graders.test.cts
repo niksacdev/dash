@@ -1,6 +1,9 @@
+import {AsyncLocalStorage} from "node:async_hooks";
 import {auditReply} from "./audit-fixture.cjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import {graderEvidence} from "../lib/evaluation-cases.cjs";
+import {exportDiagnostics} from "../lib/export-diagnostics.cjs";
 import { Bench } from "../lib/bench.cjs";
 
 import { opikJudgeRequest, judgeEvidence } from "./opik-judge-fixture.cjs";
@@ -17,7 +20,7 @@ const epsMetric="GAAP EPS source agreement";
 const periodMetric="Reporting period citation";
 const epsCriterion="The answer gives the GAAP EPS stated in the supplied release.";
 const periodCriterion="The answer explicitly names a reporting period.";
-async function setup(t:TestContext,paired=false,candidateAnswer?:(model:string)=>string) {
+async function setup(t:TestContext,paired=false,candidateAnswer?:(model:string)=>string,echoReference=false) {
   const models = ["lfm3-1.7b","lane-b","local-judge"].map((model):LocalCandidate => ({
     id:"lmstudio/" + model, provider:"lmstudio", kind:"model", model, revision:"weights-v1", loaded:true,
   }));
@@ -49,7 +52,7 @@ async function setup(t:TestContext,paired=false,candidateAnswer?:(model:string)=
         judgeCalls.push(evidence);
         const brief=z.object({metrics:z.array(z.string())}).parse(evidence.evaluationBrief);
         const passed=paired && brief.metrics.includes(periodMetric) ? String(evidence.output).includes("June") : String(evidence.output).includes("GAAP EPS 1.24");
-        return reply(JSON.stringify({score:passed ? maxScore : 0, reason:"Checked the requested item in the answer."}));
+        return reply(JSON.stringify({score:passed ? maxScore : 0, reason:echoReference && typeof evidence.reference==="string" ? "Checked against "+evidence.reference : "Checked the requested item in the answer."}));
       }
       candidateCalls.push(model.id);
       if(candidateAnswer)return reply(candidateAnswer(model.model));
@@ -198,7 +201,7 @@ test("Quick pins an independent revision per approved measure and scores both an
 });
 
 test("Quick collects private expected facts before dispatch, scores both lanes and preserves intentional skips",async t=>{
-  const {bench,approved,models,judgeCalls,start,save}=await setup(t,true);
+  const {bench,approved,models,judgeCalls,start,save}=await setup(t,true,undefined,true);
   const saved=save("Reusable source check",{criteria:"GAAP"});
   const measureGraders:NonNullable<StartRun["measureGraders"]>=[
     {metric:epsMetric,kind:"saved",graderId:saved},
@@ -219,7 +222,15 @@ test("Quick collects private expected facts before dispatch, scores both lanes a
   const checked=run.assessments.filter(a=>a.graderId===pinned[1].graderId);
   assert.deepEqual(checked.map(a=>a.pass),[false,true]);
   assert.deepEqual(judgeCalls.map(c=>c.reference),[expectedAnswer,expectedAnswer]);
-  assert.equal(JSON.stringify(run).includes(expectedAnswer),false);
+  assert.ok(checked.every(a=>a.reason.includes(expectedAnswer)));
+  const metric=present(run.report?.metrics.find(m=>m.id===pinned[1].graderId));
+  assert.ok(metric.caseScores[0].values.every(v=>v.reason.includes(expectedAnswer)));
+  // Saved report reasons may differ from their original receipts on older builds.
+  metric.caseScores[0].values[0].reason="Cached rationale quotes EVID-371.";
+  const externalCopy=exportDiagnostics(run);
+  assert.ok(!JSON.stringify(externalCopy).includes("EVID-371"));
+  assert.deepEqual(externalCopy.report?.metrics.find(m=>m.id===metric.id)?.caseScores[0].values.map(v=>v.score),
+    metric.caseScores[0].values.map(v=>v.score));
   assert.equal(JSON.stringify(bench.exportRun(id)).includes(expectedAnswer),false);
   assert.equal(run.assessments.filter(a=>a.graderId===saved).length,2);
   const savedRef=present(pinned[1].graderId);
@@ -231,6 +242,18 @@ test("Quick collects private expected facts before dispatch, scores both lanes a
   assert.equal(bench.quickExpectedAnswer(otherId),"Expert verified May.");
   assert.equal(judgeCalls.filter(c=>c.reference==="Expert verified May.").length,2);
   assert.equal(judgeCalls.filter(c=>c.reference==null).length,2);
+  const traceGrader=save("Ad hoc private G-Eval",{type:"opik",judgeId:models[2].id,
+    criteria:periodCriterion,requiredEvidence:["reference"]});
+  const result=run.results[0],traceEvidence=graderEvidence(run.manifest,{case_id:result.caseId},result,false,traceGrader);
+  traceEvidence.reference=bench.quickExpectedAnswer(id);
+  const traceGrade=await bench.graders.record(bench.graders.get(traceGrader),traceEvidence,
+    {run:id,candidate:result.candidateId,caseId:result.caseId},bench.adapters,AbortSignal.timeout(5000));
+  assert.ok(traceGrade.reason.includes("EVID-371"));
+  assert.ok(!run.manifest.graders.some(g=>g.id===traceGrader));
+  const exported=bench.exportRun(id);
+  assert.ok(!JSON.stringify(exported).includes("EVID-371"));
+  assert.equal(exported.assessments.find(a=>a.graderId===traceGrader)?.value,traceGrade.value);
+
   const skippedId=start({inspectionOnly:true,measureGraders:[{metric:epsMetric,kind:"saved",graderId:saved},{metric:periodMetric,kind:"skip"}]});
   await present(bench.active).done;
   const skipped=bench.detail(skippedId);
@@ -463,11 +486,15 @@ test("Dataset recovery aligns reviewed pairs across cases and keeps every comple
   const caseIds=["release-a","release-b"];
   const datasetId=bench.import("reference","Synthetic releases",caseIds.map(case_id=>JSON.stringify({case_id,dataset_version:"1",split:"development",prompt:"Report GAAP EPS."})).join("\n"),
     {industry:"Financial Services",family:"Synthetic releases",category:"Extraction"});
-  let stage:"unscored"|"primary"|"alternate"|"original-split"|"reverse-primary"="unscored",splitAt=0;
+  let stage:"unscored"|"primary"|"alternate"|"original-split"|"reverse-primary"="unscored";
+  const judgedCase=new AsyncLocalStorage<string>();
+  const record=bench.graders.record.bind(bench.graders);
+  t.mock.method(bench.graders,"record",(...args:Parameters<typeof record>)=>
+    judgedCase.run(args[2].caseId ?? "",()=>record(...args)));
   const judges:string[]=[];
   t.mock.method(globalThis,"fetch",async(url:RequestInfo|URL,options?:RequestInit)=>{
     if(String(url).endsWith("/v1/models")){
-      const other=stage==="alternate" || (stage==="original-split" && (judges.length-splitAt)%2===1);
+      const other=stage==="alternate" || (stage==="original-split" && judgedCase.getStore()===caseIds[1]);
       return Response.json({data:(other?[alternate]:[primary,alternate]).map(id=>({id,output_modalities:["decisions"]}))});
     }
     assert.ok(typeof options?.body==="string");
@@ -497,7 +524,7 @@ test("Dataset recovery aligns reviewed pairs across cases and keeps every comple
   assert.equal(resolved.reviewedVerdict?.verdict,"winner");assert.deepEqual(resolved.report,original.report);
   assert.equal(judges.length,10);assert.equal(candidateCalls.length,4);
   // Original complete pairs can also disagree about their served judge. Only the alternate case needs new grades.
-  splitAt=judges.length;stage="original-split";
+  stage="original-split";
   const split=await runDataset(),before=bench.detail(split);
   assert.equal(before.report?.verdict,"incomplete");
   assert.deepEqual(before.decisionReviewTargets?.[grader],{model:primary,caseIds:[caseIds[1]]});
@@ -509,4 +536,103 @@ test("Dataset recovery aligns reviewed pairs across cases and keeps every comple
   assert.deepEqual(after.savedReviews?.map(r=>r.caseId),[caseIds[1]]);
   assert.deepEqual(after.decisionReviewTargets?.[grader],{model:primary,caseIds:[]});
   assert.equal(judges.length,16);assert.equal(candidateCalls.length,8);
+});
+
+test("generated pass/fail rubrics reject an off-anchor judge score and preserve the rubric on both lanes",async t=>{
+  const {bench,models,approved,start}=await setup(t,true);
+  const options=bench.quickGraderOptions(approved.id);
+  const id=start({measureGraders:options.measures.map(m=>({metric:m.metric,kind:"rubric",judgeId:models[2].id,threshold:1}))});
+  await present(bench.active).done;
+  const pin=bench.detail(id).manifest.graders.find(g=>g.origin?.measure===epsMetric);
+  assert.ok(pin?.type==="opik" && pin.scoreScale==="binary");
+  assert.match(pin.criteria,/Only the candidate output establishes/);
+  const result=await bench.graders.assess(pin,{input:"GAAP EPS is 1.24",reference:null,output:"Adjusted EPS is 1.80."},{
+    ...bench.adapters,invoke:async(_model,messages)=>opikJudgeRequest(messages)?.stage==="geval-steps"
+      ? reply("Check the basis and amount against the release.") : reply(JSON.stringify({score:5,reason:"Only part of the requirement matched."}))
+  },new AbortController().signal);
+  assert.equal(result.value,null);
+  assert.match(result.reason,/partial credit for a pass\/fail rubric/);
+});
+
+test("Quick setup pins only the grounded inspection checks supported by the approved task and schema before inference",async t=>{
+  const {domainStarters}=await import("../lib/domain-starters.cjs");
+  const {inspectionRuleId,inspectionRangeId}=await import("../lib/inspection-decision.cjs");
+  const starter=domainStarters.find(s=>s.packId==="manufacturing");assert.ok(starter);
+  const {bench,models,candidateCalls,judgeCalls}=await setup(t,false,model=>JSON.stringify({
+    disposition:model==="lfm3-1.7b"?"review":"Accept",next_action:model==="lfm3-1.7b"?"signed_recheck":"None",shift_note_completes_disposition:false,
+    applicable_drawing:model==="lfm3-1.7b"?"B permits 9.97–10.03 mm inclusive":"B",reading:10.04,limit_range:10.03,
+  }));
+  const properties={disposition:{type:"string"},next_action:{type:"string"},shift_note_completes_disposition:{type:"boolean"},
+    applicable_drawing:{type:"string"},reading:{type:"number"},limit_range:{type:"number"}};
+  function save(id:string,task:string,fields:Record<string,{type:string}>,pairs?:{metric:string;criterion:string}[]){
+    const spec={mode:"quick",domain:"Manufacturing",id,familyId:id,version:1,title:"Receiving inspection",objective:task,prompt:task,datasetId:null,
+      metrics:pairs?.map(p=>p.metric) ?? [],requirements:pairs?.map(p=>p.criterion) ?? [],...(pairs && {metricCriteria:pairs}),input:{task,inputs:{}},outputSchema:{type:"object",properties:fields,required:Object.keys(fields),additionalProperties:false}};
+    bench.db.prepare("INSERT INTO outcome_prompts VALUES(?,?,?,?,?,?)").run(id,id,1,id,"synthetic",JSON.stringify(spec));
+  }
+  save("approved-inspection",starter.quickObjective,properties);
+  const options=bench.quickGraderOptions("approved-inspection");
+  assert.equal(options.sourcedInspection,true);
+  assert.deepEqual(options.automatic.filter(g=>g.industry==="Manufacturing").map(g=>g.id),[inspectionRuleId,inspectionRangeId]);
+  const candidates=models.slice(0,2).map(m=>m.id);
+  const id=bench.start({mode:"quick",candidateIds:candidates,approvedPromptId:"approved-inspection"});
+  await present(bench.active?.done);
+  const saved=bench.detail(id);
+  assert.equal(saved.status,"completed");assert.equal(candidateCalls.length,2);assert.equal(judgeCalls.length,0);
+  for(const check of [inspectionRuleId,inspectionRangeId]){
+    const scores=saved.assessments.filter(a=>a.graderId===check);
+    assert.deepEqual(candidates.map(candidate=>scores.find(a=>a.candidate===candidate)?.value),[1,0]);
+  }
+  save("unverified-inspection","Inspect a different bearing against its drawing.",properties);
+  assert.throws(()=>bench.start({mode:"quick",candidateIds:candidates,approvedPromptId:"unverified-inspection",graderIds:[inspectionRuleId]}),/approved JSON disposition/i);
+  for(const type of ["boolean","integer"]){
+    const id="unrepresentable-"+type;
+    save(id,starter.quickObjective,{...properties,lower_mm:{type},upper_mm:{type}});
+    assert.ok(!bench.quickGraderOptions(id).automatic.some(g=>g.id===inspectionRangeId));
+    assert.throws(()=>bench.start({mode:"quick",candidateIds:candidates,approvedPromptId:id,graderIds:[inspectionRangeId]}),/drawing limits|incompatible|both lower_mm/i);
+    assert.equal(candidateCalls.length,2,"Invalid required inspection fields block both lanes before inference.");
+  }
+  save("prose-inspection",starter.quickObjective,{explanation:{type:"string"}});
+  assert.ok(!bench.quickGraderOptions("prose-inspection").automatic.some(g=>g.industry==="Manufacturing"));
+  assert.throws(()=>bench.start({mode:"quick",candidateIds:candidates,approvedPromptId:"prose-inspection",graderIds:[inspectionRuleId]}),/JSON disposition or routing/);
+  assert.equal(candidateCalls.length,2);assert.equal(judgeCalls.length,0);
+
+  const pairs=[
+    {metric:"Cite applicable drawing limit and reading",criterion:"Identify the correct drawing (B vs A) and state the permitted range for sample S1, and cite the actual reading."},
+    {metric:"Identify next action and state whether shift note establishes completion",criterion:"Determine the required next step for an out-of-limit sample (e.g., send to Quality for a signed recheck) and decide if the shift note 'Recheck after changeover' confirms completion."},
+  ];
+  save("measured-inspection",starter.quickObjective,properties,pairs);
+  const choices=bench.quickGraderOptions("measured-inspection");
+  const assignments=choices.measures.map(row=>{
+    assert.ok("defaultGraderId" in row && typeof row.defaultGraderId==="string");
+    return {kind:"saved" as const,metric:row.metric,graderId:row.defaultGraderId};
+  });
+  assert.deepEqual(assignments.map(a=>a.graderId),[inspectionRangeId,inspectionRuleId]);
+  assert.ok(!choices.automatic.some(g=>g.industry==="Manufacturing"),"An explicit removal must not re-add the native version through automatic checks");
+  const beforeConflict=candidateCalls.length;
+  assert.throws(()=>bench.start({mode:"quick",approvedPromptId:"measured-inspection",candidateIds:candidates,
+    measureGraders:assignments,expectedAnswer:JSON.stringify({unit:"inches",active:"C",upper_mm:"15.1"})}),/disagrees with the approved inspection source/);
+  assert.equal(candidateCalls.length,beforeConflict);
+  const measured=bench.start({mode:"quick",approvedPromptId:"measured-inspection",candidateIds:candidates,measureGraders:assignments});
+  await present(bench.active?.done);
+  const comparison=bench.detail(measured);
+  assert.deepEqual(comparison.manifest.measureGraders?.map(m=>m.graderId),[inspectionRangeId,inspectionRuleId]);
+  assert.equal(comparison.report?.winnerId,candidates[0]);assert.equal(judgeCalls.length,0);
+  const other=bench.graders.save({name:"My handoff rule",type:"contains",industry:"Manufacturing",category:"Review",criteria:"signed",threshold:1},models);
+  const replacement=bench.start({mode:"quick",approvedPromptId:"measured-inspection",candidateIds:candidates,
+    measureGraders:[assignments[0],{...assignments[1],graderId:other}]});
+  await present(bench.active?.done);
+  assert.ok(!bench.detail(replacement).manifest.graders.some(g=>g.id===inspectionRuleId));
+
+  const privateReference={active:"HIDDEN_REV824",rule:"inclusive_limits",lower_mm:"660.123000001",upper_mm:"660.123000006",measured_mm:"660.123000007"};
+  const privateRun=bench.start({mode:"quick",approvedPromptId:"unverified-inspection",candidateIds:candidates,graderIds:[inspectionRuleId,inspectionRangeId],expectedAnswer:JSON.stringify(privateReference)});
+  await present(bench.active?.done);
+  const local=bench.detail(privateRun),transfer=bench.exportRun(privateRun);
+  assert.equal(local.status,"completed");
+  for(const evidence of [local.assessments,local.report,transfer]){
+    assert.doesNotMatch(JSON.stringify(evidence),/HIDDEN_REV824|660\.12300000[167]/);
+  }
+  const grades=local.assessments.filter(g=>g.graderId===inspectionRuleId);
+  assert.deepEqual(candidates.map(c=>grades.find(g=>g.candidate===c)?.value),[1,0],"Masking the expected answer preserves real scores for both lanes");
+  save("different-measures",starter.quickObjective,properties,[{metric:"Report the sample identifier",criterion:"State the lot ID."}]);
+  assert.ok(bench.quickGraderOptions("different-measures").measures.every(row=>!("defaultGraderId" in row)));
 });

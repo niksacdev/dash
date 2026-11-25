@@ -1,7 +1,7 @@
 import {missingExpectedAnswer} from "./grading-errors.cjs";
-import type {RecordedAssessment} from "./grader-types.cjs";
+import {graderRequiredEvidence,type RecordedAssessment} from "./grader-types.cjs";
 import type {RunDetail} from "./run-types.cjs";
-import {httpGuidance,templateAdvice} from "./provider-errors.cjs";
+import {httpGuidance,operatorProviderMessage,templateAdvice} from "./provider-errors.cjs";
 
 const opaqueProviderError="Model endpoint did not return a confirmed successful response.";
 const knownMessages=new Set([
@@ -65,6 +65,13 @@ function exportManifest(manifest:RunDetail["manifest"]) {
 }
 
 const knownGradingFailures=new Set([
+  "No response was recorded.","No output was available for scoring.","The scenario check has no score.",
+  "The selected grader has no assessment for this case.","The grader did not return a valid score.",
+  "The native Opik metric receipt does not match the pinned grader.","The decision request does not match the pinned grader.",
+  "No decision-model response was recorded.","The decision response could not be verified against the pinned grader.",
+  "The recorded grade does not agree with the raw probability and pinned cutoffs.",
+  "The disposition rule needs an unambiguous JSON answer. Use a reviewed rubric for a prose answer.",
+  "This run has no explicit JSON output contract.","The runtime did not report a recognized final stop reason.",
   missingExpectedAnswer,
   "Grading canceled.","Grading timed out. Inspect the judge connection and response budget.",
   "The judge stopped before completing its verdict. Inspect the judge output budget and case size.",
@@ -92,8 +99,20 @@ function publicAssessmentReason(a:RecordedAssessment):string {
   return safe===opaqueProviderError ? "No score was recorded. Inspect the pinned grader and its required evidence in the local workspace." : safe;
 }
 
-export function exportDiagnostics(run:Pick<RunDetail,"manifest"|"results"|"report"|"assessments">) {
+export function exportDiagnostics(run:Pick<RunDetail,"manifest"|"results"|"report"|"assessments"|"hasQuickExpectedAnswer">) {
   const manifest=exportManifest(run.manifest);
+  // A successful judge can quote the private answer verbatim, including in a cached report.
+  const pinned=new Map(manifest.graders.map(g=>[g.id,g]));
+  const privateGraders=new Set<string>();
+  if(manifest.mode==="quick" && run.hasQuickExpectedAnswer){
+    const ids=new Set([...pinned.keys(),...run.assessments.map(a=>a.graderId)]);
+    for(const id of ids){
+      // A grader attached later from the trace can also receive the held-out answer.
+      const definition=pinned.get(id);
+      if(!definition || graderRequiredEvidence(definition).includes("reference"))privateGraders.add(id);
+    }
+  }
+  const localOnly="Inspect the grading reason locally. This run contains a private expected answer.";
   const fixtures=new Set(manifest.candidates.filter(c=>c.provider==="fixture").map(c=>c.id));
   // Several assessments may exist for one case and grader. Change only a matching diagnostic copy.
   const replacements=new Map<string,string>();
@@ -106,14 +125,15 @@ export function exportDiagnostics(run:Pick<RunDetail,"manifest"|"results"|"repor
     return {...result,error};
   });
   const assessments=run.assessments.map(a=>{
-    const reason=publicAssessmentReason(a);
+    const reason=privateGraders.has(a.graderId) ? localOnly : publicAssessmentReason(a);
     if(reason===a.reason) return a;
     replacements.set(key(a.candidate,a.caseId,a.graderId,a.reason),reason);
     return {...a,reason};
   });
-  if (!run.report || !replacements.size) return {manifest,results,assessments,report:run.report};
+  if (!run.report || (!replacements.size && !privateGraders.size)) return {manifest,results,assessments,report:run.report};
   const metrics=run.report.metrics.map(metric=>({...metric,caseScores:metric.caseScores.map(row=>
     ({...row,values:row.values.map(value=>{
+      if(privateGraders.has(metric.id)) return {...value,reason:localOnly};
       if(value.score!==null) return value;
       const reason=replacements.get(key(value.candidateId,row.caseId,metric.id,value.reason)) ??
         replacements.get(key(value.candidateId,row.caseId,null,value.reason));
@@ -121,4 +141,41 @@ export function exportDiagnostics(run:Pick<RunDetail,"manifest"|"results"|"repor
     })})
   )}));
   return {manifest,results,assessments,report:{...run.report,metrics}};
+}
+
+function operatorFailure(reason:string,kind:"candidate"|"grader",decision?:{probabilityYes?:number;failAt:number;passAt:number}) {
+  if(kind==="grader"){
+    if(knownGradingFailures.has(reason))return reason;
+    const p=decision?.probabilityYes;
+    if(p!==undefined && decision && p>decision.failAt && p<decision.passAt)
+      return "P(criterion met) = "+p+", between the fail threshold of "+decision.failAt+" and the pass threshold of "+decision.passAt+". Review this case.";
+  }
+  const safe=publicProviderError(reason);
+  if(safe!==opaqueProviderError)return operatorProviderMessage(safe);
+  return kind==="candidate" ? safe+" Check the model runtime and inspect the saved case before starting another request." :
+    "No score was recorded. Check the pinned grader, its required evidence and the evaluator connection before grading the saved answer.";
+}
+
+function operatorAssessment<T extends RecordedAssessment>(a:T):T {
+  if(a.value!==null && typeof a.pass==="boolean")return a;
+  const reason=operatorFailure(a.reason,"grader",a.decision);
+  return reason===a.reason?a:{...a,reason};
+}
+
+// Historical snapshots may have copied SDK exceptions into case and report records independently.
+export function operatorRunDetail(run:RunDetail):RunDetail {
+  const failed=new Map<string,string>();
+  const key=(candidate:string,caseId:string)=>JSON.stringify([candidate,caseId]);
+  const results=run.results.map(result=>{
+    if(!result.error && !result.gradingError)return result;
+    const error=result.error && operatorFailure(result.error,"candidate");
+    if(error)failed.set(key(result.candidateId,result.caseId),error);
+    return {...result,...(error && {error}),...(result.gradingError && {gradingError:operatorFailure(result.gradingError,"grader")})};
+  });
+  const report=run.report && {...run.report,metrics:run.report.metrics.map(metric=>({...metric,caseScores:metric.caseScores.map(row=>({
+    ...row,values:row.values.map(cell=>cell.score!==null && typeof cell.pass==="boolean" ? cell : {...cell,reason:
+      (!metric.informational && failed.get(key(cell.candidateId,row.caseId))) || operatorFailure(cell.reason,"grader",cell.decision)})
+  }))}))};
+  return {...run,manifest:exportManifest(run.manifest),results,report,assessments:run.assessments.map(operatorAssessment),
+    ...(run.savedReviews && {savedReviews:run.savedReviews.map(review=>({...review,grades:review.grades.map(operatorAssessment)}))})};
 }

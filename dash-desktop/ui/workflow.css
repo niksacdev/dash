@@ -167,7 +167,6 @@ aside {overflow-y:auto}
 .wf-page .qc-workbench .qc-line-label,.wf-page .qc-workbench #roster-heading {margin:14px 0 7px;font:650 13px/1.35 var(--sans,sans-serif);color:var(--muted)}
 .qc-workbench .starting-grid {gap:8px}
 .qc-workbench .starting-grid .grid-slot {padding:10px 11px;gap:8px;align-items:flex-start}
-.qc-workbench .slot-track {display:none}
 .qc-workbench .grid-slot strong {font-size:15px}
 .qc-workbench .qc-lane-budget {font:11px/1.45 var(--mono)}
 .qc-workbench .compare-roster {margin:12px 0 0;padding-top:10px;border-top:1px solid var(--border)}
@@ -218,7 +217,7 @@ aside {overflow-y:auto}
 .qc-workbench .qc-additional-versions li {display:flex;align-items:center;justify-content:space-between;gap:8px}
 .qc-workbench .compare-roster .quiet {background:var(--surface-soft);color:var(--ink);border:1px solid var(--border)}
 .qc-workbench .grid-slot .remove-model {position:absolute;top:7px;right:7px;min-width:27px;min-height:27px;padding:2px 6px}
-.qc-workbench .grid-slot>div:nth-child(2) {max-width:100%;padding-inline-end:26px}
+.qc-workbench .grid-slot>div:first-child {max-width:100%;padding-inline-end:26px}
 .qc-workbench .qc-lane-budget summary {cursor:pointer;color:var(--accent)}
 @media(max-width:540px){
  .qc-launch {position:sticky;bottom:0;grid-template-columns:1fr auto;align-items:center;gap:8px}
@@ -226,7 +225,7 @@ aside {overflow-y:auto}
  .qc-launch strong {font-size:13px}
  .wf-page .qc-launch #qc-setup-counts {font-size:11px}
  .qc-workbench .grid-slot .remove-model {min-width:40px;min-height:40px}
- .qc-workbench .grid-slot>div:nth-child(2) {padding-inline-end:37px}
+ .qc-workbench .grid-slot>div:first-child {padding-inline-end:37px}
 }
 
 .wf-page .qc-workbench #qc-grade-status {margin:9px 0 6px;font:12px/1.5 var(--sans,sans-serif);color:var(--muted)}

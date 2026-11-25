@@ -1,6 +1,5 @@
 "use strict";
 
-const modelGrid = ["Open Source", "Frontier Labs", "FineTuned"];
 const industryTitle = "Run domain-specific use cases";
 const industryExamples = [
   { domain: "Financial Services", decision: "Verify reported EPS", image: "financial" },
@@ -47,12 +46,7 @@ function capabilityCopy(scene: CapabilityScene) {
 }
 
 function capabilityIllustration(visual: CapabilityVisual): string {
-  if (visual === "industries") return "";
-  if (visual === "race") {
-    const lanes = modelGrid.map(name => '<div><small>' + esc(name) +
-      '</small><span>' + svg("car", "banner-car") + '</span></div>').join("");
-    return '<div class="banner-track" aria-hidden="true">' + lanes + '</div>';
-  }
+  if (visual === "industries" || visual === "race") return "";
   const template = document.getElementById("diagram-" + visual);
   if (!(template instanceof HTMLTemplateElement)) throw new Error("Missing Overview diagram: " + visual);
   return template.innerHTML;

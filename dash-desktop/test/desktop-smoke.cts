@@ -1,6 +1,6 @@
 import {app, BrowserWindow} from "electron";
 import {once} from "node:events";
-import {mkdtempSync, readFileSync, writeFileSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, writeFileSync} from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import assert from "node:assert/strict";
@@ -87,13 +87,13 @@ async function checkMeasuredTracks(window:BrowserWindow, js:RendererEval) {
       const facts=await js(`(() => {
         const root=document.getElementById("measured-tracks-test");
         const meters=[...root.querySelectorAll("[role=meter]")];
-        const positions=meters.map(m=>m.querySelector(".race-field svg").getAttribute("x"));
+        const positions=meters.map(m=>m.querySelector(".timing-marker").getAttribute("x1"));
         return {positions,labels:meters.map(m=>m.getAttribute("aria-valuetext")),
           unavailable:root.querySelectorAll(".er-score-line strong").length-meters.filter(m=>m.closest(".er-score-line")).length,
           equal:root.querySelector(".er-equal").textContent,
-          animation:meters.every(m=>getComputedStyle(m.querySelector(".race-driver")).animationName==="none"),
+          animation:meters.every(m=>getComputedStyle(m.querySelector(".timing-marker")).animationName==="none"),
           latencyScale:root.querySelector(".chart-scale").textContent,
-          visible:meters.every(m=>m.querySelector(".race-driver").getBoundingClientRect().width>10)};
+          visible:meters.every(m=>m.querySelector(".timing-marker").getBoundingClientRect().height>5)};
       })()`);
       const reading=z.object({positions:z.array(z.string()),labels:z.array(z.string()),unavailable:z.number(),
         equal:z.string(),animation:z.boolean(),latencyScale:z.string(),visible:z.boolean()}).parse(facts);
@@ -183,7 +183,7 @@ async function checkReadRecovery(js:RendererEval,wait:(source:string)=>Promise<v
       results:data.results.map((row,index)=>index===0 ? {...row,dispatchState:"interrupted" as const,output:null,error:"Unknown after dispatch"} : row)};
     return key===id && live?{...data,status:"running" as const,liveRevision:4}:data;
   });
-  const progress=mock.method(Bench.prototype,"runProgress",()=>{
+  const progress=mock.method(Bench.prototype,"runLaneProgress",()=>{
     polls++;if(polls===1)throw Error("The progress connection was interrupted.");
     live=false;return {kind:"refresh" as const};
   });
@@ -246,7 +246,14 @@ async function checkOverview(window:BrowserWindow, js:RendererEval, wait:(source
   const {version} = z.object({version:z.string()}).parse(manifest);
   async function checkControlColors() {
     const versionLabel = await js(`document.querySelector("#appearance")?.previousElementSibling?.textContent.trim()`);
-    assert.equal(versionLabel, "DASH version v" + version, "Header identifies the built DASH release beside the theme selector");
+    const prefix = "DASH version v" + version;
+    assert.ok(typeof versionLabel === "string" && versionLabel.startsWith(prefix));
+    const build = versionLabel.slice(prefix.length);
+    if (existsSync(path.join(__dirname, "../../..", ".git"))) {
+      assert.match(build, /^ · build [a-f0-9]{8,64}(?:-modified)?$/, "The build ID is visible beside the release");
+    } else {
+      assert.equal(build, "", "An archive build shows its release without a revision");
+    }
     const colors = await js(`(() => {
       const fill = element => getComputedStyle(element).backgroundColor;
       return {

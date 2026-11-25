@@ -1,3 +1,5 @@
+import {rubricEvidenceInstruction} from "./measure-graders.cjs";
+import {isInspectionCheck} from "./inspection-decision.cjs";
 import {z} from "opik";
 import {PlanningRoute,type PlannerAdapters,type PlanningAttempt} from "./planner-routing.cjs";
 import {isRecord,type RuntimeInventory} from "./runtime-types.cjs";
@@ -110,6 +112,7 @@ function choicesFor(bench:DesignerBench,request:Request,industry:string):Catalog
   const entries=bench.graders.list();
   return {automatic:entries.filter(g=>g.library?.automatic && g.type==="catalog" && g.ruleKey!=="json-valid"),available:entries.filter(g=>{
     const scope=g.library?.scope ?? "customer";
+    if(isInspectionCheck(g))return g.industry===industry;
     if (scope==="general" || g.library?.scenario || scope==="industry") return false;
     if(!["Cross-industry","General","Unclassified",industry].includes(g.industry)) return false;
     if(g.type==="field" || (g.type==="trajectory" && request.target!=="agent")) return false;
@@ -310,9 +313,9 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
             const instructions=binaryCount?["Count this answer once if it meets every stated condition in the measure.",
               "Full credit (10): the candidate answer explicitly includes every element required by this measure.","Partial credit (5): unavailable for this binary count.",
               "Zero credit (0): one or more required conditions are absent. Use only 0 or 10."]:
-              [criteria,"Only the candidate output establishes what the candidate said. Compare its claims with the supplied evidence. Do not credit facts stated only in the task, reference or rubric.","Full credit (10): "+anchors.full,"Partial credit (5): "+anchors.partial,"Zero credit (0): "+anchors.zero,
+              [criteria,"Full credit (10): "+anchors.full,"Partial credit (5): "+anchors.partial,"Zero credit (0): "+anchors.zero,
               "Apply the zero-credit condition first. Use partial credit only if that condition is absent. For a binary policy, use only 0 or 10."];
-            criteria=bounded(["Success measure: "+metric,...instructions,requiredEvidence.length?"Missing "+requiredEvidence.join(" or ")+" evidence leaves the case unscored.":
+            criteria=bounded(["Success measure: "+metric,...instructions,rubricEvidenceInstruction,requiredEvidence.length?"Missing "+requiredEvidence.join(" or ")+" evidence leaves the case unscored.":
                 "Use the selected evidence view. External outcomes require separate records."].join("\n"),6000,"grading criteria");
           } else if(anchors)throw Error("Select a rubric to use semantic scoring anchors.");
           check={action:editing?"derive":"create",source:source?reviewedSource(source):null,name,category:metric.slice(0,100),

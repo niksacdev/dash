@@ -113,8 +113,8 @@
     },
     {
       "id": "grader-designer",
-      "version": 5,
-      "path": "prompts/grader-designer-v5.md"
+      "version": 6,
+      "path": "prompts/grader-designer-v6.md"
     },
     {
       "id": "report-analyzer",
@@ -138,8 +138,8 @@
     },
     {
       "id": "workflow-structured-output",
-      "version": 2,
-      "path": "prompts/workflow-structured-output-v2.md"
+      "version": 3,
+      "path": "prompts/workflow-structured-output-v3.md"
     },
     {
       "id": "workflow-metric-auditor",

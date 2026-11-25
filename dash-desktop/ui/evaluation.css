@@ -31,7 +31,7 @@
 .er-score-lines {display:grid;gap:9px;margin-top:14px}
 .er-score-line {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:3px 8px;font-size:13px}
 .er-score-line .race-course {grid-column:1/-1}
-.er-report .race-course,.metric-chart .race-course,.trend-points .race-course,.history-report .race-course {--race-height:26px}
+.er-report .race-course,.metric-chart .race-course,.trend-points .race-course,.history-report .race-course {--race-height:16px}
 .er-score-line strong,.chart-heading strong,.trend-points strong {font-variant-numeric:tabular-nums}
 .er-score-line small,.er-equal,.chart-scale {color:var(--muted)}
 .er-equal,.chart-scale {display:block;margin-top:.5rem;font-size:12px}
@@ -97,3 +97,10 @@
 .qc-expected p {margin:.35rem 0}
 .qc-expected small {display:block;margin-bottom:.5rem}
 .qc-expected textarea {width:100%}
+
+.er-response-heading,.er-response-heading form{display:flex;align-items:center;gap:.65rem;flex-wrap:wrap;justify-content:space-between}
+.er-response-heading input{width:5rem}
+.er-response-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,19rem),1fr));gap:1rem}
+.er-response-card{min-width:0}.er-response-card pre{max-height:22rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.er-response-card ul{padding-inline-start:1.15rem}.er-response-card small{display:block}.er-response-card li p{margin:.25em 0 .75em}
+.er-responses>button{margin-top:.75rem}

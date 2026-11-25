@@ -77,7 +77,8 @@ async function loadQuickGrading(approved:UiApproved|null) {
       }
       const saved=options.measures.length && !row.reason && remembered?.has(index)
         ? remembered.get(index) : undefined;
-      const generated=!plan.designed && row.generated && judge && options.judges.some(j=>j.id===judge) ? "rubric":"skip";
+      const source=!plan.designed && row.defaultGraderId && options.available.some(g=>g.id===row.defaultGraderId) ? row.defaultGraderId : null;
+      const generated=source ? "saved:"+source : !plan.designed && row.generated && judge && options.judges.some(j=>j.id===judge) ? "rubric":"skip";
       const recovered=saved===undefined && row.generated ? restoredRubric(approved.id,index) : undefined;
       plan.measures.set(row.metric,{
         choice:recovered?"rubric":saved===undefined?generated:saved===null?"skip":"saved:"+saved,
@@ -97,6 +98,7 @@ async function loadQuickGrading(approved:UiApproved|null) {
 }
 function quickGradePlan() {return quickGradingPlans.get(workflows.quick.approved?.id || "");}
 
+function quickNeedsReference(g:UiGrader,options:UiGraderOptions){return needsGraderReference(g) && !(inspectionDecisionRule(g) && options.sourcedInspection);}
 function quickReferenceChecks(plan:UiQuickPlan):string[] {
   const options=plan.options;
   if (!options) return [];
@@ -107,7 +109,7 @@ function quickReferenceChecks(plan:UiQuickPlan):string[] {
     if (editor?.choice.startsWith("saved:")) saved.add(editor.choice.slice(6));
   }
   for (const grader of [...options.automatic,...options.available.filter(g=>saved.has(g.id))]) {
-    if (needsGraderReference(grader)) names.add(grader.name);
+    if (quickNeedsReference(grader,options)) names.add(grader.name);
   }
   return [...names];
 }
@@ -129,7 +131,7 @@ function quickScoreChecks(plan:UiQuickPlan):ScoreSetupCheck[] {
     const saved=options.available.find(g=>choice?.choice==="saved:"+g.id);
     if(saved)assigned.add(saved.id);
     const correction=row.reason || (!choice || choice.choice==="skip" ? "Choose a grader" :
-      saved ? (options.setupIssues?.[saved.id] || (options.diagnosticIds?.includes(saved.id)?"Choose a quality grader":"") || (needsGraderReference(saved) && !plan.expectedAnswer.trim()?"Add expected answer":"")) :
+      saved ? (options.setupIssues?.[saved.id] || (options.diagnosticIds?.includes(saved.id)?"Choose a quality grader":"") || (quickNeedsReference(saved,options) && !plan.expectedAnswer.trim()?"Add expected answer":"")) :
       choice.choice!=="rubric" ? "Choose an available grader" :
       !options.judges.some(j=>j.id===choice.judgeId) ? "Choose a judge" :
       !choice.criteria.trim() ? "Enter the rubric" :
@@ -141,7 +143,7 @@ function quickScoreChecks(plan:UiQuickPlan):ScoreSetupCheck[] {
   for (const g of [...options.automatic,...options.available.filter(g=>plan.saved.has(g.id))]) {
     if(assigned.has(g.id) || options.diagnosticIds?.includes(g.id))continue;
     assigned.add(g.id);
-    const correction=options.setupIssues?.[g.id] || (needsGraderReference(g) && !plan.expectedAnswer.trim()?"Add expected answer":"");
+    const correction=options.setupIssues?.[g.id] || (quickNeedsReference(g,options) && !plan.expectedAnswer.trim()?"Add expected answer":"");
     checks.push({label:g.name,...(correction && {correction})});
   }
   return checks;
@@ -216,8 +218,9 @@ function quickGradeSummary() {
   const plan=quickGradePlan(),issue=quickGradeIssue(plan);
   if (!plan?.options || issue) return {workload:issue,coverage:""};
   const {measureGraders=[],graderIds,outcomeRubric}=quickGradePayload(plan);
-  const selected=plan.options.available.filter(g=>graderIds.includes(g.id));
-  const available=(g:UiGrader)=>(!needsGraderReference(g) || !!plan.expectedAnswer.trim()) && !g.requiredEvidence?.includes("trajectory");
+  const options=plan.options;
+  const selected=options.available.filter(g=>graderIds.includes(g.id));
+  const available=(g:UiGrader)=>(!quickNeedsReference(g,options) || !!plan.expectedAnswer.trim()) && !g.requiredEvidence?.includes("trajectory");
   const runsModel=(g:UiGrader)=>["judge","opik","decision","opik-metric"].includes(g.type);
   const runnable=(r:UiMeasureAssignment)=>r.kind==="rubric" ? (r.evidence==="task-answer" || !!plan.expectedAnswer.trim()) :
     r.kind==="saved" && selected.some(g=>g.id===r.graderId && available(g));
@@ -275,7 +278,7 @@ function quickMeasureRow(row:UiQuickMeasure,index:number,plan:UiQuickPlan,option
   } else if (selected) {
     policy='<small>'+esc(selected.name)+' v'+esc(selected.version)+' · pass threshold '+esc(selected.threshold)+'</small>'+
       '<details class="qc-rubric-options"><summary>View grader rule</summary><p class="qc-rubric-preview">'+esc(selected.criteria)+'</p></details>';
-    if (needsGraderReference(selected)) policy+='<small>Uses the expected answer supplied for this comparison.</small>';
+    if (quickNeedsReference(selected,options)) policy+='<small>Uses the expected answer supplied for this comparison.</small>';
   }
   if (current==="rubric" && !editor.criteria && row.generated) policy+=
     '<p>Custom rubric text stays in the editing session. Re-enter the rubric or restore the proposed wording before running.</p>'+
@@ -293,7 +296,8 @@ function quickGradePicker() {
   if(!plan || !options || plan.error)return runGraderPanel("quick",scope,plan?quickSelectedVersions(plan):selectedRunGraders("quick",scope,[]),
     plan?.error?quickGraderFailure(plan):'<p role="status">Loading grading options…</p>');
   const checks=quickReferenceChecks(plan);
-  const example=workflows.quick.approved?.domain==="Manufacturing" ? "Drawing B allows up to 10.03 mm. Sample S1 measured 10.04 mm and needs a signed recheck." :
+  const inspection=options.available.find(g=>g.ruleKey==="inspection-active-range" && checks.includes(g.name)) ?? options.available.find(g=>inspectionDecisionRule(g) && checks.includes(g.name));
+  const example=inspection ? '{"active":"C","rule":"inclusive_limits","lower_mm":"4.90","upper_mm":"5.10","measured_mm":"5.12","required_action":"signed_recheck","recheck_complete":false}' : workflows.quick.approved?.domain==="Manufacturing" ? "Drawing B allows up to 10.03 mm. Sample S1 measured 10.04 mm and needs a signed recheck." :
     "The Q2 release reports diluted GAAP EPS of $0.74 and adjusted diluted EPS of $0.85.";
   const expected='<section class="qc-expected" data-qc-expected '+(checks.length?'':'hidden')+'><label for="qc-expected-answer">Expected answer or verified facts</label>'+
     '<p id="qc-expected-help">Give the correct result a reviewer would accept. Both candidates receive the approved task. The checks listed here receive these facts when grading their answers.</p>'+

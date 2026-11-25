@@ -10,8 +10,11 @@ import * as providers from "./providers.cjs";
 import {OutcomeWorkflow,contractHash} from "./outcome-workflow.cjs";
 import {decodeRequest,type DesignContext,type PlanningPurpose,type PromptDraft,type MetricSuggestion} from "./outcome-contracts.cjs";
 import {checkStructuredOutput} from "./quick-structure.cjs";
+import {inspectionRangeReference,hasInspectionSource,isInspectionCheck,inspectionSourceConflict,inspectionSchemaIssue,suggestedInspectionGrader,inspectionReference,inspectionRuleId,inspectionRangeId,inspectionRangeKey,inspectionRuleKey,inspectionCaseReference,hasInspectionReferenceFor,inspectionEvidenceHelp} from "./inspection-decision.cjs";
+import type {ApprovedPrompt} from "./outcome-contracts.cjs";
+import {starterInspectionV1} from "./domain-starters.cjs";
 import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
-import {SavedScoreReviews,reviewRequest,reviewResults} from "./saved-score-review.cjs";
+import {canChallengeVerdict,SavedScoreReviews,reviewRequest,reviewResults} from "./saved-score-review.cjs";
 import {checkLocalDecision} from "./decision-model.cjs";
 import {quickVerdictIssue,scoringOptions} from "./score-readiness.cjs";
 import {RunReports} from "./run-report.cjs";
@@ -25,9 +28,9 @@ import {startPower} from "./power.cjs";
 import {assessCase,lengthFailure,reasoningPolicy,autoOutputTarget,GuardrailError,type GuardrailDecision} from "./guardrail.cjs";
 import {decodeManifest,decodeResult,decodeRunSummary,decodeDatasetSummary} from "./run-decode.cjs";
 import {errorMessage,isCaseRow,jsonText,stringValue,statusValue} from "./run-types.cjs";
-import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
+import type {CaseRow,DatasetCase,DatasetSnapshot,PackBundle,ScoredPack,RunPartial,RunCandidatePartial,RunLaneCursor,RunLaneProgress,RunData,RunDetail,RunManifest,CurrentManifest,StartRun,RunResult,RunStatus,ScenarioPack} from "./run-types.cjs";
 import {scenarioCacheSupport,cachedInputTokenCount,ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, ProviderRejectedError} from "./runtime-types.cjs";
-import type {RuntimeAdapters,RuntimeInventory,FixtureCandidate,ModelLoadReceipt} from "./runtime-types.cjs";
+import type {Candidate,RuntimeAdapters,RuntimeInventory,FixtureCandidate,ModelLoadReceipt} from "./runtime-types.cjs";
 import {decodeFieldAnswer,quickGradingReference,graderRequiredEvidence,parseFieldRule,requireAssessmentEvidence} from "./grader-types.cjs";
 import {AssessmentStorageError} from "./grading-errors.cjs";
 const datasetCaseTest = z.strictObject({
@@ -61,7 +64,7 @@ function mergeCandidateUsage(previous:CandidateUsageSample|undefined, observatio
   return changed ? sample : previous;
 }
 
-interface Job {id:string;mode:StartRun["mode"];revision:number;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
+interface Job {id:string;mode:StartRun["mode"];revision:number;controller:AbortController;partial:RunPartial|null;lanes:Map<string,RunCandidatePartial>;done?:Promise<void>}
 export const replayCandidate:FixtureCandidate = {
   id: "fixture/replay-v1",
   kind: "fixture",
@@ -244,6 +247,13 @@ export class Bench {
   private automaticGraders(structured:boolean) {
     return [...this.graders.automatic(structured), ...this.configuredGeneralGraders()];
   }
+  private sourcedInspection(approved:ApprovedPrompt|null) {
+    if(approved?.mode!=="quick" || approved.domain!=="Manufacturing")return false;
+    return hasInspectionSource(candidateMessages({prompt:approved.prompt,approvedPrompt:approved},{}),approved.objective);
+  }
+  private sourceGraders(approved:ApprovedPrompt){
+    return [inspectionRuleId,inspectionRangeId].map(id=>this.graders.get(id)).filter(g=>!inspectionSchemaIssue(g,approved.outputSchema,starterInspectionV1));
+  }
   quickExpectedAnswer(runId:string):string|null {
     const entry=this.db.prepare("SELECT answer FROM quick_expected_answers WHERE run=?").get(runId);
     return entry ? stringValue(entry.answer,"saved expected answer") : null;
@@ -252,7 +262,22 @@ export class Bench {
     const approved=this.workflow.get(approvedPromptId);
     const options = this.graders.quickOptions(approved, this.servers.flatMap(s => s.models));
     const automatic=this.automaticGraders(!!approved.outputSchema);
-    return {...options,expectedAnswerVersion:1 as const,automatic,...this.scoringOptions([...options.available,...automatic])};
+    const sourcedInspection=this.sourcedInspection(approved);
+    const sources=sourcedInspection ? this.sourceGraders(approved) : [];
+    const used=new Set<string>();
+    const measures=options.measures.map(row=>{
+      const id=suggestedInspectionGrader(row.metric,row.criterion);
+      if(row.reason || !id || used.has(id) || !sources.some(g=>g.id===id))return row;
+      used.add(id);
+      return {...row,defaultGraderId:id};
+    });
+    if(!measures.length)automatic.push(...sources);
+    const readiness=this.scoringOptions([...options.available,...automatic]);
+    for(const g of options.available.filter(isInspectionCheck)){
+      const issue=inspectionSchemaIssue(g,approved.outputSchema,sourcedInspection?starterInspectionV1:null);
+      if(issue)readiness.setupIssues[g.id]=issue;
+    }
+    return {...options,measures,sourcedInspection,expectedAnswerVersion:1 as const,automatic,...readiness};
   }
   private scoringOptions(graders:GraderSpec[]) {
     return scoringOptions(graders,this.servers.filter(server=>server.online).flatMap(server=>server.models));
@@ -292,7 +317,12 @@ export class Bench {
     const fields=new Set(available.filter(g=>g.type==="field").map(g=>parseFieldRule(g.criteria).referenceField));
     const fieldCoverage=Object.fromEntries([...fields].map(field=>[field,countExpectedAnswers(dataset.rows,field)]));
     const automatic=this.automaticGraders(pack.outputSchema !== null);
-    return {...this.scoringOptions([...available,...automatic]),expectedAnswerCount,fieldCoverage,literalAnswerCount:dataset.rows.filter(row=>row.reference!=null).length,
+    const inspectionCoverage=(ruleKey:string)=>{
+      const check={type:"catalog",ruleKey};
+      return dataset.rows.filter(row=>hasInspectionReferenceFor(check,inspectionCaseReference(check,row,pack))).length;
+    };
+    const inspectionCaseCount=inspectionCoverage(inspectionRuleKey), inspectionRangeCount=inspectionCoverage(inspectionRangeKey);
+    return {...this.scoringOptions([...available,...automatic]),inspectionCaseCount,inspectionRangeCount,expectedAnswerCount,fieldCoverage,literalAnswerCount:dataset.rows.filter(row=>row.reference!=null).length,
       casesWithoutGuidance:dataset.rows.filter(row=>!hasEvidence(row.reference ?? row.gold) && !row.rubric).length,
       hasReferences:expectedAnswerCount>0,automatic,available};
   }
@@ -487,11 +517,19 @@ export class Bench {
     const pinnedGraders = original?.graders ?? this.graders.select(graderIds);
     const outputSchema=pack?.outputSchema ?? approved?.outputSchema;
     const defaults = original ? [] : this.automaticGraders(!!outputSchema);
+    const sourcedInspection=this.sourcedInspection(approved);
+    const measurePolicy=approved && !!(approved.metricCriteria ?? approved.metricAudit) && approved.metrics.length>0;
+    if(!original && approved && sourcedInspection && !inspectionOnly && !measurePolicy)defaults.push(...this.sourceGraders(approved));
     if (dataset) {
       const applied=[...pinnedGraders,...defaults];
       const coverage=new Map<string|undefined,number>();
       for (const grader of applied) {
         if (!graderRequiredEvidence(grader).includes("reference")) continue;
+        if(isInspectionCheck(grader)){
+          const missing=rows.find(row=>!hasInspectionReferenceFor(grader,inspectionCaseReference(grader,row,pack)));
+          if(missing)throw Error("Case "+missing.case_id+" needs verified inspection evidence. "+inspectionEvidenceHelp(grader));
+          continue;
+        }
         const field=grader.type==="field" ? parseFieldRule(grader.criteria).referenceField : undefined;
         const labeled=coverage.get(field) ?? countExpectedAnswers(rows,field);
         coverage.set(field,labeled);
@@ -547,6 +585,7 @@ export class Bench {
     const id = randomUUID();
     const manifest:CurrentManifest = {
       format: 2,
+      executionMode:candidates.length===2 ? "parallel-lanes" : "single-lane",
       ...(inspectionOnly && {inspectionOnly}),
       id,
       created: now(),
@@ -640,7 +679,15 @@ export class Bench {
             manifest.hostedDecisionApproved=true;
           }
         }
-        const needsExpectedAnswer=[...manifest.graders,...defaults].some(g=>graderRequiredEvidence(g).includes("reference"));
+        const checks=[...manifest.graders,...defaults];
+        for(const g of checks.filter(isInspectionCheck)){
+          if(sourcedInspection && inspectionSourceConflict(verifiedAnswer))throw Error("The supplied inspection reference disagrees with the approved inspection source. Review the task or its expected answer before GO.");
+          const issue=inspectionSchemaIssue(g,approved.outputSchema,sourcedInspection?starterInspectionV1:verifiedAnswer);
+          if(issue)throw Error(issue);
+        }
+        const missingCheck=checks.find(g=>isInspectionCheck(g) && !sourcedInspection && !hasInspectionReferenceFor(g,verifiedAnswer));
+        if(missingCheck)throw Error(inspectionEvidenceHelp(missingCheck));
+        const needsExpectedAnswer=checks.some(g=>graderRequiredEvidence(g).includes("reference") && !(isInspectionCheck(g) && sourcedInspection));
         if (needsExpectedAnswer && !verifiedAnswer)
           throw Error("Add an expected answer or verified facts in Graders before GO, or choose a grader that uses the task and model answer alone.");
         if (!needsExpectedAnswer && verifiedAnswer)
@@ -655,7 +702,7 @@ export class Bench {
     } else {
       insertRun();
     }
-    const job:Job = { id, mode, revision:0, controller: new AbortController(), partial: null };
+    const job:Job = { id, mode, revision:0, controller: new AbortController(), partial: null,lanes:new Map() };
     this.active = job;
     job.done = new Promise<void>((resolve) => setImmediate(resolve))
       .then(() => this.execute(job, manifest, rows, replay))
@@ -667,9 +714,15 @@ export class Bench {
     return id;
   }
   async execute(job:Job, m:CurrentManifest, rows:CaseRow[], replay:Record<string,unknown>) {
-    const signal = job.controller.signal;
+    const fatal=new AbortController();
+    const signal=AbortSignal.any([job.controller.signal,fatal.signal]);
+    const fail=(error:unknown)=>{if(!fatal.signal.aborted)fatal.abort(error);};
+    let nextResultIndex=0;
     const status = (value:RunStatus) => {
-      try {this.db.prepare("UPDATE runs SET status=? WHERE id=?").run(value,m.id);}
+      try {
+        if(value==="running")this.db.prepare("UPDATE runs SET status=? WHERE id=?").run(value,m.id);
+        else this.db.prepare("UPDATE runs SET status=?,manifest=? WHERE id=?").run(value,JSON.stringify(m),m.id);
+      }
       catch (cause) {throw new RunCheckpointError("DASH could not save the run status. Check available storage and workspace access.",{cause});}
     };
     let errors = 0;
@@ -678,10 +731,12 @@ export class Bench {
         ON CONFLICT(run,candidate,case_id) DO UPDATE SET record=excluded.record`);
       const saveResult=(result:RunResult)=>{
         try {
+          // Case links use numeric indices. An earlier pending dispatch must not displace a visible result.
+          if(m.executionMode==="parallel-lanes" && result.dispatchState!=="pending")result.finalizedIndex ??= nextResultIndex++;
           writeResult.run(m.id,result.candidateId,result.caseId,JSON.stringify(result));
           if (result.dispatchState!=="pending") job.revision++;
         } catch (cause) {
-          throw new RunCheckpointError("Could not persist a case checkpoint. The job stopped.", {cause});
+          const error=new RunCheckpointError("Could not persist a case checkpoint. The job stopped.",{cause});fail(error);throw error;
         }
       };
       status("running");
@@ -719,7 +774,7 @@ export class Bench {
           }
         }
       }
-      for (const c of m.candidates)
+      const runLane=async(c:Candidate)=>{
         for (const row of rows) {
           if (signal.aborted) break;
           const trace:RunResult["trace"] = {
@@ -741,7 +796,8 @@ export class Bench {
           };
           const decision=decisions.get(c.id)?.get(row.case_id);
           const checkedInputTokens=decision?.receipt?.tokens;
-          job.partial = {candidateId:c.id,caseId:row.case_id,text:"",...(checkedInputTokens!=null && {checkedInputTokens})};
+          const lane:RunCandidatePartial={candidateId:c.id,caseId:row.case_id,startedAt:trace.started,text:"",...(checkedInputTokens!=null && {checkedInputTokens})};
+          job.lanes.set(c.id,lane);
           let observedOutput = false;
           if (!m.fixture) job.revision++;
           const candidateStep={at:now(),action:m.fixture ? "Read recorded fixture response" : "Invoke "+c.provider};
@@ -760,7 +816,9 @@ export class Bench {
               if (inputBudget) rec.inputBudget = { cap: m.tokenBudget.inputCap, tokens: inputBudget.tokens, source: inputBudget.source };
               const powerUnavailable=()=>trace.steps.push({ at:now(),action:"Device power measurement unavailable" });
               let finishPower:Awaited<ReturnType<typeof startPower>>|undefined;
-              try {finishPower=await this.powerSampler();} catch {powerUnavailable();}
+              if(m.executionMode!=="parallel-lanes") {
+                try {finishPower=await this.powerSampler();} catch {powerUnavailable();}
+              }
               let observing=true;
               let lastCheckpoint=-Infinity;
               // The native SDK catches exceptions from fragment handlers. A request-local
@@ -780,13 +838,12 @@ export class Bench {
                   structured: m.pack?.outputSchema ?? m.approvedPrompt?.outputSchema,
                   ...(m.approvedPrompt?.outputSchema && {strictSchema:true}),
                   onCandidateUsage: observed => {
-                    const part=job.partial;
-                    if (!observing || !part || !("candidateId" in part)) return;
-                    part.usage=mergeCandidateUsage(part.usage,observed);
+                    if (!observing || signal.aborted) return;
+                    lane.usage=mergeCandidateUsage(lane.usage,observed);
                   },
                   onText: text => {
-                    if (!observing) return;
-                    if (job.mode==="quick" && job.partial) job.partial.text=text;
+                    if (!observing || signal.aborted) return;
+                    if (job.mode==="quick") lane.text=text;
                     rec.output=text;
                     // Store the first visible response and at most one update per second.
                     const elapsed=performance.now();
@@ -813,7 +870,8 @@ export class Bench {
                 observedOutput=true;
                 rec.finishReason=response.finishReason ?? null;
                 rec.reportedFinishReason=response.reportedFinishReason === undefined ? rec.finishReason : response.reportedFinishReason;
-                rec.telemetry=response.telemetry;
+                rec.telemetry=response.telemetry && {...response.telemetry};
+                if(m.executionMode==="parallel-lanes" && rec.telemetry)delete rec.telemetry.device_power;
                 if (m.tokenBudget.inputCap != null && (response.telemetry?.input_tokens ?? 0) > m.tokenBudget.inputCap)
                   rec.error??="The runtime reported input usage above the approved cap.";
                 else if ((response.telemetry?.output_tokens ?? 0) > guardrail.outputReserve)
@@ -842,8 +900,8 @@ export class Bench {
                     }
                     rec.error=error.message;
                   } else {
-                    rec.dispatchState=signal.aborted ? "canceled" : "interrupted";
-                    rec.error=signal.aborted ? "Observation canceled after dispatch. The final candidate response is unknown." :
+                    rec.dispatchState=job.controller.signal.aborted ? "canceled" : "interrupted";
+                    rec.error=job.controller.signal.aborted ? "Observation canceled after dispatch. The final candidate response is unknown." :
                       "Observation interrupted after dispatch. The final candidate response is unknown.";
                     trace.steps.push({at:now(),action:"DASH stopped observing this request"});
                     if (!signal.aborted && error instanceof ProviderFailure)
@@ -881,7 +939,8 @@ export class Bench {
             for (const scorer of m.graders || []) {
               if (signal.aborted) break;
               if (rec.error && !scorer.library?.automatic) continue;
-              job.partial = {candidateId:c.id,caseId:row.case_id,text:"",grading:{name:scorer.name,version:scorer.version}};
+              job.lanes.set(c.id,{candidateId:c.id,caseId:row.case_id,text:"",startedAt:trace.started,
+                grading:{name:scorer.name,version:scorer.version,startedAt:now()}});
               job.revision++;
               const evidence = graderEvidence(m,row,rec,scorer.type === "catalog",scorer.id);
               if (m.mode==="quick" && graderRequiredEvidence(scorer).includes("reference"))
@@ -892,6 +951,30 @@ export class Bench {
             }
           }
         }
+      };
+      // The validated starting line has at most two workers. A fatal write stops both;
+      // allSettled keeps the job and its shared sensor owned until every worker exits.
+      let finishShared:Awaited<ReturnType<typeof startPower>>|undefined;
+      if(m.executionMode==="parallel-lanes" && !signal.aborted) {
+        try {finishShared=await this.powerSampler(undefined,1000,"aggregate");} catch { /* No host observation available. */ }
+      }
+      try {
+        await Promise.allSettled(m.candidates.map(async c=>{
+          try {await runLane(c);}
+          catch(error){fail(error);}
+          finally {job.lanes.delete(c.id);job.revision++;}
+        }));
+        fatal.signal.throwIfAborted();
+      } finally {
+        if(finishShared) {
+          try {
+            const p=await finishShared();
+            m.sharedDevicePower={scope:p.scope,source:p.source,samples:p.sampleCount ?? p.samples.length,average_w:p.average_w,peak_w:p.peak_w,
+              sampled_seconds:p.sampled_seconds,estimated_energy_j:p.estimated_energy_j};
+          } catch { /* Missing sensor data cannot invalidate saved candidate answers. */ }
+
+        }
+      }
       if (!m.fixture && !errors && !signal.aborted && typeof this.adapters.reportStage === "function") {
         const completed:RunData = { ...this.detail(m.id), status: "completed" };
         await this.reports.finalize(completed, this.adapters, signal, stage => {
@@ -902,7 +985,7 @@ export class Bench {
       status(signal.aborted ? "canceled" : errors ? "failed" : "completed");
     } catch (e) {
       try {
-        if (signal.aborted && !(e instanceof RunCheckpointError) && !(e instanceof AssessmentStorageError)) status("canceled");
+        if (job.controller.signal.aborted && !fatal.signal.aborted && !(e instanceof RunCheckpointError) && !(e instanceof AssessmentStorageError)) status("canceled");
         else {
           m.error = errorMessage(e);
           this.db.prepare("UPDATE runs SET status='failed', manifest=? WHERE id=?").run(JSON.stringify(m), m.id);
@@ -916,10 +999,32 @@ export class Bench {
     // the original case evidence and terminal status are durable and detail() can rebuild it.
     this.detail(m.id);
   }
+  private legacyPartial(job:Job):RunPartial|null {
+    if(job.partial)return job.partial;
+    const lane=job.lanes.values().next().value;
+    if(!lane)return null;
+    const {startedAt,grading,...visible}=lane;
+    return {...visible,...(grading && {grading:{name:grading.name,version:grading.version}})};
+  }
+  runLaneProgress(id:string,revision:number,cursors:RunLaneCursor[]):RunLaneProgress {
+    const job=this.active;
+    if(!job || job.id!==id || revision!==job.revision || cursors.length!==job.lanes.size)return {kind:"refresh"};
+    const updates:Extract<RunLaneProgress,{kind:"lanes"}>["updates"]=[];
+    const seen=new Set<string>();
+    for(const cursor of cursors) {
+      const lane=job.lanes.get(cursor.candidateId);
+      if(!lane || seen.has(lane.candidateId) || lane.caseId!==cursor.caseId || cursor.offset>lane.text.length)return {kind:"refresh"};
+      seen.add(lane.candidateId);
+      const usage=lane.usage && lane.usage.revision!==cursor.usageRevision ? lane.usage : undefined;
+      const text=job.mode==="quick" ? lane.text.slice(cursor.offset) : "";
+      if(text || usage)updates.push({candidateId:lane.candidateId,caseId:lane.caseId,...(text && {text}),...(usage && {usage})});
+    }
+    return {kind:"lanes",updates};
+  }
   runProgress(id:string, revision:number, offset:number, usageRevision?:number):UiRunProgress {
     const job=this.active;
     if (!job || job.id!==id || job.revision!==revision) return {kind:"refresh"};
-    const part=job.partial;
+    const part=this.legacyPartial(job);
     if (!part || !("candidateId" in part)) return {kind:"unchanged"};
     const usage=usageRevision!==undefined && part.usage && part.usage.revision!==usageRevision ? {usage:part.usage} : {};
     if (job.mode==="quick") {
@@ -940,7 +1045,10 @@ export class Bench {
     if(this.active)throw Error("Wait for the active evaluation to finish before reviewing saved answers.");
     const run=this.detail(request.run);
     if(!run.manifest.caseIds.includes(request.caseId))throw Error("Choose a case from this run.");
-    const grader=run.manifest.graders.find(g=>g.id===request.grader) ?? this.graders.get(request.grader);
+    const original=run.manifest.graders.find(g=>g.id===request.grader);
+    if(original && run.report && canChallengeVerdict(run.report,run))
+      throw Error("Choose a different grader version for this challenge. The original grades are already recorded.");
+    const grader=original ?? this.graders.get(request.grader);
     const problem=this.scoringOptions([grader]).setupIssues[grader.id];
     if(problem)throw Error(problem);
     const row=run.manifest.datasetId ? this.dataset(run.manifest.datasetId).rows.find(r=>r.case_id===request.caseId) : {case_id:request.caseId};
@@ -973,12 +1081,21 @@ export class Bench {
           return result;
         }),
       assessments: this.graders.recorded(id),
-      partial: this.active?.id === id ? this.active.partial : null,
+      partial: this.active?.id === id ? this.legacyPartial(this.active) : null,
     };
+    if(manifest.executionMode==="parallel-lanes")
+      detail.results.sort((a,b)=>(a.finalizedIndex ?? Number.MAX_SAFE_INTEGER)-(b.finalizedIndex ?? Number.MAX_SAFE_INTEGER));
     const report=this.reports.get(detail);
-    const savedReviews=report && (report.verdict==="incomplete" || report.verdict==="ungraded") ? this.scoreReviews.list(id) : [];
-    const quickFields=terminal && manifest.mode==="quick" ? {quickFieldGraderIds:this.graders.fieldGradersFor(decodeFieldAnswer(this.quickExpectedAnswer(id)))} : {};
-    return {...detail,...quickFields,...reviewResults(detail,report,savedReviews),...(manifest.mode==="quick" && {hasQuickExpectedAnswer:!!this.db.prepare("SELECT 1 FROM quick_expected_answers WHERE run=?").get(id)}),liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report};
+    const savedReviews=report && (report.verdict==="incomplete" || report.verdict==="ungraded" || canChallengeVerdict(report,detail)) ? this.scoreReviews.list(id) : [];
+    const quickAnswer=terminal && manifest.mode==="quick" ? this.quickExpectedAnswer(id) : null;
+    const quickFields=terminal && manifest.mode==="quick" ? {
+      quickFieldGraderIds:this.graders.fieldGradersFor(decodeFieldAnswer(quickAnswer)),
+      hasInspectionReference:!!inspectionReference(quickAnswer),
+      hasInspectionRangeReference:!!inspectionRangeReference(quickAnswer),
+      hasSourcedInspectionDecision:manifest.industry==="Manufacturing" && detail.results.length>0 &&
+        detail.results.every(r=>hasInspectionSource(r.dispatchedMessages,manifest.approvedPrompt?.objective)),
+    } : {};
+    return {...detail,liveLaneProgressVersion:1,candidatePartials:this.active?.id===id?[...this.active.lanes.values()]:[],...quickFields,...reviewResults(detail,report,savedReviews),...(manifest.mode==="quick" && {hasQuickExpectedAnswer:!!this.db.prepare("SELECT 1 FROM quick_expected_answers WHERE run=?").get(id)}),liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report};
   }
   exportRun(id:string) {
     const detail=this.detail(id);

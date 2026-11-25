@@ -201,7 +201,7 @@ function schemaFieldNotes(p:UiPrompt,currentSchema:unknown,currentTask:string) {
   let missingNotes=!review;
   const items=Object.entries(fields).map(([name,field])=>{
     const proposal=review?.fields.find(f=>f.name===name);
-    const origin=!review ? "Saved contract" : !proposal ? "Added by the operator" : review.declaredKeys ? "Named in your objective" : "Suggested by the implementer";
+    const origin=!review ? "Saved contract" : !proposal ? "Added by the operator" : proposal.interval ? "Aligned by DASH" : review.declaredKeys ? "Named in your objective" : "Suggested by the implementer";
     const heading='<strong>'+esc(name)+'</strong> · '+origin+'<p>'+esc(fieldContractFact(field,required.includes(name)))+'</p>';
     if (!proposal || !review) return '<li>'+heading+'</li>';
     const original=proposal.nullable ? [proposal.type,"null"] : proposal.type;
@@ -211,6 +211,11 @@ function schemaFieldNotes(p:UiPrompt,currentSchema:unknown,currentTask:string) {
     const change=typeEdited ? '<p>Operator edited the type. Original proposal · '+esc(oldType)+'</p>' :
       taskEdited ? '<p>The proposal was made for the original task.</p>' : "";
     const note=proposal.note;
+    if (proposal.interval) {
+      const description=proposal.interval==="text" ? "The proposed text field can hold both ends of the requested interval." :
+        "The proposed numeric field holds the "+proposal.interval+" endpoint of the requested interval.";
+      return '<li>'+heading+change+'<p>'+description+'</p></li>';
+    }
     if (!note) missingNotes=true;
     return '<li>'+heading+change+(note ? '<p>Implementer suggestion · '+esc(note.explanation)+'</p><small>Original objective · “'+esc(note.quote)+'”</small>' : "")+'</li>';
   });

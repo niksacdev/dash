@@ -74,6 +74,9 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-25 | [0038 · Measure prompt cache reads](0038-provider-prompt-cache.md) | Accepted | Nik requested showing available provider cache reads during processing and in telemetry. | [Operator scenario](../reviews/outcome-workflow.md#read-prompt-cache-usage-on-a-repeated-case) |
 | 2026-11-25 | [0039 · Score readiness and recovery](0039-score-readiness-and-recovery.md) | Accepted | Nik requested identifying foreseeable missing scores during setup and explaining how to recover an incomplete comparison. | [Operator scenario](../reviews/outcome-workflow.md#recover-a-comparison-with-a-missing-business-score) |
 | 2026-11-25 | [0040 · Evaluation race lanes](0040-evaluation-race-lanes.md) | Accepted | Nik requested race lanes for live activity and measured score comparisons throughout DASH. | [Operator scenario](../reviews/outcome-workflow.md#follow-the-selected-candidates-during-a-run) |
+| 2026-11-25 | [0042 · Motorsport timing display](0042-motorsport-timing-display.md) | Proposed | Show recorded work on calibrated timing scales and confine race photography to the Overview comparison. | [Operator scenario](../reviews/outcome-workflow.md#follow-the-selected-candidates-during-a-run) |
+| 2026-11-25 | [0043 · Concurrent candidate workers](0043-concurrent-candidate-workers.md) | Proposed | Run up to two candidates independently after preflight and measure whole-device energy once across the workers. | [Inspection scenario](../reviews/outcome-workflow.md#run-two-candidates-against-the-same-inspection) |
+| 2026-11-25 | [0044 · Challenge a verdict](0044-challenge-a-verdict.md) | Proposed | Preserve original grades and compare both saved responses against an independent case-specific check. | [Operator guide](../reader/src/results.md#challenge-a-completed-verdict) |
 
 ## Maintaining the history
 

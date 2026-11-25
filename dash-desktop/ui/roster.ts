@@ -136,8 +136,8 @@ function lineSlots(mode:UiMode){
   const roster=rosterModels();
   return [0,1].map(i=>{
     const id=lanes[i],model=roster.find(c=>c.id===id);
-    if(mode==="dataset" && id && (!model || model.needsKey))return '<div class="grid-slot occupied"><div class="slot-track">'+svg("car","grid-car")+'</div><div><small>Lane '+(i+1)+'</small><strong>'+esc(model?displayModel(model.model):id)+'</strong><small>Unavailable · reconnect or replace this model</small></div><button type="button" class="remove-model" data-remove="'+esc(id)+'" aria-label="'+esc("Remove "+id)+'">×</button></div>';
-    return '<div class="grid-slot '+(model?'occupied':'')+'"><div class="slot-track">'+svg("car","grid-car")+'</div><div><small>Lane '+(i+1)+'</small>'+
+    if(mode==="dataset" && id && (!model || model.needsKey))return '<div class="grid-slot occupied"><div><small>Lane '+(i+1)+'</small><strong>'+esc(model?displayModel(model.model):id)+'</strong><small>Unavailable · reconnect or replace this model</small></div><button type="button" class="remove-model" data-remove="'+esc(id)+'" aria-label="'+esc("Remove "+id)+'">×</button></div>';
+    return '<div class="grid-slot '+(model?'occupied':'')+'"><div><small>Lane '+(i+1)+'</small>'+
       (model?'<strong>'+esc(displayModel(model.model))+'</strong>':'<button class="choose-slot" type="button" data-choose-slot="'+i+'">Choose a model <span aria-hidden="true">↗</span></button>')+(model?'<small>'+esc(model.endpoint || (model.provider==="lmstudio"?"LM Studio":model.provider==="ollama"?"Ollama":model.provider))+'</small>' + (mode==="quick" ? laneBudgetMarkup(model,workflows.quick.approved) : '<small>'+esc(modelCapacityNote(model))+'</small>'):'')+'</div>'+
       (model?'<button type="button" class="remove-model" data-remove="'+esc(model.id)+'" aria-label="Remove '+esc(model.model)+'">×</button>':'')+'</div>';
   }).join("");

@@ -1,4 +1,4 @@
-import {measureOptions,measureGraderRequest,pinMeasure,type PinnedMeasure} from "./measure-graders.cjs";
+import {measureOptions,measureGraderRequest,pinMeasure,rubricEvidenceInstruction,type PinnedMeasure} from "./measure-graders.cjs";
 import {isExternalOutcomeMetric} from "./metric-audit.cjs";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { Contains, ExactMatch, GEval, OpikBaseModel, z } from "opik";
 import {DecisionDispatchError,evaluateDecision,listLocalDecisionModels,type DecisionProtocol,type DecisionConfig} from "./decision-model.cjs";
+import {isInspectionCheck,inspectionSchemaIssue} from "./inspection-decision.cjs";
 import {catalogRules,scoreCatalogRule} from "./grader-catalog.cjs";
 import {hasEvidence,opikLibraryTemplates,opikMetricKey,scoreOpikMetric} from "./opik-library.cjs";
 import { hash,packField } from "./packs.cjs";
@@ -188,7 +189,8 @@ function disclosedEvidence(e:GraderEvidence) {
   return {input,reference,output,inputSource,trajectory,rubric,sme_rationale,evaluationBrief};
 }
 
-function quickCompatible(grader:GraderSpec, judges:LocalCandidate[]) {
+function quickCompatible(grader:GraderSpec, judges:LocalCandidate[], approved:ApprovedPrompt) {
+  if(isInspectionCheck(grader))return !inspectionSchemaIssue(grader,approved.outputSchema,null);
   if (grader.library?.scenario || grader.type==="catalog" || graderRequiredEvidence(grader).includes("trajectory")) return false;
   if (grader.type === "decision") return true;
   if (grader.type === "contains" || grader.type === "exact") return true;
@@ -211,7 +213,7 @@ function outcomeRubric(approved:ApprovedPrompt, judges:LocalCandidate[], type:Ju
   const title = approved.title || approved.domain + " assessment";
   const criteria = [
     "Judge how well the answer fulfills the approved objective using the input shown to the candidate.",
-    "Check every applicable success criterion against the answer. Cite specific supporting or conflicting details in your reason.",
+    rubricEvidenceInstruction,
   ];
   // The complete approved brief is attached to the Quick judge call, including long criteria.
   const requirements = approved.requirements || [];
@@ -366,6 +368,8 @@ export class Graders {
     if(evidenceView && evidenceView!=="case" && rubricEvidence?.length)throw Error("Choose case evidence for a rubric that requires a reference or observed agent steps.");
     const definition={name,category,industry,type,criteria,threshold,judge,...(evidenceView && {evidenceView}),
       ...(rubricEvidence?.length && {requiredEvidence:[...rubricEvidence].sort()}),
+      ...(type==="opik" && (input.scoreScale==="binary" ||
+        (source?.type==="opik" && source.scoreScale==="binary" && criteria===source.criteria)) && {scoreScale:"binary" as const}),
       ...((type==="opik" || type==="decision" || type==="opik-metric") ? {opikEngine:opikVersion} : {}),
       ...(type==="catalog" && source?.type==="catalog" && {ruleKey:source.ruleKey,ruleVersion:source.ruleVersion}),
       ...(metricKey && {metricKey}),
@@ -396,7 +400,7 @@ export class Graders {
   quickOptions(approved:ApprovedPrompt, models:ModelCandidate[]):QuickGraderChoices {
     if (approved?.mode !== "quick") throw Error("Choose an approved Quick compare prompt.");
     const judges = localJudges(models);
-    const eligible=(g:GraderSpec)=>inIndustry(g,approved.domain) && quickCompatible(g, judges);
+    const eligible=(g:GraderSpec)=>inIndustry(g,approved.domain) && quickCompatible(g, judges,approved);
     const available = this.list().filter(eligible).sort((a,b)=>familyIdOf(a).localeCompare(familyIdOf(b)) || b.version-a.version);
     const briefTerms = terms([approved.objective, approved.title, ...(approved.requirements || []), ...(approved.metrics || [])]);
     const scored = [];
@@ -431,13 +435,15 @@ export class Graders {
       let grader:GraderSpec;
       if(choice.kind==="saved"){
         grader=this.get(choice.graderId);
-        if(!inIndustry(grader,approved.domain) || !quickCompatible(grader,judges))
+        if(!inIndustry(grader,approved.domain) || !quickCompatible(grader,judges,approved))
           throw Error("Choose an applicable saved grader for this measure. This grader needs different evidence, a different industry, or an unavailable judge.");
       }else{
         const judge=judges.find(model=>model.id===choice.judgeId);
         if(!judge)throw Error("Choose an available local judge for this measure.");
         const origin:RubricOrigin={kind:"approved-outcome",promptId:approved.id,promptFamilyId:approved.familyId,promptVersion:approved.version,measure:option.metric};
-        const id=this.save({...option.generated,judgeId:judge.id,threshold:choice.threshold,criteria:choice.criteria ?? option.generated.criteria,
+        const criteria=choice.criteria ?? option.generated.criteria;
+        const id=this.save({...option.generated,judgeId:judge.id,threshold:choice.threshold,criteria,
+          ...(criteria===option.generated.criteria && {scoreScale:"binary"}),
           ...(choice.evidence!==undefined && {requiredEvidence:choice.evidence==="reference" ? ["reference"] : []})},[pinnedJudge(judge)],origin);
         grader=this.get(id);
       }
@@ -448,7 +454,11 @@ export class Graders {
   }
   resolveQuick(approved:ApprovedPrompt, selected:GraderSpec[], requested:unknown, models:ModelCandidate[]):GraderSpec[] {
     const judges = localJudges(models);
-    if (selected.some(g => !inIndustry(g,approved.domain) || !quickCompatible(g, judges)))
+    for(const g of selected.filter(isInspectionCheck)){
+      const issue=inspectionSchemaIssue(g,approved.outputSchema,null);
+      if(issue)throw Error(issue);
+    }
+    if (selected.some(g => !inIndustry(g,approved.domain) || !quickCompatible(g, judges,approved)))
       throw Error("A selected grader needs a labeled dataset, an agent trace, or an unavailable judge. Refresh the Quick compare grader choices.");
     if (requested == null) return selected;
     if (!isRecord(requested) || (requested.type!=null && requested.type!=="opik" && requested.type!=="judge"))
@@ -526,6 +536,8 @@ export class Graders {
             taskIntroduction:answerOnly?"Grade only what the candidate wrote in the JSON output field. The rubric describes what to look for. It is never candidate evidence. Cite the candidate's own words for each required element. If an element is absent, apply the omission rule. Return the rubric's integer score from 0 to 10 with a concise reason.":"Grade the candidate output against the approved rubric. Use the supplied input and output as evidence. A trajectory field contains observed agent actions when supplied. Do not infer tool use from the answer. Score on the integer scale from 0 to 10. Give 10 for full credit, 5 for half credit, and 0 for no credit. For a binary requirement, give 10 if met or 0 if missed. Convert any rubric-specific scale to this scale. Give a one-sentence reason citing the decisive evidence.",
             evaluationCriteria:g.criteria,model:new DashJudgeModel(g.judge,adapters,signal)});
           ({value,reason}=await metric.score({output:JSON.stringify(evidence)}));
+          if (g.scoreScale==="binary" && value!==0 && value!==1)
+            throw new GradingIssue("The judge returned partial credit for a pass/fail rubric. This answer is unscored. Review the judge or verify the answer with a different grader.");
           base.evaluator=opikVersion;
         }
       } else if(g.type==="judge") {
