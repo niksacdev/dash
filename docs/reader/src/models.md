@@ -46,6 +46,8 @@ Local calls show **No API charge**. For a supported OpenAI standard-tier snapsho
 
 ## Check the planning domain
 
+Under **Try an outcome**, select an industry example to fill **Task objective**. Selecting it again keeps one copy. Selecting another replaces the previous example. If you have written or edited the objective, choose **Stay here** to keep your text or **Replace objective** to use the example. Quick compare includes the sample case, while a Dataset run variant uses the task with the selected dataset.
+
 **Suggest Metrics** and prompt review show which domain supplied the expert and why. An unedited **Inspect a supplier lot** example uses Manufacturing. **Review earnings disclosures** uses Financial Services. For a task you write or combine with an example, the router looks at what a reviewer must verify. A manufacturer's earnings release can be a Financial Services task.
 
 If the label is wrong, choose **Change planning domain**, select the intended domain, and choose **Suggest Metrics** again. From prompt review, use **Edit outcome or domain**. To correct an approved prompt, open it in the catalogue and choose **Revise**. A new version and its runs carry the corrected domain. Earlier versions and results keep the domain recorded when they ran. A change of domain starts fresh suggestions and response fields. If you edited the measures, DASH keeps newly authored pairs and removes untouched pairs from the previous domain. The source run stays linked for comparison.

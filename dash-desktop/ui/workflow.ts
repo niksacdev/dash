@@ -645,12 +645,22 @@ document.addEventListener("click", async e=>{
   }
   const example=e.target.closest<HTMLButtonElement>("[data-wf-example]");
   if (example) {
+    const mode=workflowMode();
     const field=dashElement("#wf-objective",HTMLTextAreaElement);
     const sample=state.packs.find(pack=>pack.id===example.dataset.wfExample)?.starter;
-    if (!field || !sample) return;
-    const exampleText = workflowMode() === "quick" ? sample.quickObjective : sample.task;
-    field.value=field.value.trim()?field.value.trimEnd()+"\n"+exampleText:exampleText;
-    field.dispatchEvent(new Event("input",{bubbles:true})); field.focus();
+    if (!mode || !field || !sample || workflows[mode].busy) return;
+    const key=mode==="quick" ? "quickObjective" : "task";
+    const replacement=sample[key], current=field.value;
+    if (current===replacement) {field.focus();return;}
+    const isStarter=state.packs.some(pack=>pack.starter?.[key]===current);
+    if (current.trim() && !isStarter) {
+      const stillHere=currentVisit();
+      if (!await confirmNavigationLoss("your current task objective","Replace objective") || !stillHere() ||
+          !field.isConnected || field.value!==current || workflows[mode].busy) return;
+    }
+    field.value=replacement;
+    field.dispatchEvent(new Event("input",{bubbles:true}));
+    field.focus();
     return;
   }
   const button=e.target.closest<HTMLButtonElement>("[data-wf-use],[data-wf-revise],[data-wf-edit],[data-wf-reset],#wf-fixture");
