@@ -53,6 +53,65 @@ async function captureScreenshot(client:Electron.Debugger, name:string) {
   writeFileSync(path.join(temporary,name),Buffer.from(data,"base64"));
 }
 
+/** Exercise the same cards as a saved report using controlled, independently scored cases. */
+async function checkMeasuredTracks(window:BrowserWindow, js:RendererEval) {
+  const client=window.webContents.debugger;
+  const theme=z.enum(["light","dark"]).parse(await js("document.documentElement.dataset.appearance"));
+  client.attach();
+  try {
+    await js(`(() => {
+      const candidates=[{id:"a",label:"Candidate A"},{id:"b",label:"Candidate B"}];
+      const metric=(id,label,scores,informational=false)=>({id,label,method:"deterministic",threshold:1,
+        pairedCases:scores[0]===null?0:2,totalCases:2,informational,
+        values:scores.map((score,i)=>({candidateId:candidates[i].id,score,passes:score===null?0:score*2,scoredCases:score===null?0:2,availableCases:score===null?0:2}))});
+      const metrics=[metric("basis","Correct earnings basis",[0,.5]),metric("citation","Source citation",[null,null]),
+        metric("response","Response present",[1,1],true)];
+      const host=document.createElement("section");
+      host.id="measured-tracks-test";host.className="panel history-report";
+      host.innerHTML=reportMetricGroups(metrics.map((metric,index)=>({metric,index})),{candidates,metrics},"example",true)+
+        chartPanel("Response latency","Time per response.",[{label:"Candidate A",value:.125,display:"0.125 s median",note:"2 measured"},
+          {label:"Candidate B",value:.25,display:"0.25 s median",note:"2 measured"}],"s");
+      document.querySelector("#screen").prepend(host);
+      host.scrollIntoView();
+    })()`);
+    const baseline=await js(`(() => {
+      const table=new DOMParser().parseFromString(baselineComparison(
+        [{current:{pass:true},baseline:{pass:false}},{current:{pass:false},baseline:{pass:false}}],
+        "Alpha","Beta"),"text/html");
+      return [...table.querySelectorAll("tbody tr")].map(row=>[row.cells[0].textContent,
+        [...row.querySelectorAll("[role=meter]")].map(m=>m.getAttribute("aria-valuetext")),row.cells[3].textContent]);
+    })()`);
+    assert.deepEqual(baseline,[["Passed cases",["1 / 2","0 / 2"],"+1"],["False accepts",[],"No paired measurements"]]);
+    for (const mode of ["light","dark"] as const) {
+      await js(`document.querySelector('#appearance input[value="${mode}"]').closest('label').click()`);
+      const facts=await js(`(() => {
+        const root=document.getElementById("measured-tracks-test");
+        const meters=[...root.querySelectorAll("[role=meter]")];
+        const positions=meters.map(m=>m.querySelector(".race-field svg").getAttribute("x"));
+        return {positions,labels:meters.map(m=>m.getAttribute("aria-valuetext")),
+          unavailable:root.querySelectorAll(".er-score-line strong").length-meters.filter(m=>m.closest(".er-score-line")).length,
+          equal:root.querySelector(".er-equal").textContent,
+          animation:meters.every(m=>getComputedStyle(m.querySelector(".race-driver")).animationName==="none"),
+          latencyScale:root.querySelector(".chart-scale").textContent,
+          visible:meters.every(m=>m.querySelector(".race-driver").getBoundingClientRect().width>10)};
+      })()`);
+      const reading=z.object({positions:z.array(z.string()),labels:z.array(z.string()),unavailable:z.number(),
+        equal:z.string(),animation:z.boolean(),latencyScale:z.string(),visible:z.boolean()}).parse(facts);
+      assert.deepEqual(reading.positions,["0%","50%","100%","100%","50%","100%"]);
+      assert.deepEqual(reading.labels,["0%","50%","100%","100%","0.125 s median","0.25 s median"]);
+      assert.equal(reading.unavailable,2);
+      assert.equal(await js("Array.from(document.querySelectorAll('#measured-tracks-test .er-score-line')).filter(row=>row.querySelector('strong').textContent==='Unscored').every(row=>row.textContent.includes('No case grades recorded') && !row.textContent.includes('passed'))"),true);
+      assert.equal(reading.equal,"Equal scores on this measure");
+      assert.ok(reading.animation && reading.visible);
+      assert.equal(reading.latencyScale,"Scale · 0–0.25 s");
+      await captureScreenshot(client,"measured-tracks-"+mode+".png");
+    }
+  } finally {
+    await js(`document.getElementById("measured-tracks-test")?.remove();document.querySelector('#appearance input[value="${theme}"]').closest('label').click()`);
+    client.detach();
+  }
+}
+
 async function checkLocalRuntime(window:BrowserWindow, js:RendererEval, wait:(source:string)=>Promise<void>) {
   const client=window.webContents.debugger;
   client.attach();
@@ -336,7 +395,7 @@ app
     await wait("document.body.innerText.includes('Expected response') && document.body.innerText.includes('0.74')");
     await js("document.querySelector('[data-act=rerun]').click()");
     await wait(
-      "document.querySelector('#screen').innerText.includes('1 case per candidate')",
+      "document.querySelector('.candidate-race-lane')?.textContent.includes('1 / 1 case recorded')",
     );
     await js("location.hash='history'");
     await wait("document.querySelectorAll('.listrow').length===2");
@@ -348,6 +407,7 @@ app
       await js("document.querySelectorAll('#developer-run option').length"),
       2,
     );
+    await checkMeasuredTracks(window,js);
     await checkReadRecovery(js,wait);
     await checkLocalRuntime(window,js,wait);
     await checkOverview(window, js, wait);

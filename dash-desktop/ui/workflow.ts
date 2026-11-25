@@ -316,13 +316,11 @@ function workflowReady(w:UiWorkflow) {
       '<small>'+esc(capLabel(p))+'</small>'+planningDetails(p)+promptActions(p,{reviseLabel:"Revise outcome"})+
       '<button class="wf-new" type="button" data-wf-reset>New outcome</button></div></details></section>'+setupQuick();
   }
-  const ds = state.datasets.find(d => d.id === p.datasetId);
   return '<section class="wf-panel wf-approved"><div class="wf-section-head"><div><small class="wf-eyebrow">Approved prompt · v' +
     esc(p.version) + '</small><h2>' + esc(p.title || p.objective) + '</h2></div>' + tag(p.domain) + '</div>' +
     '<details class="wf-options"><summary>Inspect approved prompt and success metrics</summary><div class="wf-options-body">' + reviewedPromptContent(p) + metricList(p.metrics) + '<small>' + esc(capLabel(p)) + '</small></div></details>' + planningDetails(p) + scenarioContract(p) +
     promptActions(p, {reviseLabel:"Revise outcome"}) + '<button class="wf-new" type="button" data-wf-reset>New outcome</button></section>' +
-    ('<form id="setup" class="wf-panel"><h2>Select models for ' + esc(ds?.metadata?.family || ds?.name || "the dataset") +
-      '</h2>' + graderPicker() + modelPicker("dataset", ds?.count || 0) + '</form>' + endpointForm() + hostingLegend());
+    '<form id="setup" class="qc-workbench">'+runSetupControls("dataset")+'</form>'+endpointForm()+hostingLegend();
 }
 function promptCatalogPage() {
   const prompts = state.prompts || [];
@@ -410,7 +408,7 @@ function workflowCaseSummary(m:UiManifest, r:UiResult) {
   const input=r.inputBudget;
   return '<div class="wf-panel wf-run-plan"><h3>Inference settings</h3><dl class="catalog-facts"><dt>Model adapter</dt><dd>'+
     esc([spec?.adapter,spec?.template].filter(Boolean).join(" · ") || "Unrecorded")+'</dd><dt>Input tokens</dt><dd>'+
-    esc(actual.input_tokens ?? "Unreported")+'</dd>'+
+    esc(actual.input_tokens ?? "Unreported")+'</dd><dt title="'+cacheUsageHint+'">Cached input tokens</dt><dd>'+esc(cachedInputLabel(actual.cached_input_tokens))+'</dd>'+
     (input?'<dt>Checked input</dt><dd>'+esc(input.tokens+(input.cap!=null?" of "+input.cap:"")+" · "+input.source)+'</dd>':'')+'<dt>Output tokens</dt><dd>'+
     esc(actual.output_tokens ?? "Unreported")+(m.tokenBudget?.outputCap ? ' · limit '+esc(m.tokenBudget.outputCap) : '')+
     '</dd><dt>Device energy (est.)</dt><dd>'+deviceEnergyReading(actual.device_power,m.candidates.find(c=>c.id===r.candidateId)?.provider)+'</dd></dl></div>';

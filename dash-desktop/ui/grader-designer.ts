@@ -53,7 +53,7 @@ function editableJudgeCheck(el:Element):UiEditableGrader|undefined {
   const row=el.closest<HTMLElement>("[data-gd-check]"),panel=el.closest<HTMLElement>("[data-gd-scope]");
   return row && panel?.dataset.gdScope?gradeDesignerDraft(panel.dataset.gdScope,panel.hasAttribute("data-gd-workspace")).checks[Number(row.dataset.gdCheck)]:undefined;
 }
-function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],scope:string) {
+function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],scope:string,comparison:boolean) {
   const source=g.source, reuse=g.action==="reuse", binary=!reuse && g.type==="decision", judge=!binary && (g.action==="derive" || ["opik","judge"].includes(g.type));
   const editableIndustry=!g.source && scope==="custom" && !gradeDesignerDraft(scope,true).planner?.approved;
   const field=(key:string,label:string,body:string)=>formField(label,body.replace("GD_FIELD",'data-gd-field="'+key+'"'));
@@ -61,8 +61,11 @@ function designCheckFields(g:UiEditableGrader,i:number,methods:UiDesignMethod[],
   const basis=source ? '<p><strong>'+esc(source.scope+' grader · '+source.name+' v'+source.version)+'</strong></p><p class="gd-source-rule">'+esc(source.criteria)+'</p><small>'+esc(source.threshold==null?'':'Saved pass threshold · '+source.threshold+' / 1')+'</small>'+
     (source.model && !source.hosted?'<p>Saved scoring model · '+esc(source.model)+'</p>':'')+
     (source.hosted ? '<p>Uses OpenRouter · '+esc(source.model)+'. Running this grader requires confirmation before case evidence is sent.</p>' : '') : '';
-  return '<article class="gd-check" data-gd-check="'+i+'"><label class="gd-inclusion"><input type="checkbox" data-gd-field="included" '+(g.included?"checked":"")+'><span>'+
-    esc((reuse?source?.name:g.name) || "Proposed grader")+'</span></label><fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
+  const name=(reuse?source?.name:g.name) || "Proposed grader";
+  const heading=comparison ? '<div class="gd-inclusion gd-run-choice"><span>'+esc(name)+'</span>'+
+    graderSelectionButton("data-gd-action","toggle",g.included?"Remove":"Restore",name+" in this proposal")+'</div>' :
+    '<label class="gd-inclusion"><input type="checkbox" data-gd-field="included" '+(g.included?"checked":"")+'><span>'+esc(name)+'</span></label>';
+  return '<article class="gd-check" data-gd-check="'+i+'">'+heading+'<fieldset class="gd-check-body" '+(g.included?'':'disabled')+'>'+
     basis+(source ? field("action","After approval",'<select GD_FIELD>'+opt("reuse","Use this exact version",g.action)+opt("derive","Create a customer rubric from this version",g.action)+'</select>') : '<p>New customer grader</p>')+
     (reuse ? '' : rubric+'<div class="cols">'+field("name","Grader name",'<input GD_FIELD maxlength="100" value="'+esc(g.name)+'">')+
     field("category","Category",'<input GD_FIELD maxlength="100" value="'+esc(g.category)+'">')+'</div><div class="cols">'+
@@ -133,11 +136,11 @@ function gradeDesignerView(scope:string,workspace=false,open=workspace) {
       (d.checks.length ? (d.checks.length===1 ? "Review the proposed grader" : "Review "+d.checks.length+" proposed graders") : emptyHeading)+'</h3>'+
       (d.checks.length?'':fullyCovered?'<p>These graders run automatically. You can continue without saving a new grader.</p>':'<p>Review the evidence needed below. Edit the objective to describe an observable part of the answer, or choose a labeled dataset for a reference-based check.</p>')+
       graderPlanExplanation(d)+
-      d.checks.map((g,i)=>designCheckFields(g,i,d.editableMethods,scope)).join("")+
+      d.checks.map((g,i)=>designCheckFields(g,i,d.editableMethods,scope,!workspace && scope.startsWith("prompt:"))).join("")+
       '<div class="gd-actions">'+(d.checks.length?'<button type="button" class="yellow" data-gd-action="confirm" '+(count?'':'disabled')+'>'+
       (d.busy==="confirm"?'Saving versions…':(workspace || scope==="custom"?'Save ':'Save and select ')+count+' '+(count===1?'grader':'graders'))+'</button>':'')+
       '<button type="button" data-gd-action="discard">'+(fullyCovered?"Done":"Discard plan")+'</button></div>'+graderPlanDiagnostics(d.automatic)+'</section>':'')+
-    (!workspace && d.saved.length?'<div class="gd-saved" role="status"><strong>'+(workspace || scope==="custom"?'Saved in the grader library':'Confirmed for this '+(scope.startsWith("prompt:")?'prompt version':'dataset snapshot'))+
+    (!workspace && d.saved.length?'<div class="gd-saved" role="status"><strong>'+(scope.startsWith("prompt:") || scope==="custom"?'Saved in the grader library':'Confirmed for this dataset snapshot')+
       '</strong><ul>'+d.saved.map(g=>'<li>'+esc(g.label)+'</li>').join("")+'</ul></div>':'')+'</fieldset></div>'+(workspace?'</section>':'</details>');
 }
 function repaintGradeDesigner(scope:string,workspace:boolean) {
@@ -148,7 +151,7 @@ function repaintGradeDesigner(scope:string,workspace:boolean) {
 }
 function syncGraderDesignLaunch() {
   if(document.getElementById("quick-models"))updateQuickGradingControls();
-  const ds=dashElement("#dataset-models .go-button",HTMLButtonElement);
+  const ds=dashElement("[data-picker-submit=dataset]",HTMLButtonElement);
   if (ds) ds.disabled=!canStartDataset();
 }
 function activeDatasetGraderScope() {
@@ -391,6 +394,12 @@ document.addEventListener("click", async e=>{
   e.preventDefault();
   const workspace=panel.hasAttribute("data-gd-workspace"),scope=panel.dataset.gdScope,d=gradeDesignerDraft(scope,workspace),action=button?.dataset.gdAction;
   if (!action || !button || d.busy) return;
+  if(action==="toggle") {
+    const row=button.closest<HTMLElement>("[data-gd-check]"),index=Number(row?.dataset.gdCheck),check=d.checks[index];
+    if (!row || !check) return;
+    check.included=!check.included;repaintGradeDesigner(scope,workspace);
+    document.querySelector<HTMLElement>('[data-gd-scope="'+CSS.escape(scope)+'"] [data-gd-check="'+index+'"] [data-gd-action=toggle]')?.focus({preventScroll:true});return;
+  }
   if(action==="edit" && d.planner && !d.planner.busy){
     d.planner.parentId=d.planner.approved?.id ?? d.planner.parentId;d.planner.approved=null;d.planner.draft=null;d.planner.error="";d.hasPlan=false;d.checks=[];d.summary="";d.error="";
     repaintGradeDesigner(scope,workspace);return;

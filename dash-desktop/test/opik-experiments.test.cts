@@ -39,7 +39,7 @@ function savedRun() {
     approvedPromptId:null,datasetId:"snapshot-v2",datasetVersion:"2",datasetScorer:"exact-reference",industry:"Manufacturing",datasetMetadata:metadata,
     caseIds:["lot"],caseSetHash:"hash",candidates,graders:[],fixture:false,policyHash:"policy",tokenBudget:{inputCap:256,outputCap:80}} satisfies RunManifest;
   const results=candidates.map((c,i): RunResult=>({caseId:"lot",candidateId:c.id,output:i?"release":"hold",error:null,
-    telemetry:{input_tokens:30,output_tokens:4,latency_ms:100,device_power:{average_w:5,source:"Synthetic",scope:"Whole device",samples:1}},
+    telemetry:{input_tokens:30,cached_input_tokens:18,output_tokens:4,latency_ms:100,device_power:{average_w:5,source:"Synthetic",scope:"Whole device",samples:1}},
     guardrail,score:{pass:i===0,reasons:i?["Incorrect disposition"]:[]},
     trace:{id:randomUUID(),runId:manifest.id,candidateId:c.id,caseId:"lot",started,finished:"2026-01-01T00:00:00.100Z",
       steps:[{at:started,action:"Invoke local"}]}}));
@@ -459,7 +459,7 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
     assert.doesNotMatch(JSON.stringify(trace.input),/Synthetic reference/);
   }
   assert.deepEqual([...scores.values()].map(s=>s.value).sort(),[0,1]);
-  for(const span of spans.values()){assert.equal(span.usage?.total_tokens,34);assert.equal(span.type,"llm");}
+  for(const span of spans.values()){assert.equal(span.usage?.total_tokens,34);assert.equal(span.usage?.cache_read_input_tokens,18);assert.equal(span.type,"llm");}
   assert.ok([...traces.values()].every(t=>t.metadata.input_provenance.includes("Reconstructed")));
   const before=requests.length;
   assert.deepEqual(await svc.sync(saved.manifest.id),receipt);

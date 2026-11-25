@@ -2,7 +2,7 @@ import {lmClient} from "./lmstudio-client.cjs";
 import { createHash } from "node:crypto";
 import type { LLM, LLMNamespace, LLMRespondOpts } from "@lmstudio/sdk";
 import {reportsTemplateFailure, templateAdvice} from "./provider-errors.cjs";
-import { ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, isRecord, type Candidate, type ChatTurn, type InferenceResult, type InvokeOptions,
+import { ConfirmedInputMismatch, ProviderFailure, ProviderPreflightError, isRecord, cachedInputTokenCount, reportedTokenCount, type Candidate, type ChatTurn, type InferenceResult, type InvokeOptions,
   type OutputSchema, type TokenCheck, type TokenReceipt } from "./runtime-types.cjs";
 
 type ModelHandle = Pick<LLM, "identifier" | "applyPromptTemplate" | "countTokens" | "getContextLength" | "respond">;
@@ -155,18 +155,24 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     let output = "", firstTokenMs: number | null = null;
     let approximateOutputTokens:number|null = null;
     let fragmentTokens = 0, completeFragmentCounts = true;
+    let cacheInputTotal: number | null = null, cacheReads: number | null = null;
     const options: LLMRespondOpts = {
       signal: limit, temperature: 0, maxTokens, contextOverflowPolicy: "stopAtLimit",
       onPromptProcessingProgress(value, details) {
         progress?.();
-        const promptTokens=details?.totalPromptTokenCount;
-        if (onCandidateUsage && typeof promptTokens==="number" && Number.isSafeInteger(promptTokens) && promptTokens>0)
-          onCandidateUsage({inputTokens:promptTokens});
+        // An older server supplies only a percentage; SDK 2.1 then synthesizes all-zero details.
+        const total = reportedTokenCount(details?.totalPromptTokenCount);
+        const sample: Pick<CandidateUsage, "inputTokens" | "cachedInputTokens"> = {};
+        if (total !== null && total > 0) {
+          const previous = cacheReads;
+          cacheInputTotal = total;
+          cacheReads = cachedInputTokenCount(total, details.cachedTokenCount);
+          sample.inputTokens = total;
+          if (cacheReads !== null || previous !== null) sample.cachedInputTokens = cacheReads;
+          onCandidateUsage?.(sample);
+        }
         if (onPlanningProgress && Number.isFinite(value) && value >= 0 && value <= 1) {
-          // SDK 2.1 supplies all-zero details on older servers that send only a percentage.
-          const total=details?.totalPromptTokenCount;
-          onPlanningProgress({phase:"processing-prompt",percent:Math.round(value*100),
-            ...(Number.isSafeInteger(total) && total>0 && {inputTokens:total})});
+          onPlanningProgress({phase:"processing-prompt", percent:Math.round(value*100), ...sample});
         }
       },
       onPredictionFragment(fragment) {
@@ -210,6 +216,12 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     const stats = result.stats;
     if (["failed", "modelUnloaded", "userStopped"].includes(stats.stopReason))
       throw new ProviderFailure(`LM Studio stopped the prediction (${stats.stopReason}).`);
+    const inputTokens = reportedTokenCount(stats.promptTokensCount);
+    // Final SDK stats have no cache field. Carry the processing observation only for the same total.
+    const confirmedReads = inputTokens === cacheInputTotal ? cacheReads : null;
+    if (cacheReads !== null && confirmedReads === null) {
+      onCandidateUsage?.({cachedInputTokens:null, ...(inputTokens !== null && {inputTokens})});
+    }
     const response: InferenceResult = {
       output: result.nonReasoningContent,
       reportedFinishReason: stats.stopReason,
@@ -218,7 +230,8 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
         latency_ms: Math.round(performance.now() - start),
         first_token_ms: firstTokenMs,
         provider_first_token_ms: stats.timeToFirstTokenSec !== undefined && Number.isFinite(stats.timeToFirstTokenSec) ? stats.timeToFirstTokenSec * 1000 : null,
-        input_tokens: stats.promptTokensCount ?? null,
+        input_tokens: inputTokens,
+        cached_input_tokens: confirmedReads,
         output_tokens: stats.predictedTokensCount ?? null,
         tokens_per_second: stats.tokensPerSecond ?? null,
         runtime_stop_reason: stats.stopReason,

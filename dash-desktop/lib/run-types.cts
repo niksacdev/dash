@@ -45,6 +45,7 @@ export type RunPartial = {candidateId:string;caseId:string;text:string;checkedIn
 export interface RunManifest {
   format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string; hostedDecisionApproved?:boolean;
   candidates:Candidate[]; caseIds:string[]; pack:ScenarioPack|null; graders:GraderSpec[];
+  inspectionOnly?:true;
   measureGraders?:PinnedMeasure[];
   /** Automatic local decisions see only the candidate-visible task and answer. */
   taskAnswerDecisionGraderIds?:string[];
@@ -61,11 +62,11 @@ export interface RunManifest {
 }
 export type CurrentManifest = RunManifest & {tokenBudget:{inputCap:number|null;outputCap:number|null}};
 export interface RunData {status:RunStatus;manifest:RunManifest;results:RunResult[];assessments:RecordedAssessment[];partial:RunPartial|null}
-export interface RunDetail extends RunData {hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;report:RunReport|null;liveRevision:number|null}
+export interface RunDetail extends RunData {decisionReviewTargets?:Record<string,import("./saved-score-review.cjs").DecisionReviewTarget>;savedReviews?:import('./saved-score-review.cjs').SavedReview[];reviewedVerdict?:import('./saved-score-review.cjs').ReviewSummary;quickFieldGraderIds?:string[];hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;report:RunReport|null;liveRevision:number|null}
 export interface StartRun {
   mode:RunMode; candidateIds:string[]; datasetId?:string; caseId?:string; parentId?:string;
   approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[]; allowHostedDecision?:boolean;
-  expectedAnswer?:string; inputCap?:number|null; outputCap?:number|null; measureGraders?:MeasureGraderRequest; outcomeRubric?:unknown; animation?:boolean;
+  inspectionOnly?:true; expectedAnswer?:string; inputCap?:number|null; outputCap?:number|null; measureGraders?:MeasureGraderRequest; outcomeRubric?:unknown; animation?:boolean;
 }
 export function isRecord(value:unknown):value is Record<string,unknown> {return !!value && typeof value==="object" && !Array.isArray(value);}
 export function jsonField(value:unknown,path:string):unknown {

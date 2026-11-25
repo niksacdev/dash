@@ -17,11 +17,12 @@ const epsMetric="GAAP EPS source agreement";
 const periodMetric="Reporting period citation";
 const epsCriterion="The answer gives the GAAP EPS stated in the supplied release.";
 const periodCriterion="The answer explicitly names a reporting period.";
-async function setup(t:TestContext,paired=false) {
+async function setup(t:TestContext,paired=false,candidateAnswer?:(model:string)=>string) {
   const models = ["lfm3-1.7b","lane-b","local-judge"].map((model):LocalCandidate => ({
     id:"lmstudio/" + model, provider:"lmstudio", kind:"model", model, revision:"weights-v1", loaded:true,
   }));
   const judgeCalls:Record<string,unknown>[] = [];
+  const candidateCalls:string[]=[];
   const adapters:RuntimeAdapters = {
     discover:async () => [inventory(models)],
     async invoke(model, messages, options) {
@@ -50,6 +51,8 @@ async function setup(t:TestContext,paired=false) {
         const passed=paired && brief.metrics.includes(periodMetric) ? String(evidence.output).includes("June") : String(evidence.output).includes("GAAP EPS 1.24");
         return reply(JSON.stringify({score:passed ? maxScore : 0, reason:"Checked the requested item in the answer."}));
       }
+      candidateCalls.push(model.id);
+      if(candidateAnswer)return reply(candidateAnswer(model.model));
       return reply(model.model === "lfm3-1.7b" ? "GAAP EPS 1.24" : paired ? "Adjusted EPS 1.80 for June." : "Adjusted EPS 1.80");
     },
   };
@@ -58,11 +61,11 @@ async function setup(t:TestContext,paired=false) {
   await bench.refresh();
   const draft = await bench.designPrompt({mode:"quick",domain:"Financial Services",objective:paired ? "Extract GAAP EPS and cite the reporting period. The release states June GAAP EPS 1.24 and adjusted EPS 1.80." : "Extract GAAP EPS from the earnings release."});
   const approved = bench.workflow.approve({draftId:draft.draftId,prompt:draft.prompt});
-  const start = (extra:Pick<StartRun,"graderIds"|"outcomeRubric"|"measureGraders"|"expectedAnswer">) => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
+  const start = (extra:Pick<StartRun,"graderIds"|"outcomeRubric"|"measureGraders"|"expectedAnswer"|"inspectionOnly">) => bench.start({mode:"quick",approvedPromptId:approved.id,candidateIds:models.slice(0,2).map(m=>m.id),...extra});
   function save(name:string, change:Partial<GraderDefinition> = {}) {
     return bench.graders.save({name,type:"contains",category:"Extraction",threshold:1,criteria:"GAAP",industry:"Financial Services",...change},models);
   }
-  return {bench, approved, models, judgeCalls, start, save};
+  return {bench, approved, models, judgeCalls, candidateCalls, start, save};
 }
 
 test("Quick compare suggests outcome-related reusable graders and excludes checks without case evidence", async t => {
@@ -228,12 +231,12 @@ test("Quick collects private expected facts before dispatch, scores both lanes a
   assert.equal(bench.quickExpectedAnswer(otherId),"Expert verified May.");
   assert.equal(judgeCalls.filter(c=>c.reference==="Expert verified May.").length,2);
   assert.equal(judgeCalls.filter(c=>c.reference==null).length,2);
-  const skippedId=start({measureGraders:[{metric:epsMetric,kind:"saved",graderId:saved},{metric:periodMetric,kind:"skip"}]});
+  const skippedId=start({inspectionOnly:true,measureGraders:[{metric:epsMetric,kind:"saved",graderId:saved},{metric:periodMetric,kind:"skip"}]});
   await present(bench.active).done;
   const skipped=bench.detail(skippedId);
-  assert.equal(skipped.report?.verdict,"incomplete");
+  assert.equal(skipped.report?.verdict,"ungraded");
   assert.equal(skipped.report?.winnerId,null);
-  assert.match(skipped.report?.summary??"",/measure was left unscored/);
+  assert.match(skipped.report?.summary??"",/Answer inspection was selected/);
   assert.equal(skipped.manifest.measureGraders?.[1].graderId,null);
   const external={...approved,metrics:["Actual analyst hours saved"],metricCriteria:[{metric:"Actual analyst hours saved",criterion:"Verify actual analyst hours saved."}]};
   const kpi=bench.graders.quickOptions(external,models).measures[0];
@@ -294,7 +297,7 @@ test("a cross-industry local decision default scores both Quick candidates once 
     graded.push(z.record(z.string(),z.unknown()).parse(JSON.parse(state)));
     return Response.json({model,answers:{criterion:{type:"noul",noul:output.includes("GAAP")?0.9:0.1}}});
   });
-  const quick=start({});
+  const quick=start({inspectionOnly:true});
   await present(bench.active).done;
   const checked=bench.detail(quick);
   assert.deepEqual(graded.map(state=>state.output),["GAAP EPS 1.24","Adjusted EPS 1.80"]);
@@ -318,9 +321,12 @@ test("a cross-industry local decision default scores both Quick candidates once 
   const original=newRun();
   await present(bench.active).done;
   const run=bench.detail(original);
-  assert.equal(run.results.filter(result=>result.output).length,2);
-  assert.deepEqual(run.assessments.filter(a=>a.graderId===first).map(a=>[a.candidate,a.value,a.pass,a.decisionRequest?.requestedModel]),
-    [[models[0].id,null,null,model],[models[1].id,null,null,model]]);
+  assert.equal(run.status,"failed");
+  assert.equal(run.results.length,0);
+  assert.equal(run.assessments.length,0);
+  assert.match(run.manifest.error ?? "",/local decision model.*No candidate requests were sent/);
+  assert.equal(graded.length,4,"the offline native judge prevented candidate and grading calls");
+  offline=false;
   bench.setGeneralGraderDefault(second,true);
   bench.setGeneralGraderDefault(first,false);
   assert.deepEqual(bench.list().generalGraderDefaults,[second]);
@@ -333,5 +339,174 @@ test("a cross-industry local decision default scores both Quick candidates once 
   assert.ok(bench.detail(fresh).manifest.graders.some(g=>g.id===second));
   assert.notEqual(bench.detail(fresh).manifest.policyHash,run.manifest.policyHash);
   assert.deepEqual(bench.detail(rerun).manifest.taskAnswerDecisionGraderIds,[first]);
-  assert.equal(graded.length,4);
+  assert.equal(graded.length,8);
+});
+
+test("a scored comparison stops unmapped or missing measures before either model receives the task",async t=>{
+  const {bench,start,save,candidateCalls,judgeCalls}=await setup(t,true);
+  const id=save("EPS rule");
+  assert.throws(()=>start({}),/Assign a quality grader/);
+  assert.throws(()=>start({graderIds:[id]}),/Assign a quality grader/);
+  assert.throws(()=>start({measureGraders:[{metric:epsMetric,kind:"saved",graderId:id},{metric:periodMetric,kind:"skip"}]}),/Reporting period citation/);
+  assert.equal(candidateCalls.length,0);assert.equal(judgeCalls.length,0);assert.equal(bench.list().runs.length,0);
+});
+
+test("a legacy missing-reference pair accepts verified facts once and grades the saved answers without repeating inference",async t=>{
+  const {bench,models,start,save,candidateCalls,judgeCalls}=await setup(t,true);
+  const rule=save("EPS rule");
+  const id=start({measureGraders:[{metric:epsMetric,kind:"saved",graderId:rule},{metric:periodMetric,kind:"rubric",judgeId:models[2].id,evidence:"reference",threshold:1}],expectedAnswer:"Approved at dispatch."});
+  await present(bench.active).done;
+  const grader=present(bench.detail(id).manifest.measureGraders?.[1].graderId);
+  // Reproduce the pre-0037 record: both outputs persisted, both reference-based grades absent.
+  bench.db.prepare("DELETE FROM quick_expected_answers WHERE run=?").run(id);
+  bench.db.prepare("UPDATE assessments SET record=json_set(record,'$.value',NULL,'$.pass',NULL,'$.reason','This rubric requires a case reference. The case is unscored.') WHERE run=? AND json_extract(record,'$.graderId')=?").run(id,grader);
+  bench.db.prepare("DELETE FROM run_reports WHERE run=?").run(id);
+  const before=bench.detail(id),request={run:id,caseId:"prompt",grader};
+  assert.equal(before.report?.verdict,"incomplete");
+  await assert.rejects(bench.reviewSavedCase(request),/expected answer/i);
+  assert.equal(judgeCalls.length,2);assert.equal(candidateCalls.length,2);
+  const marker="Private review facts: June.";
+  const work=bench.reviewSavedCase({...request,expectedAnswer:marker});
+  await assert.rejects(bench.reviewSavedCase({...request,expectedAnswer:marker}),/already running/);
+  await work;
+  const reviewed=bench.detail(id);
+  assert.equal(candidateCalls.length,2);assert.deepEqual(judgeCalls.slice(2).map(v=>v.reference),[marker,marker]);
+  assert.deepEqual(reviewed.report,before.report);assert.deepEqual(reviewed.assessments,before.assessments);
+  assert.equal(reviewed.reviewedVerdict?.verdict,"mixed");
+  const group=present(reviewed.savedReviews?.[0]);
+  assert.equal(group.status,"completed");assert.equal(group.source,"supplied for review");
+  assert.deepEqual(group.grades.map(g=>[g.candidate,g.graderId,g.pass]),[[models[0].id,grader,false],[models[1].id,grader,true]]);
+  const exported=bench.exportRun(id);
+  assert.equal(JSON.stringify(exported).includes(marker),false);assert.equal(exported.report?.verdict,"incomplete");
+  assert.equal(JSON.stringify(exported).includes(group.id),false);
+  await assert.rejects(bench.reviewSavedCase({...request,expectedAnswer:marker}),/already scores/);
+  const alternate=save("Supplemental EPS", {criteria:"EPS"});
+  await bench.reviewSavedCase({...request,grader:alternate});
+  assert.equal(bench.detail(id).reviewedVerdict?.verdict,"mixed");
+  bench.db.prepare("UPDATE results SET record=json_set(record,'$.dispatchState','pending') WHERE run=? AND candidate=?").run(id,models[1].id);
+  await assert.rejects(bench.reviewSavedCase({...request,grader:alternate}),/no saved answer/);
+  assert.equal(candidateCalls.length,2);assert.equal(judgeCalls.length,4);
+});
+
+test("mixed primary and fallback score receipts stay retryable until one serving revision assesses both saved answers",async t=>{
+  const {bench,approved,start,candidateCalls}=await setup(t);
+  const primary="qa/decision-primary",alternate="qa/decision-alternate";
+  const grader=bench.graders.save({name:"Supported EPS",industry:"Financial Services",category:"Evidence",type:"decision",
+    criteria:"Does the answer give the supported EPS?",threshold:.8,decision:{provider:"local",model:primary,fallbackModel:alternate,failAt:.2}},[]);
+  let phase:"original"|"mixed"|"stable"="original";
+  const judgeModels:string[]=[];
+  t.mock.method(globalThis,"fetch",async(url:RequestInfo|URL,options?:RequestInit)=>{
+    if(String(url).endsWith("/v1/models")){
+      const ids=phase==="mixed" && judgeModels.length===3?[alternate]:[primary,alternate];
+      return Response.json({data:ids.map(id=>({id,output_modalities:["decisions"]}))});
+    }
+    assert.equal(String(url),"http://127.0.0.1:8080/v1/systemone");
+    assert.ok(typeof options?.body==="string");
+    const {model,state}=z.object({model:z.string(),state:z.string()}).parse(JSON.parse(options.body));
+    const {output}=z.object({output:z.string()}).parse(JSON.parse(state));
+    judgeModels.push(model);
+    return Response.json({model,answers:{criterion:{type:"noul",noul:phase==="original"?.5:output.includes("GAAP")?.9:.1}}});
+  });
+  const metric=bench.quickGraderOptions(approved.id).measures[0].metric;
+  const run=start({measureGraders:[{metric,kind:"saved",graderId:grader}]});
+  await present(bench.active).done;
+  const original=bench.detail(run);
+  assert.equal(original.report?.verdict,"incomplete");
+  phase="mixed";
+  const request={run,grader,caseId:"prompt"};
+  await bench.reviewSavedCase(request);
+  const mixed=bench.detail(run),pair=present(mixed.savedReviews?.[0]);
+  assert.deepEqual(pair.grades.map(g=>[g.decision?.actualModel,g.pass]),[[primary,true],[alternate,false]]);
+  assert.match(pair.comparisonIssue ?? "",/multiple model revisions/);
+  assert.equal(mixed.reviewedVerdict,undefined);
+  phase="stable";
+  await bench.reviewSavedCase(request);
+  const stable=bench.detail(run);
+  assert.deepEqual(stable.savedReviews?.[0],pair);
+  assert.deepEqual(stable.savedReviews?.[1].grades.map(g=>g.decision?.actualModel),[primary,primary]);
+  assert.equal(stable.reviewedVerdict?.verdict,"winner");
+  assert.deepEqual(stable.report,original.report);
+  await assert.rejects(bench.reviewSavedCase(request),/already scores/);
+  assert.deepEqual(judgeModels,[primary,primary,primary,alternate,primary,primary]);
+  assert.equal(candidateCalls.length,2);
+});
+
+test("supplemental field graders reuse compatible private JSON and name a missing field before either saved answer is graded",async t=>{
+  const {bench,start,models,save,candidateCalls,judgeCalls}=await setup(t,true,model=>JSON.stringify({
+    eps:model==="lfm3-1.7b"?0:12,flag:model!=="lfm3-1.7b"}));
+  const rule=(name:string,outputField:string,referenceField:string)=>save(name,{type:"field",criteria:JSON.stringify({outputField,referenceField})});
+  const savedField=rule("GAAP EPS","eps","reported.eps"),extraField=rule("Review flag","flag","reported.flag");
+  const expectedAnswer=JSON.stringify({reported:{eps:0},privateMarker:"private-EPS-qa"});
+  const run=start({inspectionOnly:true,expectedAnswer,measureGraders:[{metric:epsMetric,kind:"rubric",judgeId:models[2].id,threshold:1,evidence:"reference"},
+    {metric:periodMetric,kind:"skip"}]});
+  await present(bench.active).done;
+  const request={run,caseId:"prompt"},initial=bench.detail(run);
+  assert.ok(initial.quickFieldGraderIds?.includes(savedField));assert.ok(!initial.quickFieldGraderIds?.includes(extraField));
+  assert.equal(JSON.stringify(initial).includes("private-EPS-qa"),false);
+  await assert.rejects(bench.reviewSavedCase({...request,grader:savedField,expectedAnswer:'{"reported":{"eps":12}}'}),/evidence already saved/);
+  await bench.reviewSavedCase({...request,grader:savedField});
+  for(const substitute of [undefined,"ordinary text",'{"reported":{"other":true}}']) {
+    await assert.rejects(bench.reviewSavedCase({...request,grader:extraField,expectedAnswer:substitute}),/reported.flag/);
+  }
+  assert.equal(bench.detail(run).savedReviews?.length,1);
+  await bench.reviewSavedCase({...request,grader:extraField,expectedAnswer:'{"reported":{"flag":false}}'});
+  const reviews=present(bench.detail(run).savedReviews);
+  assert.deepEqual(reviews.map(r=>[r.source,r.grades.map(g=>g.value)]),[["saved run",[1,0]],["supplied for review",[1,0]]]);
+  assert.equal(bench.quickExpectedAnswer(run),expectedAnswer);assert.equal(candidateCalls.length,2);assert.equal(judgeCalls.length,2);
+});
+
+test("Dataset recovery aligns reviewed pairs across cases and keeps every complete original pair on the chosen revision",async t=>{
+  const {bench,models,candidateCalls}=await setup(t);
+  const primary="qa/primary",alternate="qa/alternate";
+  const grader=bench.graders.save({name:"Receipt evidence",industry:"Financial Services",category:"Grounding",type:"decision",
+    criteria:"Does this answer report the GAAP figure?",threshold:.8,decision:{provider:"local",model:primary,fallbackModel:alternate,failAt:.2}},[]);
+  const caseIds=["release-a","release-b"];
+  const datasetId=bench.import("reference","Synthetic releases",caseIds.map(case_id=>JSON.stringify({case_id,dataset_version:"1",split:"development",prompt:"Report GAAP EPS."})).join("\n"),
+    {industry:"Financial Services",family:"Synthetic releases",category:"Extraction"});
+  let stage:"unscored"|"primary"|"alternate"|"original-split"|"reverse-primary"="unscored",splitAt=0;
+  const judges:string[]=[];
+  t.mock.method(globalThis,"fetch",async(url:RequestInfo|URL,options?:RequestInit)=>{
+    if(String(url).endsWith("/v1/models")){
+      const other=stage==="alternate" || (stage==="original-split" && (judges.length-splitAt)%2===1);
+      return Response.json({data:(other?[alternate]:[primary,alternate]).map(id=>({id,output_modalities:["decisions"]}))});
+    }
+    assert.ok(typeof options?.body==="string");
+    const {model,state}=z.object({model:z.string(),state:z.string()}).parse(JSON.parse(options.body));
+    const {output}=z.object({output:z.string()}).parse(JSON.parse(state));judges.push(model);
+    const passes=output.includes("GAAP")!==(stage==="reverse-primary");
+    return Response.json({model,answers:{criterion:{type:"noul",noul:stage==="unscored"?.5:passes?.9:.1}}});
+  });
+  const runDataset=async()=>{
+    const id=bench.start({mode:"dataset",datasetId,candidateIds:models.slice(0,2).map(m=>m.id),graderIds:[grader],datasetScorer:"selected-graders"});
+    await present(bench.active).done;return id;
+  };
+  const run=await runDataset(),original=bench.detail(run);
+  const review=(id:string,caseId:string)=>bench.reviewSavedCase({run:id,caseId,grader});
+  assert.equal(original.report?.verdict,"incomplete");
+  stage="primary";await review(run,caseIds[0]);
+  stage="alternate";await review(run,caseIds[1]);
+  const conflicting=bench.detail(run);
+  assert.deepEqual(conflicting.savedReviews?.map(r=>r.grades.map(g=>g.decision?.actualModel)),[[primary,primary],[alternate,alternate]]);
+  assert.equal(conflicting.reviewedVerdict,undefined);
+  assert.deepEqual(conflicting.decisionReviewTargets?.[grader],{model:primary,caseIds:[caseIds[1]]});
+  await assert.rejects(review(run,caseIds[0]),/already scores this case.*qa\/primary/);
+  assert.equal(judges.length,8);
+  stage="primary";await review(run,caseIds[1]);
+  const resolved=bench.detail(run);
+  assert.deepEqual(resolved.savedReviews?.slice(0,2),conflicting.savedReviews);
+  assert.equal(resolved.reviewedVerdict?.verdict,"winner");assert.deepEqual(resolved.report,original.report);
+  assert.equal(judges.length,10);assert.equal(candidateCalls.length,4);
+  // Original complete pairs can also disagree about their served judge. Only the alternate case needs new grades.
+  splitAt=judges.length;stage="original-split";
+  const split=await runDataset(),before=bench.detail(split);
+  assert.equal(before.report?.verdict,"incomplete");
+  assert.deepEqual(before.decisionReviewTargets?.[grader],{model:primary,caseIds:[caseIds[1]]});
+  await assert.rejects(review(split,caseIds[0]),/already scores this case/);
+  stage="reverse-primary";await review(split,caseIds[1]);
+  const after=bench.detail(split);
+  assert.equal(after.reviewedVerdict?.verdict,"tie","The complete original primary case offsets the newly reviewed case.");
+  assert.deepEqual(after.report,before.report);assert.deepEqual(after.assessments,before.assessments);
+  assert.deepEqual(after.savedReviews?.map(r=>r.caseId),[caseIds[1]]);
+  assert.deepEqual(after.decisionReviewTargets?.[grader],{model:primary,caseIds:[]});
+  assert.equal(judges.length,16);assert.equal(candidateCalls.length,8);
 });

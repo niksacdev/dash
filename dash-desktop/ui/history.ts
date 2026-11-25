@@ -23,66 +23,72 @@ interface HistoryChartRow {
   note: string;
   display: string;
 }
-function chartPanel(title: string, notes: string, rows: HistoryChartRow[], maximum?: number) {
-  const values = rows.map(r => r.value).filter((v): v is number => v !== null && Number.isFinite(v));
-  const scale = maximum ?? Math.max(1, ...values);
+type HistoryUnit = "%" | "s" | "tokens" | "J" | "W";
+const measuredNumber = (value:number) => value.toLocaleString(undefined,{maximumSignificantDigits:5});
+function chartPanel(title: string, notes: string, rows: HistoryChartRow[], unit:HistoryUnit) {
+  const values = rows.map(r => r.value).filter((v): v is number => v !== null && Number.isFinite(v) && v >= 0);
+  const scale = unit==="%" ? 100 : Math.max(0,...values) || 1;
+  const scaleLabel = values.length ? '<small class="chart-scale">Scale · 0–'+esc(measuredNumber(scale))+(unit==="%"?"":" ")+esc(unit)+'</small>' : "";
   return '<section class="panel metric-chart"><h3>'+esc(title)+'</h3><p>'+esc(notes)+'</p>'+
-    rows.map(r => '<div class="chart-line"><div><span>'+esc(r.label)+'</span><strong>'+esc(r.display)+'</strong></div>'+
-      (Number.isFinite(r.value) ? '<progress aria-label="'+esc(r.label+' · '+title)+'" value="'+r.value+'" max="'+scale+'"></progress>' : '')+
-      '<small>'+esc(r.note)+'</small></div>').join("")+'</section>';
+    rows.map((r,lane) => '<div class="chart-line"><div class="chart-heading"><span>'+esc(r.label)+'</span><strong>'+esc(r.display)+'</strong></div>'+
+      comparisonTrack(r.label+' · '+title,r.value,scale,r.display,lane)+
+      '<small>'+esc(r.note)+'</small></div>').join("")+scaleLabel+'</section>';
 }
 function performanceCharts(s: UiPerformance & {readError?:string}) {
   const scored = s.mode === "dataset" && s.packKind !== "reference";
   const cards = [];
+  const candidateLabel = (c:UiCandidateMetrics) =>
+    s.candidates.some(other=>other.id!==c.id && other.model===c.model) ? c.id : c.model;
   if (scored) {
     for (const [key,title,description] of [
       ["passed","Quality checks passed","Share of scored answers that matched the reference."],
       ["review","Sent for review","Share of scored answers routed to a person."]] as const) {
       cards.push(chartPanel(title,description,s.candidates.map(c=>{
         const value = c.scored ? 100*c[key]/c.scored : null;
-        return {label:c.model,value,display:value===null?"No scores":metricNumber(value)+"%",
+        return {label:candidateLabel(c),value,display:value===null?"No scores":metricNumber(value)+"%",
           note:c[key]+" of "+c.scored+" scored"};
-      }),100));
+      }),"%"));
     }
   }
   if (!s.fixture) {
-    cards.push(chartPanel("Response latency","End-to-end time per recorded response.",s.candidates.map(c=>({
-      label:c.model,value:c.p50,display:c.p50===null?"Unmeasured":metricNumber(c.p50/1000)+" s median",
-      note:c.timed && c.p95 !== null ? "95th percentile "+metricNumber(c.p95/1000)+" s · "+c.timed+" measured" : "No recorded timings"
-    }))));
+    cards.push(chartPanel("Response latency","Time per recorded response. A shorter time is faster.",s.candidates.map(c=>({
+      label:candidateLabel(c),value:c.p50===null?null:c.p50/1000,display:c.p50===null?"Unmeasured":measuredNumber(c.p50/1000)+" s median",
+      note:c.timed && c.p95 !== null ? "95th percentile "+measuredNumber(c.p95/1000)+" s · "+c.timed+" measured" : "No recorded timings"
+    })),"s"));
     for (const [field,title,description,count] of [
       ["input","Input tokens","Average prompt tokens per response with reported input usage.","inputCount"],
       ["output","Output tokens","Average generated tokens per response with reported output usage.","outputCount"],
     ] as const) {
       cards.push(chartPanel(title,description,s.candidates.map(c=>{
         const value=c[field];
-        return {label:c.model,value,display:value===null?"Unreported":metricNumber(value)+" tokens",note:c[count]+" measured"};
-      })));
+        return {label:candidateLabel(c),value,display:value===null?"Unreported":measuredNumber(value)+" tokens",note:c[count]+" measured"};
+      }),"tokens"));
     }
     if(s.candidates.some(c=>c.energyCount!==undefined)) {
       cards.push(chartPanel("Device energy (est.)","Average joules over sampled intervals per measured case on the device running DASH. Remote server energy is unavailable.",s.candidates.map(c=>({
-        label:c.model,value:c.energy ?? null,display:c.energy==null?"Unmeasured":energyNumber(c.energy)+" J",
+        label:candidateLabel(c),value:c.energy ?? null,display:c.energy==null?"Unmeasured":measuredNumber(c.energy)+" J",
         note:(c.energyCount ?? 0)+" of "+c.recorded+" recorded cases measured"
-      }))));
+      })),"J"));
     }
     cards.push(chartPanel("DASH host power","Mean of the measured case averages on the device running DASH. Hosted inference server power is unavailable.",s.candidates.map(c=>({
-      label:c.model,value:c.watts,display:c.watts==null?"Unmeasured":metricNumber(c.watts)+" W",
+      label:candidateLabel(c),value:c.watts,display:c.watts==null?"Unmeasured":measuredNumber(c.watts)+" W",
       note:(c.powerCount || 0)+" measured responses"
-    }))));
+    })),"W"));
   }
   return (s.readError?readFailure('Showing metrics from the saved run. Historical comparisons are unavailable.',s.readError,'Refresh performance'):'')+'<div class="metric-grid">'+cards.join("")+'</div>';
 }
 function historyTrend(s: UiPerformance) {
-  const plots = s.candidates.map(c=>{
+  const plots = s.candidates.map((c,lane)=>{
     const points = s.history.flatMap(run => {
-      const score = run.scores.find(s => s.candidate === c.id && s.scored > 0);
-      return score && score.passed !== null ? [{ run, passed: score.passed, scored: score.scored }] : [];
+      const score = run.scores.find(s => s.candidate === c.id);
+      return score ? [{ run, passed: score.passed, scored: score.scored }] : [];
     });
     if(points.length<2)return "";
     return '<section class="panel"><h3>'+esc(c.model)+'</h3><div class="trend-points">'+points.map(({run,passed,scored})=>{
-      const pct=100*passed/scored;
-      return '<a href="#run/'+esc(run.id)+'"><strong>'+metricNumber(pct)+'%</strong><progress aria-label="Pass rate" value="'+pct+'" max="100"></progress>'+
-        '<span>'+esc(displayTime(run.created))+'</span><small>'+passed+'/'+scored+' passed · '+esc(run.id.slice(0,6))+'</small></a>';
+      const pct=passed!==null && scored>0 ? 100*passed/scored : null, display=pct===null ? "Unscored" : metricNumber(pct)+"%";
+      return '<a href="#run/'+esc(run.id)+'"><strong>'+esc(display)+'</strong>'+
+        comparisonTrack(c.model+' · pass rate · '+displayTime(run.created),pct,100,display,lane)+
+        '<span>'+esc(displayTime(run.created))+'</span><small>'+(pct===null?'No recorded scores':passed+'/'+scored+' passed')+' · '+esc(run.id.slice(0,6))+'</small></a>';
     }).join("")+'</div></section>';
   }).join("");
   return plots ? bar("Pass rate across runs")+'<p class="muted">Up to eight completed runs through this date using the same dataset snapshot, cases, prompt and grader. Each row follows one candidate.</p>'+plots : "";
@@ -113,11 +119,8 @@ async function historyPage(key?: string) {
       (unconfirmed?' · '+unconfirmed+' without a confirmed final response':'')+
       ' · '+errors+' runtime '+(errors===1?"error":"errors")+'</p>'+
     (s.fixture?'<small>Saved answers exercise the grader. Timing and token usage apply to live model runs.</small>':'')+'</section>'+
-    (report && !s.fixture ? '<section class="panel"><h3>Evaluation result</h3><p>'+esc(report.summary)+'</p>'+
-      report.metrics.map(m=>'<div class="listrow"><strong>'+esc(m.label)+'</strong><span>'+m.values.map(v=>{
-        const model=report.candidates.find(c=>c.id===v.candidateId);
-        return esc((model?.label || v.candidateId)+' '+scorePercent(v.score));
-      }).join(' · ')+'</span></div>').join('')+'</section>':'')+
+    (report && !s.fixture ? '<section class="panel history-report"><h3>Evaluation result</h3><p>'+esc(report.summary)+'</p>'+
+      reportMetricGroups(report.metrics.map((metric,index)=>({metric,index})),report,s.id,true)+'</section>':'')+
     (await opikExperimentPanel(saved))+bar("Performance")+performanceCharts(s)+historyTrend(s)+bar("Saved runs")+'<div class="panel">'+historyList(runs)+'</div>';
 }
 

@@ -11,7 +11,7 @@ import {DecisionDispatchError,evaluateDecision,listLocalDecisionModels,type Deci
 import {catalogRules,scoreCatalogRule} from "./grader-catalog.cjs";
 import {hasEvidence,opikLibraryTemplates,opikMetricKey,scoreOpikMetric} from "./opik-library.cjs";
 import { hash,packField } from "./packs.cjs";
-import {parseFieldRule} from "./grader-types.cjs";
+import {hasExpectedAnswerFor,parseFieldRule} from "./grader-types.cjs";
 import {AssessmentStorageError,GradingIssue,missingExpectedAnswer} from "./grading-errors.cjs";
 import { ProviderFailure,isRecord,type LocalCandidate,type ModelCandidate,type RuntimeAdapters,type ChatTurn } from "./runtime-types.cjs";
 import {type DatasetCaseSource,type GraderProducer,rubricEvidenceView,graderEvidenceView,graderRequiredEvidence,requiredEvidence,decisionSettings,graderType,savedGrader,storedAssessment,type GraderLibrary,type GraderSpec,type GraderMethod,type GraderDefinition,type GraderEvidence,type GraderAssessment,type RecordedAssessment,type RubricOrigin,type QuickGraderChoices,type JudgeMethod} from "./grader-types.cjs";
@@ -33,6 +33,11 @@ function requirePinnedSdk(engine:string|undefined):void {
   if (engine===opikVersion) return;
   const required=engine ? "This grader revision requires "+engine+"." : "This grader revision has no recorded Opik SDK version.";
   throw new GradingIssue(required+" DASH has "+opikVersion+". Restore the pinned evaluator or save a new grader revision with the installed SDK.");
+}
+export function graderEngineIssue(g:GraderSpec):string {
+  if (g.type!=="opik" && g.type!=="opik-metric" && g.type!=="decision") return "";
+  if (g.type==="opik" && g.opikEngine===undefined) return pythonSdkEnabled() ? "" : legacyEngineUnavailable;
+  try {requirePinnedSdk(g.opikEngine);return "";} catch (error) {return error instanceof Error ? error.message : "Restore the pinned Opik evaluator.";}
 }
 const containsMetric = new Contains("Contains", false, true);
 const exactMetric = new ExactMatch("Exact match", false);
@@ -250,6 +255,13 @@ export class Graders {
     this.seedCatalog();
   }
   list():GraderSpec[] {return this.db.prepare("SELECT spec FROM graders ORDER BY family,version DESC").all().map(r=>decodeGraderSpec(readJson(r.spec)));}
+  fieldGradersFor(reference:unknown):string[] {
+    if(!isRecord(reference))return [];
+    return this.db.prepare("SELECT spec FROM graders WHERE json_extract(spec,'$.type')='field'").all().flatMap(row=>{
+      const grader=decodeGraderSpec(readJson(row.spec));
+      return hasExpectedAnswerFor(grader,reference) ? [grader.id] : [];
+    });
+  }
   get(id:string):GraderSpec {const r=this.db.prepare("SELECT spec FROM graders WHERE id=?").get(id);if(!r)throw Error("Unknown grader version.");return decodeGraderSpec(readJson(r.spec));}
   private atomic<T>(work:()=>T):T {
     this.db.exec("SAVEPOINT grader_revision");

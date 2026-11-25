@@ -135,9 +135,10 @@ function lineSlots(mode:UiMode){
   const {lanes}=modelSelections[mode];
   const roster=rosterModels();
   return [0,1].map(i=>{
-    const model=roster.find(c=>c.id===lanes[i]);
+    const id=lanes[i],model=roster.find(c=>c.id===id);
+    if(mode==="dataset" && id && (!model || model.needsKey))return '<div class="grid-slot occupied"><div class="slot-track">'+svg("car","grid-car")+'</div><div><small>Lane '+(i+1)+'</small><strong>'+esc(model?displayModel(model.model):id)+'</strong><small>Unavailable · reconnect or replace this model</small></div><button type="button" class="remove-model" data-remove="'+esc(id)+'" aria-label="'+esc("Remove "+id)+'">×</button></div>';
     return '<div class="grid-slot '+(model?'occupied':'')+'"><div class="slot-track">'+svg("car","grid-car")+'</div><div><small>Lane '+(i+1)+'</small>'+
-      (model?'<strong>'+esc(displayModel(model.model))+'</strong>':'<button class="choose-slot" type="button" data-choose-slot="'+i+'">Choose a model <span aria-hidden="true">↗</span></button>')+(model?'<small>'+esc(model.endpoint || (mode==="quick" && model.provider==="lmstudio"?"LM Studio":mode==="quick" && model.provider==="ollama"?"Ollama":model.provider))+'</small>' + (mode==="quick" ? laneBudgetMarkup(model,workflows.quick.approved) : '<small>'+esc(modelCapacityNote(model))+'</small>'):'')+'</div>'+
+      (model?'<strong>'+esc(displayModel(model.model))+'</strong>':'<button class="choose-slot" type="button" data-choose-slot="'+i+'">Choose a model <span aria-hidden="true">↗</span></button>')+(model?'<small>'+esc(model.endpoint || (model.provider==="lmstudio"?"LM Studio":model.provider==="ollama"?"Ollama":model.provider))+'</small>' + (mode==="quick" ? laneBudgetMarkup(model,workflows.quick.approved) : '<small>'+esc(modelCapacityNote(model))+'</small>'):'')+'</div>'+
       (model?'<button type="button" class="remove-model" data-remove="'+esc(model.id)+'" aria-label="Remove '+esc(model.model)+'">×</button>':'')+'</div>';
   }).join("");
 }
@@ -159,29 +160,40 @@ function rosterGroups(mode:UiMode){
   }).join("");
 }
 function canStartDataset() {
-  return !state.active && !workflows.dataset.busy && !gradeDesignerDraft(activeDatasetGraderScope()).busy && selectedModels("dataset").length > 0 && !referenceScoringIssue();
+  return !state.active && !workflows.dataset.busy && !gradeDesignerDraft(activeDatasetGraderScope()).busy && selectedModels("dataset").length > 0 && selectedModels("dataset").every(id=>rosterModels().some(m=>m.id===id && !m.needsKey)) && !referenceScoringIssue();
 }
-function modelPicker(mode:UiMode, caseCount=0) {
-  const quick = mode === "quick";
-  const selection = modelSelections[mode];
-  const available = rosterModels();
-  selection.lanes = selection.lanes.map(id => available.some(c => c.id === id && !c.needsKey) ? id : null);
-  const status = '<p class="picker-note">Choose one or two models. Each receives ' + esc(caseCount) + (caseCount===1?' case.':' cases.') + '</p>';
+function modelPicker(mode:UiMode) {
+  const selection=modelSelections[mode],available=rosterModels();
+  if(mode==="quick")selection.lanes=selection.lanes.map(id=>available.some(c=>c.id===id && !c.needsKey)?id:null);
   return '<section class="model-picker" data-picker-mode="'+mode+'" id="'+mode+'-models"><div class="qc-launch-row">'+
-    '<div class="picker-heading"><h2>'+(quick?'Models':'Starting line')+'</h2><span id="pick-count" role="status">'+selectedModels(mode).length+' / 2 '+(quick?'selected':'ready')+'</span></div>'+
-    (quick?'':'<button type="submit" aria-label="Start dataset run" class="go-button" '+(!canStartDataset()?'disabled':'')+'>GO <b aria-hidden="true">❯</b></button>')+'</div>'+
-    (quick?'<h3 class="qc-line-label">Starting line</h3>':'')+'<div class="starting-grid">'+lineSlots(mode)+'</div>'+(quick?'<button class="qc-grade-jump" type="button" data-qc-grade-jump>Review graders ↓</button>':status)+
+    '<div class="picker-heading"><h2>Models</h2><span id="pick-count" role="status">'+selectedModels(mode).length+' / 2 selected</span></div></div>'+
+    '<h3 class="qc-line-label">Starting line</h3><div class="starting-grid">'+lineSlots(mode)+'</div>'+
+    '<button class="qc-grade-jump" type="button" data-qc-grade-jump>Review graders ↓</button>'+
     '<section class="compare-roster" aria-labelledby="roster-heading"><div class="picker-heading"><h2 id="roster-heading">Model roster</h2>'+btn("Refresh","refresh","quiet")+'</div>'+
     '<label class="field"><span class="visually-hidden">Search models</span><input type="search" id="model-search" value="'+esc(selection.search)+'" placeholder="Find a model or runtime"></label>'+
     '<div id="roster-groups">'+rosterGroups(mode)+'</div></section></section>';
 }
+function datasetCaseCount() {
+  const count=dataset()?.count ?? 0;
+  return count+" "+(count===1?"case":"cases");
+}
+function datasetLaunchStatus() {
+  const count=selectedModels("dataset").length;
+  if(selectedModels("dataset").some(id=>!rosterModels().some(m=>m.id===id && !m.needsKey)))return "Reconnect or remove the unavailable model.";
+  return referenceScoringIssue() || (count ? "Ready to evaluate "+datasetCaseCount()+"." : "Choose one or two models.");
+}
+function runSetupControls(mode:UiMode) {
+  const quick=mode==="quick";
+  const message=quick ? quickLaunchIssue() || "Ready to evaluate both answers." : datasetLaunchStatus();
+  const count=quick ? quickSetupCounts(quickGradeSummary().coverage) : datasetCaseCount();
+  return '<div class="qc-setup-columns">'+modelPicker(mode)+'<div class="qc-grader-column">'+
+    (quick?quickGradePicker():graderPicker())+'</div></div>'+
+    '<div class="qc-launch"><div><strong id="qc-launch-state" role="status">'+esc(message)+'</strong>'+
+    '<p id="qc-setup-counts">'+esc(count)+'</p></div><button type="submit" class="go-button" data-picker-submit="'+mode+'" aria-describedby="qc-launch-state" '+
+    ((quick?canStartQuick():canStartDataset())?'':'disabled')+'>'+esc(quick?quickLaunchLabel():"Run evaluation")+' <b aria-hidden="true">❯</b></button></div>';
+}
 function setupQuick() {
-  const issue=quickLaunchIssue();
-  return '<form id="setup" class="compare-console qc-workbench"><div class="qc-setup-columns">'+modelPicker("quick")+
-    '<div class="qc-grader-column">'+quickGradePicker()+gradeDesignerView("prompt:"+workflows.quick.approved?.id)+'</div></div>'+
-    '<div class="qc-launch"><div><strong id="qc-launch-state" role="status">'+esc(issue || "Ready to evaluate both answers.")+'</strong>'+
-    '<p id="qc-setup-counts">'+esc(quickSetupCounts(quickGradeSummary().coverage))+'</p></div><button type="submit" class="go-button" aria-describedby="qc-launch-state" '+
-    (issue?'disabled':'')+'>Run evaluation <b aria-hidden="true">❯</b></button></div></form>'+endpointForm()+hostingLegend();
+  return '<form id="setup" class="compare-console qc-workbench">'+runSetupControls("quick")+'</form>'+endpointForm()+hostingLegend();
 }
 function updateGrid(picker:HTMLElement) {
   const mode = picker?.dataset.pickerMode;
@@ -189,26 +201,46 @@ function updateGrid(picker:HTMLElement) {
   const focus = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.model : undefined;
   $(".starting-grid",picker).innerHTML = lineSlots(mode);
   $("#roster-groups",picker).innerHTML = rosterGroups(mode);
-  $("#pick-count",picker).textContent = selectedModels(mode).length + (mode==="quick" ? " / 2 selected" : " / 2 ready");
+  $("#pick-count",picker).textContent = selectedModels(mode).length + " / 2 selected";
   if (mode === "quick") {
     rememberQuickLineup(true);
     updateQuickGradingControls();
     scheduleBudgetPreview();
   } else {
-    requireElement(".go-button",HTMLButtonElement,picker).disabled = !canStartDataset();
+    rememberDatasetSetup();updateDatasetGradingControls();
   }
   if (focus) picker.querySelector<HTMLButtonElement>('[data-model="'+CSS.escape(focus)+'"]')?.focus({preventScroll:true});
 }
 function endpointForm(){
-  return '<details class="card spacer"><summary>Connect a model endpoint</summary><form id="endpoint-form" class="spacer"><div class="cols">'+
+  const settings = state.endpoints.length ? '<label class="field"><span>Saved endpoint</span><select name="savedEndpoint">'+
+    opt("","New endpoint","")+state.endpoints.map(c=>opt(c.id,c.model+" · "+c.endpoint,"")).join("")+'</select></label>' : "";
+  const policy = state.scenarioCacheSupport;
+  const cacheOption = policy ? '<div data-scenario-cache hidden><label><input type="checkbox" name="cacheScenarioInstructions" disabled aria-describedby="cache-policy"> Cache shared scenario instructions</label>'+
+    '<p class="muted" id="cache-policy">OpenRouter sends shared dataset instructions to the Claude provider for a five-minute cache. Reads refresh its lifetime. Cache writes may cost extra. Case messages are outside this setting. '+
+    '<a data-cache-guide href="'+esc(policy.guideUrl)+'">OpenRouter caching guide ↗</a></p></div>' : "";
+  return '<details class="card spacer"><summary>Connect a model endpoint</summary><form id="endpoint-form" class="spacer">'+settings+'<div class="cols">'+
     '<label class="field"><span>Section</span><select name="section">'+gridSections.slice(1).map(s=>opt(s,s,"Hosted")).join("")+'</select></label>'+
     '<label class="field"><span>Model identifier</span><input name="model" required maxlength="240"></label></div>'+
     '<label class="field"><span>OpenAI-compatible API base</span><input name="baseUrl" type="url" required placeholder="https://your-server.example/v1"></label>'+
-    '<label class="field"><span>API key for this session (optional)</span><input type="password" name="key" autocomplete="off"></label>'+
+    '<label class="field"><span>API key for this session (optional)</span><input type="password" name="key" autocomplete="off"></label>'+cacheOption+
     '<button>Save endpoint</button><p class="muted">Starting a run sends its inputs to the model destinations shown on the starting line.</p></form></details>';
+}
+function updateEndpointCache(form:HTMLFormElement) {
+  const policy = state.scenarioCacheSupport, control = dashElement("[name=cacheScenarioInstructions]",HTMLInputElement,form);
+  if (!policy || !control) return;
+  let base = "";
+  try { base = new URL(formText(form,"baseUrl")).href.replace(/\/+$/, ""); } catch { /* URL still being entered. */ }
+  const model = formText(form,"model").trim();
+  const supported = base===policy.baseUrl && policy.models.includes(model);
+  const saved = state.endpoints.find(c=>c.endpoint===base && c.model===model);
+  requireElement("[data-scenario-cache]",HTMLElement,form).hidden = !supported;
+  control.disabled = !supported;
+  control.checked = supported && saved?.cacheScenarioInstructions===true;
 }
 document.addEventListener("input",e=>{
   if (!textInput(e.target)) return;
+  const field = e.target, form = field.form;
+  if (form?.id==="endpoint-form" && (field.name==="model" || field.name==="baseUrl")) updateEndpointCache(form);
 
   if (e.target.id !== "model-search") return;
   const picker = e.target.closest<HTMLElement>("[data-picker-mode]");
@@ -217,8 +249,24 @@ document.addEventListener("input",e=>{
   modelSelections[mode].search = e.target.value;
   $("#roster-groups",picker).innerHTML = rosterGroups(mode);
 });
+document.addEventListener("change",e=>{
+  const field=e.target;
+  if (!(field instanceof HTMLSelectElement) || field.name!=="savedEndpoint" || field.form?.id!=="endpoint-form") return;
+  const form=field.form, saved=state.endpoints.find(model=>model.id===field.value);
+  requireElement("[name=section]",HTMLSelectElement,form).value = saved?.section ?? "Hosted";
+  requireElement("[name=model]",HTMLInputElement,form).value = saved?.model ?? "";
+  requireElement("[name=baseUrl]",HTMLInputElement,form).value = saved?.endpoint ?? "";
+  requireElement("[name=key]",HTMLInputElement,form).value = "";
+  updateEndpointCache(form);
+});
 document.addEventListener("click",e=>{
   if (!(e.target instanceof Element)) return;
+  const guide=e.target.closest<HTMLAnchorElement>("a[data-cache-guide]");
+  if (guide) {
+    e.preventDefault();
+    void api.openCacheGuide().catch(error=>{if (guide.isConnected) inlineError(guide.closest("form") ?? guide,error);});
+    return;
+  }
 
   if(e.target.closest("[data-qc-grade-jump]")) {
     const panel=document.getElementById("qc-grading");
@@ -263,7 +311,9 @@ document.addEventListener("submit",async e=>{
   const f=e.target;
   const submit=f.querySelector<HTMLButtonElement>('button[type="submit"],button:not([type])'),stillHere=currentVisit();
   if (!submit || submit.disabled || f.hasAttribute("data-nav-saved"))return;
-  const body={section:formText(f,"section"),model:formText(f,"model"),baseUrl:formText(f,"baseUrl"),key:formText(f,"key")};
+  const cache = dashElement("[name=cacheScenarioInstructions]",HTMLInputElement,f);
+  const body={section:formText(f,"section"),model:formText(f,"model"),baseUrl:formText(f,"baseUrl"),key:formText(f,"key"),
+    ...(cache && !cache.disabled && {cacheScenarioInstructions:cache.checked})};
   const unlock=lockNavigationWrite(f);f.querySelector(":scope > [data-action-error]")?.remove();
   try {
     try{await api.saveEndpoint(body);}finally{unlock();}

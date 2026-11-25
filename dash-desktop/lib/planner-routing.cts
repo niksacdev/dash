@@ -2,7 +2,7 @@ import type {startPower,PowerSummary} from "./power.cjs";
 import {randomUUID} from "node:crypto";
 import {hostedPlanningUsage,localPlanningUsage} from "./planning-usage.cjs";
 import {isRecord} from "../agents/registry.cjs";
-import {ProviderFailure,ProviderPreflightError,ProviderRejectedError} from "./runtime-types.cjs";
+import {cachedInputTokenCount,ProviderFailure,ProviderPreflightError,ProviderRejectedError} from "./runtime-types.cjs";
 import type {RuntimeAdapters, RuntimeInventory, LocalCandidate, ChatTurn, OutputSchema, PlanningProgress} from "./runtime-types.cjs";
 import {readProviderJson} from "./provider-response.cjs";
 import type {FallbackConfig} from "./planner-settings.cjs";
@@ -134,7 +134,7 @@ export class PlanningRoute {
         const timeout = AbortSignal.timeout(60000);
         const signal = AbortSignal.any([this.signal, timeout]);
         let response:PlannerOutput|undefined;
-        let observedInput:number|null=null;
+        let observedInput:number|null=null, observedCache:number|null=null;
         let receipt:PlanningAttempt|undefined;
         let finishPower:Awaited<ReturnType<typeof startPower>>|undefined;
         try {
@@ -153,23 +153,29 @@ export class PlanningRoute {
                 const previousInput=observedInput;
                 if (progress.phase==="processing-prompt" && typeof progress.inputTokens==="number" &&
                     Number.isSafeInteger(progress.inputTokens) && progress.inputTokens>0) observedInput=progress.inputTokens;
-                const firstCount=previousInput===null && observedInput!==null;
+                const previousCache=observedCache;
+                if (observedInput!==previousInput) observedCache=null;
+                if (progress.phase==="processing-prompt" && progress.cachedInputTokens!==undefined) {
+                  observedCache=cachedInputTokenCount(observedInput,progress.cachedInputTokens);
+                }
+                const usageChanged=previousInput!==observedInput || previousCache!==observedCache;
                 const now=performance.now();
-                if (!firstCount && lastPhase===progress.phase && now-lastProgress<500) return;
+                if (!usageChanged && lastPhase===progress.phase && now-lastProgress<500) return;
                 lastProgress=now;lastPhase=progress.phase;
                 // Forward whitelisted numbers; SDK fragments and callback data can contain model text.
                 const reported=progress.phase==="processing-prompt"
                   ? {phase:progress.phase,percent:progress.percent}
                   : {phase:progress.phase,approximateOutputTokens:progress.approximateOutputTokens};
                 this.notify({...current,status:"running",progress:reported,
-                  ...(observedInput!==null && {usage:localPlanningUsage(observedInput,null)})});
+                  ...(observedInput!==null && {usage:localPlanningUsage(observedInput,null,observedCache)})});
               },
             });
             const first=result.telemetry.provider_first_token_ms ?? result.telemetry.first_token_ms;
             const rate=result.telemetry.tokens_per_second;
             if (typeof first==="number" && Number.isFinite(first) && first>=0) timing.firstTokenMs=Math.round(first);
             if (typeof rate==="number" && Number.isFinite(rate) && rate>0) timing.tokensPerSecond=rate;
-            response = {...result, usage:localPlanningUsage(result.telemetry.input_tokens ?? observedInput, result.telemetry.output_tokens)};
+            response = {...result, usage:localPlanningUsage(result.telemetry.input_tokens ?? observedInput, result.telemetry.output_tokens,
+              result.telemetry.cached_input_tokens)};
           }
           signal.throwIfAborted();
           if (response.error) throw new EndpointFailure(response.error);
@@ -190,7 +196,7 @@ export class PlanningRoute {
               "the planning provider could not complete the request";
           receipt = { ...current, ...timing, elapsedMs:Math.round(performance.now()-start), status:canceled ? "canceled" : "failed", reason,
             ...(response ? {usage:response.usage,revision:response.revision ?? current.revision} :
-              observedInput!==null ? {usage:localPlanningUsage(observedInput,null)} : {}) };
+              observedInput!==null ? {usage:localPlanningUsage(observedInput,null,observedCache)} : {}) };
           if (canceled) throw new DOMException(reason,"AbortError");
           if (this.signal.aborted) throw new ProviderFailure(stage+" timed out. Check the provider activity before retrying.");
           if (!(error instanceof InvalidOutput) || attempt === 2) break;

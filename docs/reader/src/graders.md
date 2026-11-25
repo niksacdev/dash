@@ -6,13 +6,17 @@ The **AI Industry Graders** step in the Overview uses versions from **Workspace 
 
 Open **Workspace → Graders**. **Create a grader** stays at the top. The **Industry catalogue** groups the shipped checks under Financial Services and Manufacturing. General, Industry and My Graders use the same card layout. Each saved version previews its scoring rule. Open **Inspect scoring** to expand the complete rubric, see the evidence it uses and read the pass condition. Decision cards show the yes/no question and cutoffs. Opik metric cards explain how DASH interprets the native score.
 
-When you enter from **Choose graders** in Quick compare, **Back to evaluation setup** returns to the approved prompt with its selected lanes and attached grader versions. A measure selection takes effect when you attach it. If you leave with an unapplied assignment, **Stay here** lets you finish it.
+From Quick compare or Dataset run, open **Choose graders**. The return panel identifies the approved prompt or dataset snapshot and its selected lanes. **Add to comparison** or **Add to dataset run** attaches a saved version in place. Use **Attach and return** when reviewing its assignment. **Back to evaluation setup** returns to the same draft. If a measure assignment has unapplied edits, **Stay here** lets you finish it.
+
+Both setups show **Selected graders** even when empty. **Change** opens the catalogue to replace a specific revision and keeps the current grader until you confirm. **×** removes that version from the run. **Restore** undoes the most recent removal during editing. **Automatic checks** lists the defaults that will run. Open **Design graders** directly beneath that list to propose another check. When an older running version cannot verify coverage, quit and reopen DASH to resume the saved setup. A temporary catalogue read error offers **Retry**.
+
+In **Quick compare → Graders**, select **×** beside a measure to remove its grader for this comparison. The measure stays visible as **Unscored**. **Restore** brings its grader back during editing. After a reload, use **Choose** to select a grader again. Removing the last check that needs verified facts also removes the reference requirement. You can remove an additional saved grader with **×** and add it again from the catalogue. In **Design graders for this prompt**, use **×** or **Restore** before confirming the proposals to save. Automatic checks remain active, and saved library versions stay available for other runs.
 
 When you edit a manual grader or type a new answer for an industry case or a single-output test, DASH asks before navigation discards those edits. Choose **Stay here** to keep typing, or discard the edits to open the destination. An assessment you already submitted continues while you browse. Its result appears under **Test one output**.
 
 
 - **Test** lets you pick a compatible dataset snapshot and case, inspect the source and expected response format, and paste an answer. Scoring uses the selected case and rubric and returns its score and explanation. An earlier model run is optional.
-- **Use in Run** carries the exact grader version into Dataset run. Choose your candidates and press **GO** when ready.
+- **Use in Run** carries the exact grader version into Dataset run. Choose your candidates and press **Run evaluation** when ready.
 - **Create Version** opens an editable copy of a shipped grader. Save it to **My Graders**. Earlier run reports keep the revision they used.
 
 **My Graders** includes your own rules, saved rubric versions and copies of industry checks. **General** contains cross-industry diagnostics and Opik metric templates.
@@ -61,7 +65,7 @@ Both candidates receive the same task and each returned answer goes to the same 
 
 1. Open **Workspace → Graders → General → Opik metric templates**. Pick **Configure metric** on **Answer relevance**.
 2. Choose a local **Judge model**, review the pass threshold and select **Save grader version**. The version fixes the judge and grading policy used for the run.
-3. Choose **Use in a dataset run** on the receipt or **Use in Run** on the saved card. In a run you already have open, **Add optional graders** opens the same selection. Under **Manage version**, **Use on new runs** enables the revision as a cross-industry default for eligible future runs.
+3. Choose **Use in a dataset run** on the receipt or **Use in Run** on the saved card. In a run you already have open, **Choose graders** opens the catalogue for that evaluation. Under **Manage version**, **Use on new runs** enables the revision as a cross-industry default for eligible future runs.
 4. Run your candidates, then open **Run history → Evaluation result**. Open **Case scores and rationale** in the detailed report to see the native score, direction and judge’s explanation.
 
 For earnings extraction, pair relevance with a grader that checks the requested accounting basis. An answer can address EPS directly and still quote adjusted EPS when the question asks for GAAP.

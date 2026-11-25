@@ -2,7 +2,7 @@ import { z } from "opik";
 import type {MeasureOption} from "./measure-graders.cjs";
 import {decodeAgentPin} from "../agents/registry.cjs";
 import { decisionConfig, observationSchema, protocolSchema, fallbackAttemptSchema, type DecisionConfig } from "./decision-model.cjs";
-import {jsonField,type ScoredPack,type CaseRow} from "./run-types.cjs";
+import {jsonField,jsonText,type ScoredPack,type CaseRow} from "./run-types.cjs";
 import {getOpikTemplate,hasEvidence,opikMetricKey,opikMetricResult, type OpikMetricKey} from "./opik-library.cjs";
 import type { LocalCandidate } from "./runtime-types.cjs";
 
@@ -67,16 +67,27 @@ export interface GraderEvidence {
 const fieldRule=z.object({outputField:z.string().regex(/^[\w.-]+$/),referenceField:z.string().regex(/^[\w.-]+$/)});
 export function parseFieldRule(criteria:string) {return fieldRule.parse(JSON.parse(criteria));}
 
+// Quick stores operator input as text. Only a JSON-field rule needs to decode it.
+export function decodeFieldAnswer(text:string|null):unknown {
+  if(text==null)return null;
+  try {return jsonText(text);} catch {return undefined;}
+}
+export function quickGradingReference(grader:GraderSpec,text:string|null):unknown {
+  return grader.type==="field" ? decodeFieldAnswer(text) : text;
+}
+export function hasExpectedAnswerFor(grader:GraderSpec,reference:unknown):boolean {
+  return grader.type==="field" ? jsonField(reference,parseFieldRule(grader.criteria).referenceField)!==undefined : hasEvidence(reference);
+}
+
 // An explicit Test or Grade action can ask for evidence before creating an assessment.
 export function requireAssessmentEvidence(grader:GraderSpec,evidence:GraderEvidence):void {
   if (grader.type==="catalog" && grader.library?.scenario && !evidence.caseContext)
     throw Error("Choose a labeled case from this grader’s industry dataset to test its scenario rule.");
   const needs=graderRequiredEvidence(grader);
   if (grader.type==="field") {
-    const {referenceField}=parseFieldRule(grader.criteria);
-    if (jsonField(evidence.reference,referenceField)===undefined)
-      throw Error("Enter an expected answer as JSON containing the field "+referenceField+" before grading.");
-  } else if (needs.includes("reference") && !hasEvidence(evidence.reference))
+    if (!hasExpectedAnswerFor(grader,evidence.reference))
+      throw Error("Enter an expected answer as JSON containing the field "+parseFieldRule(grader.criteria).referenceField+" before grading.");
+  } else if (needs.includes("reference") && !hasExpectedAnswerFor(grader,evidence.reference))
     throw Error("Enter an expected answer before grading. Supply the correct answer or verified facts for this task in Test one output.");
   if (needs.includes("trajectory") && !Array.isArray(evidence.trajectory))
     throw Error("Enter the recorded agent steps in Test one output before using this grader.");

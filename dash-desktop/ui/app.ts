@@ -149,38 +149,6 @@ function pickers() {
     "</select></label></div>"
   );
 }
-function race(lanes:{label:string;failed:boolean;done:number;total:number}[], active = false, footer = "") {
-  return (
-    '<div class="race"><div class="racehead"><span class="cap">Comparison lanes</span>' +
-    tag(active ? "Processing" : footer || "Awaiting a run") +
-    "</div>" +
-    lanes
-      .map((l) => {
-        const pct = l.total
-          ? Math.min(l.failed ? 96 : 100, Math.floor((l.done * 100) / l.total))
-          : 0;
-        return (
-          '<div class="lane ' +
-          (active && l.done < l.total ? "running" : "") +
-          '"><b>' +
-          esc(l.label) +
-          '</b><div class="road">' +
-          '<svg class="car" data-progress="' +
-          pct +
-          '" aria-hidden="true"><use href="#car"/></svg>' +
-          '</div><small class="mono">' +
-          (l.total ? l.done + " / " + l.total : "—") +
-          "</small></div>"
-        );
-      })
-      .join("") +
-    '<div class="racefoot">' +
-    esc(
-      footer || "Illustrative lanes · candidate progress appears during a run",
-    ) +
-    "</div></div>"
-  );
-}
 function tile(to:string, icon:string, title:string, desc:string) {
   return link(
     svg(icon + "-i") +
@@ -420,6 +388,7 @@ async function developerPage(id?:string) {
         "Device power",
         "Latency",
         "Input tokens",
+        "Cached input tokens",
         "Output tokens",
         "DASH device energy (est.)",
       ],
@@ -430,6 +399,7 @@ async function developerPage(id?:string) {
         developerMetric(r.telemetry?.device_power?.average_w, " W"),
         developerMetric(r.telemetry?.latency_ms, " ms"),
         developerMetric(r.telemetry?.input_tokens),
+        cachedInputLabel(r.telemetry?.cached_input_tokens),
         developerMetric(r.telemetry?.output_tokens),
         deviceEnergyReading(r.telemetry?.device_power),
       ]),
@@ -585,19 +555,14 @@ async function paired(run:UiRunDetail) {
         const baselineScore = other.results.find(o => o.caseId === r.caseId && o.candidateId === ref.id && o.score)?.score;
         return baselineScore ? [{current:r.score, baseline:baselineScore}] : [];
       });
-      const del = (key:"pass"|"falseAccept") => pairs.reduce(
-        (sum,pair) => sum + Number(pair.current[key]) - Number(pair.baseline[key]), 0);
       content =
         '<div class="cols"><label class="field"><span>Current candidate</span><select id="currentCandidate">' +
         m.candidates.map((v) => opt(v.id, v.model, c.id)).join("") +
         '</select></label><label class="field"><span>Baseline candidate</span><select id="baselineCandidate">' +
         b.candidates.map((v) => opt(v.id, v.model, ref.id)).join("") +
         "</select></label></div>" +
-        table(
-          ["Paired cases", "Change in passed cases", "Change in false accepts"],
-          [[pairs.length, del("pass"), del("falseAccept")]],
-        ) +
-        "<small>Current minus baseline on shared scored cases.</small>" +
+        baselineComparison(pairs,c.model,ref.model) +
+        "<small>Current minus baseline on shared scored cases. Fewer false accepts means fewer incorrect proposals to auto-accept.</small>" +
         (b.promptHash !== m.promptHash ? "<p>These runs use different prompts. The difference in scores can reflect the instructions as well as the candidate.</p>" : "");
     }
   }
@@ -630,15 +595,16 @@ function usageLabels(row:UiResult|undefined,checked:number|undefined,running:boo
   const waiting=running?"Pending":"Unreported";
   const input=actual!=null?actual.toLocaleString():verified!=null?verified.toLocaleString()+" checked":waiting;
   const produced=output!=null?output.toLocaleString():usage?.approximateOutputTokens!=null?"≈"+usage.approximateOutputTokens.toLocaleString():waiting;
-  return {input,produced,first:usage?.firstTokenMs!=null?" · First visible output "+planningSeconds(usage.firstTokenMs):""};
+  const cached=cachedInputLabel(row?.telemetry?.cached_input_tokens ?? usage?.cachedInputTokens,running);
+  return {input,cached,produced,first:usage?.firstTokenMs!=null?" · First visible output "+planningSeconds(usage.firstTokenMs):""};
 }
 function responseTokenUsage(row:UiResult|undefined,checked:number|undefined,running:boolean,provider:string,usage?:CandidateUsage) {
-  const {input,produced,first}=usageLabels(row,checked,running,running ? usage : undefined);
+  const {input,cached,produced,first}=usageLabels(row,checked,running,running ? usage : undefined);
   return '<p class="muted response-token-usage"'+(running?' data-current-usage':'')+'>Input tokens <strong data-input-count>'+esc(input)+
-    '</strong> · Output tokens <strong data-output-count>'+esc(produced)+'</strong><span data-first-output>'+esc(first)+'</span> · Device energy (est.) <strong>'+
+    '</strong> · <span title="'+cacheUsageHint+'">Cached input tokens <strong data-cached-input>'+esc(cached)+'</strong></span> · Output tokens <strong data-output-count>' +esc(produced)+'</strong><span data-first-output>'+esc(first)+'</span> · Device energy (est.) <strong>'+
     deviceEnergyReading(row?.telemetry?.device_power,provider,running)+'</strong></p>';
 }
-function quickExecutionProgress(run:UiRunDetail) {
+function executionProgress(run:UiRunDetail) {
   const {manifest,partial}=run;
   const candidate=manifest.candidates.find(c=>c.id===partial?.candidateId);
   const saved=run.results.filter(r=>r.dispatchState!=="pending");
@@ -648,16 +614,16 @@ function quickExecutionProgress(run:UiRunDetail) {
   const total=manifest.candidates.length*manifest.caseIds.length;
   const estimates=total*manifest.graders.length;
   let activity=run.status==="queued" ? "Waiting to start" : "Checking model token budgets";
+  if (manifest.fixture && !partial) activity="Preparing recorded answers";
   if (partial?.stage) activity="Preparing the evaluation report · "+partial.stage;
   else if (candidate && partial?.grading) activity="Scoring "+displayModel(candidate.model)+" · "+partial.grading.name+" v"+partial.grading.version;
-  else if (candidate) activity=saved.some(r=>r.candidateId===candidate.id)
-    ? "Recording the result for "+displayModel(candidate.model) : "Waiting for "+displayModel(candidate.model)+" to finish its answer";
+  else if (candidate) activity=saved.some(r=>r.candidateId===candidate.id && r.caseId===partial?.caseId)
+    ? "Recording the result for "+displayModel(candidate.model) : displayModel(candidate.model)+(manifest.mode==="dataset" && partial?.caseId ? " · "+partial.caseId : " · Candidate response");
   return '<section class="run-activity" aria-label="Evaluation progress"><h2>Evaluation in progress</h2><p role="status">'+esc(activity)+'</p>'+
-    activityMeter(activity)+'<div class="run-activity-counts"><div><strong>'+esc(answers)+' / '+esc(total)+'</strong><span>Answers received</span>'+
-    activityMeter("Candidate answers received",{value:answers,max:Math.max(1,total)})+
+    candidateRace(run)+'<div class="run-activity-counts"><div><strong>'+esc(answers)+' / '+esc(total)+'</strong><span>Answers received</span>'+
     (issues ? '<small>'+esc(issues)+' interrupted or failed</small>' : '')+'</div>'+
     (estimates ? '<div><strong>'+esc(grades)+' / '+esc(estimates)+'</strong><span>Grader assessments recorded</span>'+
-      activityMeter("Grader assessments recorded",{value:grades,max:estimates})+'</div>' : '')+'</div></section>';
+      '</div>' : '')+'</div></section>';
 }
 async function runPage(id:string, record:string|undefined, seq:number) {
   const run = await api.detail(id),
@@ -716,7 +682,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     tag(run.status, true) + (m.mode==="quick" && !m.industry ? "" : tag(m.industry || state.datasets.find(d=>d.id===m.datasetId)?.metadata?.industry || "Industry unrecorded")) +
     (live ? btn("Stop run", "stop") : btn("Export run JSON", "export")) +
     "</div>";
-  if (live) out+='<div id="live-read-status"></div>'+(m.mode==="quick" ? quickExecutionProgress(run) : "");
+  if (live) out+='<div id="live-read-status"></div>'+executionProgress(run);
   if (live && !m.fixture && run.liveUsageVersion!==1)
     out+='<p class="muted">This runner reports token usage when a response finishes. Quit and reopen DASH for live provider counts.</p>';
   if (m.error) out += '<div class="wf-error spacer" role="alert">' + esc(m.error) + "</div>";
@@ -727,7 +693,6 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     if (candidate && (!saved || saved.dispatchState==="pending")) out+='<p class="muted">'+esc(displayModel(candidate.model))+
       ' · '+esc(caseId)+'</p>'+responseTokenUsage(saved,checkedInputTokens,true,candidate.provider,run.partial.usage);
   }
-  if (live && m.mode!=="quick" && run.partial?.stage) out += '<p role="status">'+esc(run.partial.stage)+' is reviewing the recorded scores…</p>';
   if (m.guardrailFailure) out += guardrailDetails(m.guardrailFailure);
   if (!live) out += evaluationReport(run);
   if (!live) out += structuredOutputSummary(run);
@@ -768,22 +733,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
         .join("") +
       "</div>";
   } else {
-    out +=
-      bar("Candidate progress") +
-      race(
-        m.candidates.map((c) => ({
-          label: c.model,
-          failed: run.results.some((r) => r.candidateId === c.id && r.error),
-          total: m.caseIds.length,
-          done: run.results.filter((r) => r.candidateId === c.id).length,
-        })),
-        live,
-        run.status +
-          " · " +
-          m.caseIds.length +
-          (m.caseIds.length === 1 ? " case" : " cases") +
-          " per candidate",
-      );
+    if (!live) out+=bar("Candidate progress")+candidateRace(run);
     if (m.pack && m.pack.kind !== "reference") out +=
       bar("Business outcomes") +
       '<div class="panel">' +
@@ -844,6 +794,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
           "Device power",
           "First token",
           "Input tokens",
+          "Cached input tokens",
           "Output tokens",
           "Device energy (est.)",
         ],
@@ -856,6 +807,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
             developerMetric(t.device_power?.average_w, " W"),
             t.first_token_ms != null ? t.first_token_ms + " ms" : "—",
             t.input_tokens ?? "—",
+            cachedInputLabel(t.cached_input_tokens),
             t.output_tokens ?? "—",
             deviceEnergyReading(t.device_power,m.candidates.find(c=>c.id===r.candidateId)?.provider),
           ];
@@ -880,13 +832,16 @@ function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.part
         await api.runProgress(id,revision,offset);
       if (seq!==token) return;
       document.getElementById("live-read-status")?.replaceChildren();
+      document.querySelector(".candidate-race[data-stale]")?.removeAttribute("data-stale");
       if (update.kind==="refresh") { await render(); return; }
       if (update.usage && run.partial) {
         run.partial.usage=update.usage;
+        if (run.partial.candidateId && receivedCandidateOutput(undefined,update.usage)) showGenerating(run.partial.candidateId);
         const slot=document.querySelector<HTMLElement>("[data-current-usage]");
         if (slot) {
           const labels=usageLabels(undefined,run.partial.checkedInputTokens,true,update.usage);
           requireElement("[data-input-count]",HTMLElement,slot).textContent=labels.input;
+          requireElement("[data-cached-input]",HTMLElement,slot).textContent=labels.cached;
           requireElement("[data-output-count]",HTMLElement,slot).textContent=labels.produced;
           requireElement("[data-first-output]",HTMLElement,slot).textContent=labels.first;
         }
@@ -896,11 +851,13 @@ function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.part
         if (!field || !run.partial || run.partial.candidateId!==update.candidateId) { await render(); return; }
         if (offset && field.firstChild instanceof Text) field.firstChild.appendData(update.text);
         else field.textContent=update.text;
+        if (update.text) showGenerating(update.candidateId);
         offset+=update.text.length;
       }
       pollRunProgress(seq,id,run,offset);
     } catch (e) {
       if(seq!==token)return;
+      document.querySelector(".candidate-race")?.setAttribute("data-stale","true");
       const slot=document.getElementById("live-read-status");
       if(slot && !slot.firstElementChild)slot.innerHTML=readFailure("Live updates paused. Showing the last received result.",e,"Refresh run");
       if(failures<3)pollRunProgress(seq,id,run,offset,failures+1);
@@ -911,7 +868,9 @@ let renderedLocation:string|null=null;
 async function render(discardEdits=false) {
   const seq = ++token;
   clearTimeout(poll);
-  const [route, id, rec] = trail();
+  const [route, id, segment, index] = trail();
+  const measure = route==="run" && segment==="measure" && /^\d+$/.test(index ?? "") ? index : undefined;
+  const rec = measure===undefined ? segment : undefined;
   const place=visibleHash;
   const screen=$("#screen"), replacing=renderedLocation!==place;
   if(replacing){
@@ -922,7 +881,7 @@ async function render(discardEdits=false) {
     const latest = await api.list();
     if (seq !== token) return;
     state = latest;
-    readQuickSession();
+    readQuickSession();recoverDatasetSetup();
     if(pendingQuickLineup && state.servers.length && workflows.quick.approved?.id===pendingQuickLineup) recoverQuickLineup(workflows.quick.approved);
     if (route==="compare") restoreActiveQuick();
     $("#machine").textContent = state.device;
@@ -930,7 +889,7 @@ async function render(discardEdits=false) {
     const items = nav.map(
       ([key, label, ico]) =>
         '<a href="#' +
-        (key==="graders" && (route==="compare" || quickLibraryPrompt())?quickLibraryPath():key) +
+        (key==="graders" && (route==="compare" || route==="new" || runLibraryRoute())?runLibraryPath(runLibraryRoute()?.mode ?? (route==="new"?"dataset":"quick")):key) +
         '" ' +
         (key === navRoute ? 'aria-current="page"' : "") +
         ">" +
@@ -954,11 +913,13 @@ async function render(discardEdits=false) {
         html=(resumedQuickId && resumedQuickId===workflows.quick.approved?.id ? '<p class="wf-hint" role="status">Resumed your approved Quick setup.</p>' : "")+workflowPage("quick");
         break;
       case "new":{
+        if(missingDatasetSetup){html='<section class="panel" role="status"><h2>Saved dataset setup unavailable</h2><p>The pinned snapshot or prompt version is missing.</p><button type="button" data-new-dataset-setup>Start a new dataset setup</button></section>';break;}
         const selected=workflows.dataset.approved?.datasetId ?? dataset()?.id;
-        const choices=selected ? await api.datasetGraderOptions(selected) : null;
+        const choices=selected ? await fetchDatasetGrading(selected) : null;
         if(seq!==token)return;
-        datasetGradingChoices=choices;
+        if(choices)applyDatasetGrading(choices);
         html = workflowPage("dataset");
+        if(!workflows.dataset.variant || workflows.dataset.approved)rememberDatasetSetup();
         break;
       }
       case "prompts":
@@ -975,6 +936,13 @@ async function render(discardEdits=false) {
         if (origin) {
           await loadQuickGrading(origin);
           if (seq!==token) return;
+          if(replacing)quickChooserFilter="";
+        }
+        if(runLibraryRoute()?.mode==="dataset") {
+          const snapshot=libraryDataset();
+          const choices=snapshot?await fetchDatasetGrading(snapshot.id):null;
+          if(seq!==token)return;
+          if(choices)applyDatasetGrading(choices);
           if(replacing)quickChooserFilter="";
         }
         html = await gradersPage();
@@ -1015,7 +983,8 @@ async function render(discardEdits=false) {
     renderedLocation=place;
     paintWorkspace(screen,html,!replacing && !discardEdits);
     if(route==="graders")applyCatalogFilter();
-    if (route==="compare") {scheduleBudgetPreview();focusReturnedQuickControl();}
+    if (route==="compare")scheduleBudgetPreview();
+    if (route==="compare" || route==="new")focusReturnedQuickControl();
     if (editing) {
       const field=document.getElementById(editing);
       if ((field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) && !field.disabled) {
@@ -1025,11 +994,16 @@ async function render(discardEdits=false) {
     }
     if (route === "datasets") filterCatalog();
     if (route === "home") bindDeviceDetails();
-    for (const car of document.querySelectorAll<SVGElement>(".car[data-progress]"))
-      car.style.left =
-        "calc((100% - 39px) * " + Number(car.dataset.progress) / 100 + ")";
     for (const d of document.querySelectorAll<HTMLDetailsElement>("details:not([data-own-open])"))
       if (open.includes(d.querySelector("summary")?.textContent ?? "")) d.open = true;
+    if (replacing && measure!==undefined) {
+      const evidence=screen.querySelector<HTMLDetailsElement>('.er-evidence[data-metric-index="'+measure+'"]');
+      if (evidence) {
+        evidence.open=true;
+        evidence.querySelector("summary")?.focus({preventScroll:true});
+        evidence.scrollIntoView({block:"center"});
+      }
+    }
     if (focus)
       document
         .querySelector<HTMLElement>('[data-act="' + CSS.escape(focus) + '"]')
@@ -1093,6 +1067,7 @@ document.addEventListener("submit", async (e) => {
     });
     baseline = "";
     const openResult=stillHere() && showCurrentWorkflow(w);
+    if(runMode==="dataset" && workflows.dataset===w)resetDatasetSetupReceipt();
     if(runMode==="quick" && workflows.quick===w) {leaveQuickSetup();workflows.quick=plannerState("quick");}
     if (openResult) location.hash = "run/" + id;
   } catch (error) {
@@ -1213,7 +1188,7 @@ async function bootWorkspace() {
   if (route === "home" && count) {
     state.servers = servers;
     count.textContent = loadedModelCount();
-  } else if ((["home", "providers", "compare", "new", "developer"].includes(route) || quickLibraryPrompt())) {
+  } else if ((["home", "providers", "compare", "new", "developer"].includes(route) || runLibraryRoute())) {
     await render();
   }
 }

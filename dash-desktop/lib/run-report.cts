@@ -233,7 +233,7 @@ function comparison(status:string, analysis:ReturnType<typeof analyzeOutputs>, g
   if (!metrics.length) return { verdict: "ungraded", summary: analysis.metrics.length ? "Only response diagnostics were recorded. A business verdict requires a quality rubric." : "The run has no pinned grading rubric. Its responses are available for inspection." };
   if(unscoredMeasures>0)return {verdict:"incomplete",summary:unscoredMeasures+" approved "+(unscoredMeasures===1 ? "measure was" : "measures were")+" left unscored. Compare the available grades below."};
   if (!caseCount || !candidates.length || metrics.some(m => m.pairedCases !== caseCount))
-    return { verdict: "incomplete", summary: "Some candidate cases have no comparable score. Inspect rubric coverage and the case reasons." };
+    return { verdict: "incomplete", summary: "A quality check did not produce matching scores for every candidate and case. The missing scores and available next steps are listed below." };
   if (candidates.length === 1) return { verdict: "single", summary: candidates[0].label + " was assessed on " + caseCount + (caseCount === 1 ? " case." : " cases.") };
   if (candidates.length !== 2) return { verdict: "incomplete", summary: "A head-to-head comparison needs two candidates." };
   const leads = new Set<number>();
@@ -258,7 +258,9 @@ export function buildReport(run:RunData):RunReport|null {
   const currentPolicy=!!run.manifest.graders?.some(g=>g.type==="catalog" && g.library?.automatic && isInformationalRule(g.ruleKey));
   const policy=currentPolicy ? "Compare the mean score on each business rubric, with equal weight for every case. A winner requires a completed two-candidate run with every business grade present, at least one lead, and no losses. Response diagnostics are informational. In a scored domain scenario the leading candidate must have zero false accepts across all cases." : decisionRule;
   return { version: 1, reporter: { name: "Report agent", method: "deterministic" },
-    winnerId: null, ...comparison(run.status,analysis,currentPolicy,run.manifest.measureGraders?.filter(row=>row.graderId===null).length ?? 0), decisionRule:policy, ...analysis };
+    winnerId: null, ...(run.manifest.inspectionOnly && run.status==="completed"
+      ? {verdict:"ungraded" as const,summary:"Answer inspection was selected before GO. The saved answers and any individual checks are available below."}
+      : comparison(run.status,analysis,currentPolicy,run.manifest.measureGraders?.filter(row=>row.graderId===null).length ?? 0)), decisionRule:policy, ...analysis };
 }
 
 export class RunReports {

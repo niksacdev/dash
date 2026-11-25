@@ -30,8 +30,14 @@
 .er-metric h3 {margin:3px 0}
 .er-score-lines {display:grid;gap:9px;margin-top:14px}
 .er-score-line {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:3px 8px;font-size:13px}
-.er-score-line progress {display:block;width:100%;height:6px;grid-column:1/-1;accent-color:var(--brand)}
-.er-score-line:nth-child(2n) progress {accent-color:var(--series-b)}
+.er-score-line .race-course {grid-column:1/-1}
+.er-report .race-course,.metric-chart .race-course,.trend-points .race-course,.history-report .race-course {--race-height:26px}
+.er-score-line strong,.chart-heading strong,.trend-points strong {font-variant-numeric:tabular-nums}
+.er-score-line small,.er-equal,.chart-scale {color:var(--muted)}
+.er-equal,.chart-scale {display:block;margin-top:.5rem;font-size:12px}
+.er-metric-section {margin-block:1rem}
+.er-metric-section>h3,.history-report>h4 {margin-block:.8rem .5rem}
+.er-measure-comparison td .race-course,.er-outcomes td .race-course {margin-top:.35rem}
 .er-score-line small {grid-column:1/-1}
 .er-policy,.er-evidence {border-block-start:1px solid var(--border);padding-top:10px}
 .er-policy p {margin-top:8px}

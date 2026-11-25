@@ -5,7 +5,7 @@ interface UiModelIdentity { model:string; provider:string; revision?:string|null
 interface UiModel extends UiModelIdentity {
   nativeKey?:string; id: string; revision?: string | null; quantization?: string | null; loaded?: boolean | null;
   contextTokens?: number | null; maxContextTokens?: number | null; maxOutputTokens?: number | null;
-  section?: string; endpoint?: string; needsKey?: boolean;
+  section?: string; endpoint?: string; needsKey?: boolean; cacheScenarioInstructions?:boolean;
 }
 interface UiServer { provider:string; online:boolean; checkedAt:string; address:string; title:string; models:UiModel[];
   instances?: {id:string; model:string; context:number|null; quantization:string|null}[]|null }
@@ -66,24 +66,25 @@ type UiGraderScope = "general" | "industry" | "customer";
 interface UiGraderLibrary {scope:UiGraderScope;familyId:string;parentRevisionId?:string;scenario?:string;automatic?:boolean}
 type UiGraderSave = UiGraderDefinition & ({intent:"create"}|{intent:"derive"|"revise";sourceGraderId:string});
 interface UiGraderRun {id:string;title:string;created:string}
-interface UiGraderOptions {fieldCoverage?:Record<string,number>;literalAnswerCount?:number;expectedAnswerCount?:number;casesWithoutGuidance?:number;hasReferences?:boolean;automatic:UiGrader[];available:UiGrader[]}
+interface UiGraderOptions {scoringVersion?:1;diagnosticIds?:string[];setupIssues?:Record<string,string>;fieldCoverage?:Record<string,number>;literalAnswerCount?:number;expectedAnswerCount?:number;casesWithoutGuidance?:number;hasReferences?:boolean;automatic:UiGrader[];available:UiGrader[]}
 interface UiGrader extends UiGraderDefinition {generalDefaultKey?:string|null;library?:UiGraderLibrary;ruleKey?:string;ruleVersion?:number;id:string;version:number;judge?:UiModel|null;origin?:unknown;reason?:string}
 interface UiQuickMeasure {metric:string;criterion:string|null;generated:UiGraderDefinition|null;reason:string|null}
 type UiMeasureAssignment = {metric:string;kind:"skip"} | {metric:string;kind:"saved";graderId:string} |
   {metric:string;kind:"rubric";judgeId:string;threshold:number;criteria:string;evidence:"task-answer"|"reference"};
 interface UiPinnedMeasure {metric:string;criterion:string|null;graderId:string|null;graderVersion:number|null;reason:string|null}
 interface UiQuickOptions extends UiGraderOptions {expectedAnswerVersion?:1;recommended:UiGrader[];measures:UiQuickMeasure[];generated:UiGraderDefinition|null;judges:UiModel[]}
-interface UiMeasureEditor {choice:string;judgeId:string;threshold:string;criteria:string;evidence:"task-answer"|"reference";edited:boolean}
-interface UiQuickPlan {expectedAnswer:string;options:UiQuickOptions|null;saved:Set<string>;designed:boolean;measures:Map<string,UiMeasureEditor>;error:string;recovery:"retry"|"restart";sequence:number}
+interface UiMeasureEditor {choice:string;removedChoice?:string;judgeId:string;threshold:string;criteria:string;evidence:"task-answer"|"reference";edited:boolean}
+interface UiQuickPlan {inspectionOnly?:boolean;expectedAnswer:string;options:UiQuickOptions|null;saved:Set<string>;designed:boolean;measures:Map<string,UiMeasureEditor>;error:string;recovery:"retry"|"restart";sequence:number}
 interface UiDatasetCaseSource {datasetId:string; datasetName:string; datasetVersion:string; caseId:string; scenarioId:string; scenarioVersion:string; contractHash:string}
 interface UiAssessment {datasetCase?:UiDatasetCaseSource;opikMetric?:{metricKey:UiOpikMetricKey;nativeScore:number;direction:"higher-is-better"|"higher-is-risk"};decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
 interface UiScore {pass:boolean;ready?:boolean;falseAccept?:boolean;review?:boolean;reasons:string[]}
 interface UiDeviceEnergy {scope?:string;source?:string|null;sampled_seconds?:number;estimated_energy_j?:number|null}
-interface UiTelemetry {latency_ms?:number|null;first_token_ms?:number|null;input_tokens?:number|null;output_tokens?:number|null;device_power?:(UiDeviceEnergy & {average_w?:number|null})|null}
+interface UiTelemetry {latency_ms?:number|null;first_token_ms?:number|null;input_tokens?:number|null;cached_input_tokens?:number|null;output_tokens?:number|null;device_power?:(UiDeviceEnergy & {average_w?:number|null})|null}
 interface UiResult {dispatchedMessages?:{role:string;content:string}[];structuredOutputCheck?:{valid:boolean;message:string};gradingError?:string;candidateId:string;caseId:string;dispatchState?:"pending"|"canceled"|"interrupted";error?:string|null;output?:string|null;score?:UiScore|null;telemetry?:UiTelemetry|null;
   trace?:unknown;guardrail?:UiGuardrail|null;inputBudget?:{tokens:number;cap:number|null;source:string}|null}
 interface UiRunSummary {id:string;mode:UiMode;status:string;title:string;created:string;fixture:boolean|number;industry?:string|null;datasetId?:string|null}
 interface UiManifest {
+  inspectionOnly?:true;
   id:string;approvedPromptId?:string|null;created:string;mode:UiMode;fixture:boolean;title:string;measureGraders?:UiPinnedMeasure[];graders:UiGrader[];approvedPrompt?:UiApproved|null;
   prompt?:string|null;promptHash?:string;datasetId:string|null;datasetVersion?:string|null;split?:string|null;industry?:string|null;
   policyHash?:string|null;caseSetHash?:string;caseIds:string[];pack:UiPack|null;candidates:UiModel[];error?:string;
@@ -91,13 +92,15 @@ interface UiManifest {
 }
 interface CandidateUsage {
   inputTokens?:number;
+  cachedInputTokens?:number|null;
   outputTokens?:number;
   approximateOutputTokens?:number|null;
   firstTokenMs?:number;
 }
 interface CandidateUsageSample extends CandidateUsage { revision:number }
 type UiRunProgress = {kind:"unchanged";usage?:CandidateUsageSample}|{kind:"refresh"}|{kind:"append";candidateId:string;text:string;usage?:CandidateUsageSample};
-interface UiRunDetail {hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;caseId?:string;text?:string;checkedInputTokens?:number;usage?:CandidateUsageSample;grading?:{name:string;version:number}}|null}
+interface UiSavedReview {comparisonIssue?:string;id:string;caseId:string;graderId:string;graderName:string;version:number;created:string;source:string;status:"grading"|"completed"|"interrupted";grades:(UiAssessment & {candidate:string})[]}
+interface UiRunDetail {decisionReviewTargets?:Record<string,{model:string;caseIds:string[]}>;savedReviews?:UiSavedReview[];reviewedVerdict?:Pick<UiReport,"verdict"|"summary"|"winnerId">;quickFieldGraderIds?:string[];hasQuickExpectedAnswer?:boolean;liveUsageVersion?:1;liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;caseId?:string;text?:string;checkedInputTokens?:number;usage?:CandidateUsageSample;grading?:{name:string;version:number}}|null}
 interface UiDiagnostic {status:string;fixture:boolean;candidates:Pick<UiModel,"model"|"id">[];traces:{
   candidateId:string;caseId:string;index:number;telemetry?:UiTelemetry|null;stage:string;note:string;traceId:string;started:string;finished?:string;finishReason?:string|null;adapter?:string|null}[]}
 interface UiPower {at:string;watts:number|null;source:string|null;
@@ -106,17 +109,17 @@ interface UiPower {at:string;watts:number|null;source:string|null;
  disk?:{totalBytes:number|null;availableBytes:number|null;usedBytes:number|null};host?:{arch:string;cpu:string;memoryGiB:number;os:string;platform:string}}
 interface UiPlannerFallback {model:string;enabled:boolean;hasKey:boolean}
 interface UiState {generalGraderDefaults:string[];opikLibraryTemplates:readonly UiOpikLibraryTemplate[];packs:UiPack[];datasets:UiDataset[];runs:UiRunSummary[];prompts:UiApproved[];domainRoles:UiRole[];plannerFallback:UiPlannerFallback;servers:UiServer[];
-  endpoints:UiModel[];graders:UiGrader[];opikReady:boolean;active:string|null;device:string;fixtureId:string}
+  scenarioCacheSupport?:{baseUrl:string;models:readonly string[];guideUrl:string}; endpoints:UiModel[];graders:UiGrader[];opikReady:boolean;active:string|null;device:string;fixtureId:string}
 interface UiLaneBudget {candidateId?:string;status:"pending"|"verified"|"blocked"|"unverified";message?:string;inputTokens?:number|null;contextTokens?:number|null;outputReserve?:number|null}
 interface UiStartRun extends UiTokenCaps {
  mode:UiMode;datasetId:string|null;candidateIds:string[];graderIds:string[];animation:boolean;approvedPromptId?:string;parentId?:string;caseId?:string;
- expectedAnswer?:string;allowHostedDecision?:true;datasetScorer?:string;caseJudgeId?:string;measureGraders?:UiMeasureAssignment[];outcomeRubric?:{criteria:string;judgeId:string;threshold:number;type:"opik"|"judge"};
+ inspectionOnly?:true;expectedAnswer?:string;allowHostedDecision?:true;datasetScorer?:string;caseJudgeId?:string;measureGraders?:UiMeasureAssignment[];outcomeRubric?:{criteria:string;judgeId:string;threshold:number;type:"opik"|"judge"};
 }
 type UiDatasetCaseTest = {grader:string;datasetId:string;caseId:string;output:string};
 type UiGradeRequest = UiDatasetCaseTest | ({grader:string;allowHostedDecision?:true} & ({run:string;index:number} | {evidence:{input:string;output:string;reference:unknown;trajectory?:unknown[]}}));
 type UiDesignGraderRequest = {requestId?:string} & ({promptId:string;target?:"response"|"agent"} | {objective:string;metrics:string;domainId?:string;target:"response"|"agent";datasetId?:string});
 interface PlanningUsage {
-  inputTokens:number|null; outputTokens:number|null; estimatedCostUsd:number|null;
+  inputTokens:number|null; cachedInputTokens?:number; outputTokens:number|null; estimatedCostUsd:number|null;
 }
 interface UiPlanningAttempt {
   energy?:UiDeviceEnergy;
@@ -138,13 +141,14 @@ interface DashBridge {
  saveDomainRole(request:{domain:string;role:string;instructions:string;expectedVersion:number}):Promise<UiRole>;
  savePlannerFallback(request:{model:string;enabled:boolean;key:string}):Promise<UiPlannerFallback>;
  guidePrompt(draft:string):Promise<UiGuideResult>;cancelGuide():Promise<void>;power(detailed?:boolean):Promise<UiPower>;
- saveEndpoint(request:{section:string;model:string;baseUrl:string;key:string}):Promise<string>;
+ saveEndpoint(request:{section:string;model:string;baseUrl:string;key:string;cacheScenarioInstructions?:boolean}):Promise<string>;openCacheGuide():Promise<void>;
  designGraders(request:UiDesignGraderRequest):Promise<UiGraderDesign>;confirmGraders(request:UiPlanApproval):Promise<string[]>;
  listDecisionModels(baseUrl:string,protocol?:UiDecisionProtocol):Promise<string[]>;
  saveGrader(request:UiGraderSave):Promise<string>;graderSamples():Promise<UiAssessment[]>;
  graderDatasetIds(id:string):Promise<string[]>;
  setGeneralGraderDefault(id:string,enabled:boolean):Promise<void>;graderRuns(id:string):Promise<UiGraderRun[]>;datasetGraderOptions(id:string):Promise<UiGraderOptions>;
  quickGraderOptions(id:string):Promise<UiQuickOptions>;previewQuickBudget(id:string,models:string[]):Promise<UiLaneBudget[]>;
+ reviewSavedCase(request:{run:string;caseId:string;grader:string;expectedAnswer?:string;allowHostedDecision?:true}):Promise<string>;
  assess(request:UiGradeRequest):Promise<UiAssessment>;diagnostics(id:string):Promise<UiDiagnostic>;
  opikExperimentStatus(id:string):Promise<UiOpikStatus>;syncOpikExperiment(id:string):Promise<UiOpikReceipt>;openOpikDashboard():Promise<void>;
  performance(id:string):Promise<UiPerformance>;start(request:UiStartRun):Promise<string>;stop(id:string):Promise<void>;

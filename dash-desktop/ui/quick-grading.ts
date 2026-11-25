@@ -3,7 +3,7 @@
 const quickGradingPlans = new Map<string,UiQuickPlan>();
 function newQuickGradingPlan(id:string):UiQuickPlan {
   const attachment=readGraderAttachment("prompt:"+id);
-  return {expectedAnswer:"",options:null,saved:new Set(attachment?.ids),designed:!!attachment && !attachment.generic,measures:new Map(),error:"",recovery:"retry",sequence:0};
+  return {inspectionOnly:quickSession.lineups.find(l=>l.promptId===id)?.inspectionOnly===true,expectedAnswer:"",options:null,saved:new Set(attachment?.ids),designed:!!attachment && !attachment.generic,measures:new Map(),error:"",recovery:"retry",sequence:0};
 }
 function rememberQuickGraders(plan:UiQuickPlan,id=workflows.quick.approved?.id) {
   if (!id) return;
@@ -111,11 +111,60 @@ function quickReferenceChecks(plan:UiQuickPlan):string[] {
   }
   return [...names];
 }
-function quickGradePayload(plan?:UiQuickPlan):Pick<UiStartRun,"graderIds"|"measureGraders"|"outcomeRubric"|"expectedAnswer"> {
+interface ScoreSetupCheck {label:string;correction?:string}
+function renderScoreLanes(mode:UiMode,checks:ScoreSetupCheck[]) {
+  const lanes=modelSelections[mode].lanes;
+  const visible=mode==="quick" ? lanes : (lanes.some(Boolean)?lanes.filter(Boolean):[null]);
+  const names=visible.map((id,i)=>rosterModels().find(model=>model.id===id)?.model || "Lane "+(i+1)+" · choose a model");
+  const rows=checks.map(row=>[esc(row.label),...visible.map(id=>esc(row.correction || (id?"Can score":"Choose a model")))]);
+  return '<section class="qc-score-preview"><h3>Verdict coverage</h3>'+
+    (rows.length?table(["Quality check",...names],rows):'<p>Choose a quality grader to compare answers. Response diagnostics alone cannot pick a winner.</p>')+'</section>';
+}
+function quickScoreChecks(plan:UiQuickPlan):ScoreSetupCheck[] {
+  const options=plan.options;
+  if (!options) return [];
+  const assigned=new Set<string>(), checks:ScoreSetupCheck[]=[];
+  for (const row of quickGradingRows(options)) {
+    const choice=plan.measures.get(row.metric);
+    const saved=options.available.find(g=>choice?.choice==="saved:"+g.id);
+    if(saved)assigned.add(saved.id);
+    const correction=row.reason || (!choice || choice.choice==="skip" ? "Choose a grader" :
+      saved ? (options.setupIssues?.[saved.id] || (options.diagnosticIds?.includes(saved.id)?"Choose a quality grader":"") || (needsGraderReference(saved) && !plan.expectedAnswer.trim()?"Add expected answer":"")) :
+      choice.choice!=="rubric" ? "Choose an available grader" :
+      !options.judges.some(j=>j.id===choice.judgeId) ? "Choose a judge" :
+      !choice.criteria.trim() ? "Enter the rubric" :
+      !(Number(choice.threshold)>0 && Number(choice.threshold)<=1) ? "Enter a pass threshold" :
+      choice.evidence==="reference" && !plan.expectedAnswer.trim() ? "Add expected answer" : "");
+    if (!options.measures.length && choice?.choice==="skip") continue;
+    checks.push({label:row.metric,...(correction && {correction})});
+  }
+  for (const g of [...options.automatic,...options.available.filter(g=>plan.saved.has(g.id))]) {
+    if(assigned.has(g.id) || options.diagnosticIds?.includes(g.id))continue;
+    assigned.add(g.id);
+    const correction=options.setupIssues?.[g.id] || (needsGraderReference(g) && !plan.expectedAnswer.trim()?"Add expected answer":"");
+    checks.push({label:g.name,...(correction && {correction})});
+  }
+  return checks;
+}
+function quickCoverageIssue(plan:UiQuickPlan) {
+  const checks=quickScoreChecks(plan),missing=checks.find(check=>check.correction);
+  if(missing)return missing.label+" · "+missing.correction+".";
+  if(!checks.length)return "Choose a quality grader for the comparison.";
+  return "";
+}
+function quickScoreReadiness(plan:UiQuickPlan) {
+  const gap=quickCoverageIssue(plan);
+  return renderScoreLanes("quick",quickScoreChecks(plan))+(gap?'<label class="choice"><input type="checkbox" data-qc-inspect '+(plan.inspectionOnly?'checked':'')+'>Inspect answers without a quality verdict</label>':'');
+}
+function quickLaunchLabel() {
+  const plan=quickGradePlan();
+  return plan?.inspectionOnly && quickCoverageIssue(plan)?"Run answer inspection":"Run evaluation";
+}
+function quickGradePayload(plan?:UiQuickPlan):Pick<UiStartRun,"inspectionOnly"|"graderIds"|"measureGraders"|"outcomeRubric"|"expectedAnswer"> {
   if (!plan?.options) return {graderIds:[]};
   const ids=new Set(plan.saved);
   const expectedAnswer=plan.expectedAnswer.trim();
-  const evidence=expectedAnswer && quickReferenceChecks(plan).length ? {expectedAnswer} : {};
+  const evidence={...(expectedAnswer && quickReferenceChecks(plan).length && {expectedAnswer}),...(plan.inspectionOnly && quickCoverageIssue(plan) && {inspectionOnly:true as const})};
   if (!plan.options.measures.length) {
     const legacy=plan.measures.get("Combined outcome rubric");
     return {graderIds:[...ids],...evidence,...(legacy?.choice==="rubric" && {outcomeRubric:{type:"opik",
@@ -139,7 +188,10 @@ function quickGraderCount(payload:ReturnType<typeof quickGradePayload>) {
 }
 function quickGradeIssue(plan?:UiQuickPlan) {
   if (!plan?.options || plan.error) return plan?.error || "Loading grader options.";
+  if(plan.options.scoringVersion!==1)return "Quit and reopen DASH to verify scoring readiness before running.";
   const {graderIds,measureGraders=[],outcomeRubric}=quickGradePayload(plan);
+  const unavailable=[...plan.options.automatic.map(g=>g.id),...graderIds].map(id=>plan.options?.setupIssues?.[id]).find(Boolean);
+  if(unavailable)return unavailable;
   if (graderIds.some(id=>!plan.options?.available.some(g=>g.id===id))) return "A selected grader version is unavailable. Refresh grading options or change the selection.";
   if (quickReferenceChecks(plan).length) {
     if (plan.options.expectedAnswerVersion!==1) return "Quit and reopen DASH to supply an expected answer before running this grader.";
@@ -157,7 +209,8 @@ function quickGradeIssue(plan?:UiQuickPlan) {
       if (!(row.threshold>0 && row.threshold<=1)) return "Set a pass threshold above 0 and at most 1 for "+row.metric+".";
     }
   }
-  return quickGraderCount({graderIds,measureGraders,outcomeRubric})>8 ? "Choose up to eight distinct graders." : "";
+  if(quickGraderCount({graderIds,measureGraders,outcomeRubric})>8)return "Choose up to eight distinct graders.";
+  return plan.inspectionOnly ? "" : quickCoverageIssue(plan);
 }
 function quickGradeSummary() {
   const plan=quickGradePlan(),issue=quickGradeIssue(plan);
@@ -199,7 +252,9 @@ function quickMeasureRow(row:UiQuickMeasure,index:number,plan:UiQuickPlan,option
     editor.choice==="rubric" ? "Opik G-Eval · "+(editor.evidence==="reference" ? "Uses expected answer" : "Run rubric") : "Grader unavailable";
   const head='<div class="qc-measure" data-qc-measure="'+index+'"><details class="qc-assignment"><summary><span><strong>'+esc(row.metric)+
     '</strong><small>'+esc(policyLabel)+'</small>'+criterion+'</span></summary><div class="qc-assignment-body">';
-  const end='</div></details></div>';
+  const action=blocked ? "" : editor.choice!=="skip" ? graderSelectionButton("data-qc-toggle",String(index),"Remove","grader for "+row.metric+" from this comparison") :
+    graderSelectionButton("data-qc-toggle",String(index),editor.removedChoice?"Restore":"Choose","grader for "+row.metric);
+  const end='</div></details>'+action+'</div>';
   if (blocked) return head+'<small>'+esc(row.reason || "This measure has no approved pass condition.")+'</small>'+end;
   const current=editor.choice;
   const unavailable=current.startsWith("saved:") && !selected;
@@ -227,19 +282,16 @@ function quickMeasureRow(row:UiQuickMeasure,index:number,plan:UiQuickPlan,option
     '<button type="button" data-restore-quick-rubric="'+index+'">Use proposed rubric</button>';
   return head+select+policy+end;
 }
-function quickAdditionalVersions(plan:UiQuickPlan,options:UiQuickOptions) {
-  const mapped=new Set([...plan.measures.values()].map(editor=>editor.choice));
-  const extras=options.available.filter(g=>plan.saved.has(g.id) && !mapped.has("saved:"+g.id));
-  return extras.length ? '<h3 class="qc-line-label">Additional graders</h3><ul class="qc-additional-versions">'+extras.map(g=>{
-    const label=g.name+" · v"+g.version;
-    return '<li><span>'+esc(label)+'</span><button type="button" data-qc-extra-remove="'+esc(g.id)+'" aria-label="Remove '+esc(label)+'">Remove</button></li>';
-  }).join("")+'</ul>' : "";
+function quickSelectedVersions(plan:UiQuickPlan) {
+  const mapped=new Map<string,string>();
+  for (const [metric,editor] of plan.measures) if(editor.choice.startsWith("saved:")) mapped.set(editor.choice.slice(6),metric);
+  return selectedRunGraders("quick","prompt:"+workflows.quick.approved?.id,[...plan.saved,...mapped.keys()],mapped);
 }
 function quickGradePicker() {
   const plan=quickGradePlan(),options=plan?.options;
-  const heading='<div class="qc-section-title"><h2>Graders</h2>'+chooseQuickGradersLink()+'</div>';
-  if (!plan || !options || plan.error) return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+heading+
-    (plan?.error?quickGraderFailure(plan):'<p role="status">Loading grading options…</p>')+'</section>';
+  const scope="prompt:"+workflows.quick.approved?.id;
+  if(!plan || !options || plan.error)return runGraderPanel("quick",scope,plan?quickSelectedVersions(plan):selectedRunGraders("quick",scope,[]),
+    plan?.error?quickGraderFailure(plan):'<p role="status">Loading grading options…</p>');
   const checks=quickReferenceChecks(plan);
   const example=workflows.quick.approved?.domain==="Manufacturing" ? "Drawing B allows up to 10.03 mm. Sample S1 measured 10.04 mm and needs a signed recheck." :
     "The Q2 release reports diluted GAAP EPS of $0.74 and adjusted diluted EPS of $0.85.";
@@ -248,12 +300,12 @@ function quickGradePicker() {
     '<small id="qc-expected-checks">'+esc(checks.join(" · "))+'</small><textarea id="qc-expected-answer" rows="3" maxlength="12000" aria-describedby="qc-expected-help qc-expected-checks" placeholder="'+esc("Example: "+example)+'" '+
     (checks.length?'required':'disabled')+'>'+esc(plan.expectedAnswer)+'</textarea></section>';
   const missing=[...plan.saved].some(id=>!options.available.some(g=>g.id===id));
-  return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+heading+
-    '<h3 class="qc-line-label">Approved measures</h3>'+
+  const controls='<h3 class="qc-line-label">Approved measures</h3>'+
     quickGradingRows(options).map((m,i)=>quickMeasureRow(m,i,plan,options)).join("")+
     (!options.measures.length?'<p>This prompt version has no individually paired measures and pass conditions. Any combined rubric produces one score per answer.</p>':"")+
-    expected+'<div class="qc-attached">'+quickAdditionalVersions(plan,options)+'</div>'+
-    (missing?'<button type="button" data-qc-unavailable>Remove unavailable additional graders</button>':"")+(options.automatic.length?'<details class="qc-auto-options"><summary>Automatic checks · '+options.automatic.length+'</summary>'+automaticChecks(options.automatic)+'</details>':'')+'<p id="qc-grade-status">'+esc(quickGradeSummary().workload)+'</p></section>';
+    expected+'<div id="qc-score-readiness">'+quickScoreReadiness(plan)+'</div>'+
+    (missing?'<button type="button" data-qc-unavailable>Remove unavailable additional graders</button>':"")+'<p id="qc-grade-status">'+esc(quickGradeSummary().workload)+'</p>';
+  return runGraderPanel("quick",scope,quickSelectedVersions(plan),controls,options.automatic);
 }
 function updateQuickGradingControls() {
   const text=document.getElementById("qc-grade-status"),go=dashElement(".qc-launch .go-button",HTMLButtonElement);
@@ -263,10 +315,12 @@ function updateQuickGradingControls() {
   const counts=document.getElementById("qc-setup-counts");
   if(counts)counts.textContent=quickSetupCounts(summary.coverage);
   if (status) status.textContent=quickLaunchIssue() || "Ready to evaluate both answers.";
-  if (go) go.disabled=!canStartQuick();
+  if (go) {go.disabled=!canStartQuick();go.innerHTML=quickLaunchLabel()+' <b aria-hidden="true">❯</b>';}
   const plan=quickGradePlan(),attached=document.querySelector(".qc-attached");
   if (attached && plan?.options) {
-    attached.innerHTML=quickAdditionalVersions(plan,plan.options);
+    const preview=document.getElementById("qc-score-readiness");
+    if(preview){const focused=preview.contains(document.activeElement);preview.innerHTML=quickScoreReadiness(plan);if(focused)preview.querySelector<HTMLInputElement>("input")?.focus({preventScroll:true});}
+    attached.innerHTML=quickSelectedVersions(plan);
     const checks=quickReferenceChecks(plan);
     const section=document.querySelector<HTMLElement>("[data-qc-expected]");
     const input=document.querySelector<HTMLTextAreaElement>("#qc-expected-answer");
@@ -279,6 +333,13 @@ function updateQuickGradingControls() {
     }
   }
 }
+function changeQuickGrader(plan:UiQuickPlan,editor:UiMeasureEditor,choice:string) {
+  if (editor.choice.startsWith("saved:")) plan.saved.delete(editor.choice.slice(6));
+  if (choice.startsWith("saved:")) plan.saved.delete(choice.slice(6));
+  editor.choice=choice;
+  editor.edited=true;
+  delete editor.removedChoice;
+}
 document.addEventListener("click",async e=>{
   if (!(e.target instanceof Element)) return;
   const restore=e.target.closest<HTMLElement>("[data-restore-quick-rubric]");
@@ -288,12 +349,22 @@ document.addEventListener("click",async e=>{
     if (row?.generated && editor) {editor.criteria=row.generated.criteria;rememberQuickLineup();await render();}
     return;
   }
-  const remove=e.target.closest<HTMLButtonElement>("[data-qc-extra-remove]");
-  if(remove?.dataset.qcExtraRemove) {
-    const plan=quickGradePlan();
-    if(!plan)return;
-    plan.saved.delete(remove.dataset.qcExtraRemove);rememberQuickGraders(plan);updateQuickGradingControls();
-    document.querySelector<HTMLElement>(".qc-attached button, #qc-grading a")?.focus({preventScroll:true});return;
+  const toggle=e.target.closest<HTMLButtonElement>("[data-qc-toggle]");
+  if (toggle) {
+    const plan=quickGradePlan(),index=Number(toggle.dataset.qcToggle);
+    const row=plan?.options && quickGradingRows(plan.options)[index],editor=row && plan?.measures.get(row.metric);
+    const host=toggle.closest<HTMLElement>("[data-qc-measure]");
+    if (!plan?.options || !row || !editor || !host) return;
+    if (editor.choice==="skip" && !editor.removedChoice) {
+      requireElement(".qc-assignment",HTMLDetailsElement,host).open=true;
+      requireElement("[data-qc-field=choice]",HTMLSelectElement,host).focus();return;
+    }
+    const previous=editor.choice;
+    changeQuickGrader(plan,editor,editor.removedChoice ?? "skip");
+    if (previous!=="skip") editor.removedChoice=previous;
+    rememberQuickGraders(plan);rememberQuickLineup();
+    host.outerHTML=quickMeasureRow(row,index,plan,plan.options);updateQuickGradingControls();
+    document.querySelector<HTMLButtonElement>('[data-qc-toggle="'+index+'"]')?.focus({preventScroll:true});return;
   }
   if (e.target.closest("[data-qc-unavailable]")) {
     const plan=quickGradePlan();
@@ -306,6 +377,9 @@ document.addEventListener("click",async e=>{
 function handleQuickGradingField(e:Event) {
   const target=e.target,plan=quickGradePlan();
   if (!textInput(target) || !plan?.options || !target.closest("#qc-grading")) return;
+  if (target instanceof HTMLInputElement && target.hasAttribute("data-qc-inspect")) {
+    if(e.type==="change"){plan.inspectionOnly=target.checked;rememberQuickLineup();updateQuickGradingControls();}return;
+  }
   if (target.id==="qc-expected-answer") {
     plan.expectedAnswer=target.value;
     updateQuickGradingControls();return;
@@ -318,7 +392,7 @@ function handleQuickGradingField(e:Event) {
     editor.edited=true;
     if (field==="judgeId" || field==="criteria" || field==="threshold") editor[field]=target.value;
     else if (field==="evidence" && (target.value==="reference" || target.value==="task-answer")) editor.evidence=target.value;
-    else if (field==="choice") editor.choice=target.value;
+    else if (field==="choice") changeQuickGrader(plan,editor,target.value);
     if (e.type==="change") {
       if (field==="choice") rememberQuickGraders(plan);
       rememberQuickLineup();

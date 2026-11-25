@@ -48,6 +48,30 @@ test("cache failure during report assistance and damaged report JSON never hide 
   assert.equal(calls,1);
 });
 
+test("dataset progress identifies the case and pinned grader after saving the response",async t=>{
+  const bench=new Bench(":memory:",runtime(),withoutPower);
+  t.after(()=>bench.db.close());
+  await bench.refresh();
+  const datasetId=cases(bench,2);
+  const name="Color wording";
+  const grader=bench.graders.save({name,industry:"General",category:"Content",type:"contains",criteria:"blue",threshold:1},[]);
+  const snapshots:unknown[]=[];
+  const record=bench.graders.record.bind(bench.graders);
+  t.mock.method(bench.graders,"record",(...args:Parameters<typeof record>)=>{
+    const [spec,,where]=args;
+    if (spec.name===name && where.run) {
+      const detail=bench.detail(where.run);
+      snapshots.push({partial:detail.partial,saved:detail.results.length});
+    }
+    return record(...args);
+  });
+  bench.start({mode:"dataset",candidateIds:[model.id],datasetId,datasetScorer:"exact-reference",graderIds:[grader]});
+  await present(bench.active?.done);
+  assert.deepEqual(snapshots,[0,1].map(i=>({
+    partial:{candidateId:model.id,caseId:"case-"+i,text:"",grading:{name,version:1}},saved:i+1
+  })));
+});
+
 test("built-in scoring and initial sensor failures keep the successful response available to independent graders",async t=>{
   let calls=0;
   const b=new Bench(":memory:",{...runtime(),invoke:async()=>{calls++;return reply("blue",{},"stop");}},()=>{
