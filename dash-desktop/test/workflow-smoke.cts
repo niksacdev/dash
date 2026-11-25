@@ -525,8 +525,29 @@ async function smoke() {
   assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "The outcome form should fit a phone viewport");
   assert.ok(await js("document.querySelector('#wf-design').getBoundingClientRect().height >= 44"), "Touch-size draft button");
   assert.match(await text("(()=>{const packs=state.packs;try{state.packs=packs.map(({starter,...old})=>old);return outcomeExamples(workflows.quick);}finally{state.packs=packs;}})()"),/Quit and reopen DASH/);
-  await click('[data-wf-example="manufacturing"]');
-  assert.match(await text("document.querySelector('#wf-objective').value"), /Synthetic inspection record/);
+  const sampleCalls=calls.length;
+  const objectiveValue=()=>text("document.querySelector('#wf-objective').value");
+  const inspectSample='[data-wf-example="manufacturing"]', earningsSample='[data-wf-example="earnings"]';
+  await click(inspectSample);
+  const inspectionObjective=await objectiveValue();
+  assert.match(inspectionObjective,/Synthetic inspection record/);
+  await click(inspectSample);
+  assert.equal(await objectiveValue(),inspectionObjective);
+  await click(earningsSample);
+  const earningsObjective=await objectiveValue();
+  assert.match(earningsObjective,/Synthetic release excerpt/);
+  assert.doesNotMatch(earningsObjective,/Synthetic inspection record/);
+  await fill("#wf-metrics","Measure citations per answer");
+  const edited=earningsObjective+" Check the current period.";
+  await fill("#wf-objective",edited);
+  await click(inspectSample);
+  await click('dialog button[value="stay"]');
+  assert.equal(await objectiveValue(),edited);
+  await click(inspectSample);
+  await click('dialog button[value="leave"]');
+  await wait(()=>js("document.querySelector('#wf-objective').value==="+q(inspectionObjective)),"Replace the edited objective with one sample");
+  assert.equal(await text("document.querySelector('#wf-metrics').value"),"Measure citations per answer");
+  assert.equal(calls.length,sampleCalls,"Choosing examples is a local edit");
   await fill("#wf-objective", quickGoal);
   await fill("#wf-metrics", [metric,markerMetric].join("\n"));
   await fill("#wf-output-cap", "180");
@@ -905,6 +926,12 @@ async function smoke() {
   }
   await route("new");
   await click("#wf-variant");
+  await click(earningsSample);
+  const datasetObjective=await objectiveValue();
+  assert.match(datasetObjective,/analyst review/);
+  assert.doesNotMatch(datasetObjective,/Synthetic release excerpt/);
+  await click(earningsSample);
+  assert.equal(await objectiveValue(),datasetObjective);
   await fill("#wf-objective", "Identify which reported financial facts need analyst verification.");
   const start = calls.length;
   await click("#wf-suggest");
@@ -1523,8 +1550,9 @@ async function smoke() {
         await wait(()=>js("document.querySelector('#grade-create [name=criteria]').value==='QA'"),"Reopen customer v2");
         await fill("#grade-create [name=criteria]","QA version three");await click("#grade-create button.yellow");
         await wait(()=>loadVersion(alias,3),"Published successor");
-        await route("new");
         const v3=z.string().parse(loadVersion(alias,3));
+        await wait(()=>exists('#grader-receipt [data-use-version="'+v3+'"]'),"The new grader receipt is visible before leaving");
+        await route("new");
         await wait(()=>exists(optionFor(v3)),"Successor offered alongside earlier revision");
         assert.equal(await js("document.querySelector("+q(optionFor(v3))+").checked"),false);
       }
