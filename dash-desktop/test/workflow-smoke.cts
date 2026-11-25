@@ -202,8 +202,8 @@ globalThis.fetch = async (url, options = {}) => {
 
 const readPower:typeof power.readPower = async () => ({watts:null,source:"QA",at:new Date().toISOString()});
 const startPower:typeof power.startPower = async () => async () => ({
-  source:"QA", scope:"Whole device", samples:[], average_w:null, peak_w:null,
-  estimated_energy_j:null, sampled_seconds:0, interval_ms:1000,
+  source:"Synthetic power sensor", scope:"Whole device", samples:[{ms:0,watts:8},{ms:1500,watts:8}], average_w:8, peak_w:8,
+  estimated_energy_j:12, sampled_seconds:1.5, interval_ms:1000,
 });
 mock.method(power, "readPower", readPower);
 mock.method(power, "startPower", startPower);
@@ -525,6 +525,14 @@ async function smoke() {
   assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "The outcome form should fit a phone viewport");
   assert.ok(await js("document.querySelector('#wf-design').getBoundingClientRect().height >= 44"), "Touch-size draft button");
   assert.match(await text("(()=>{const packs=state.packs;try{state.packs=packs.map(({starter,...old})=>old);return outcomeExamples(workflows.quick);}finally{state.packs=packs;}})()"),/Quit and reopen DASH/);
+  await js("globalThis.energyQA=[];window.dash.onPlanningStage(c=>{if(c.requestId==='energy-qa')globalThis.energyQA.push([c.usage?.inputTokens,c.energy ?? null]);});true");
+  const energyEvent={mode:"quick",requestId:"energy-qa",queryId:"read",provider:"ollama",model:"test",stage:"scope",attempt:1,
+    status:"succeeded",usage:{inputTokens:6,outputTokens:2,estimatedCostUsd:null}};
+  wc.send("dash:planningStage",energyEvent);
+  wc.send("dash:planningStage",{...energyEvent,energy:{scope:"Whole device",source:null,sampled_seconds:1,estimated_energy_j:true}});
+  wc.send("dash:planningStage",{...energyEvent,energy:{scope:"Whole device",source:null,sampled_seconds:1,estimated_energy_j:9,raw:"EXTRA"}});
+  await wait(()=>js("globalThis.energyQA.length===3"),"Historical and optional energy fields in IPC");
+  assert.deepEqual(await js("globalThis.energyQA"),[[6,null],[6,null],[6,{scope:"Whole device",source:null,sampled_seconds:1,estimated_energy_j:9}]]);
   const sampleCalls=calls.length;
   const objectiveValue=()=>text("document.querySelector('#wf-objective').value");
   const inspectSample='[data-wf-example="manufacturing"]', earningsSample='[data-wf-example="earnings"]';
@@ -560,6 +568,7 @@ async function smoke() {
     await wait(()=>exists('#wf-activity [data-status="running"] .ai-pulse'), "Live planning query");
     assert.match(await text("document.querySelector('#wf-query .ai-model').textContent"), /Local.*lfm3/i);
     assert.equal(await text("document.querySelector('#wf-query dd').textContent"), "Awaiting final usage");
+    assert.match(await text("document.querySelector('#wf-query').textContent"), /Device energy \(est\.\)Pending/);
     assert.ok(await js("document.documentElement.scrollWidth <= innerWidth + 1"), "Planning activity fits the phone viewport");
     assert.ok(await js("getComputedStyle(document.querySelector('.ai-model')).color !== getComputedStyle(document.querySelector('.ai-query-head strong')).color"));
     win.webContents.debugger.attach("1.3");
@@ -573,9 +582,11 @@ async function smoke() {
   await wait(() => exists("#wf-criteria"), "Editable success criteria");
   assert.match(await text("document.querySelector('#wf-measure-fields').textContent"), /AI expert.*AI suggestions can be wrong/);
   assert.equal(await js("document.querySelectorAll('#wf-activity .ai-query').length"),3);
-  assert.deepEqual(await js("Array.from(document.querySelector('#wf-query .ai-query').querySelectorAll('dd'),n=>n.textContent).slice(0,3)"),["21","12","No API charge"]);
+  assert.deepEqual(await js("Array.from(document.querySelector('#wf-query .ai-query').querySelectorAll('dd'),n=>n.textContent).slice(0,4)"),["21","12","12 J · 1.5 s sampled","No API charge"]);
   assert.match(await text("document.querySelector('#wf-query .ai-query').textContent"),/Elapsed[\d.]+ s/);
   assert.equal(await exists("#wf-activity .ai-pulse"),false);
+  assert.equal(await text("new DOMParser().parseFromString(deviceEnergyReading({average_w:10},'compatible'),'text/html').body.textContent"),"Unmeasured · DASH device only");
+  assert.match(await text("new DOMParser().parseFromString(planningQueryRow({stage:'Prior query',model:'lm',status:'succeeded',usage:{inputTokens:3,outputTokens:2}}),'text/html').body.textContent"),/Device energy \(est\.\)Unmeasured/);
   assert.deepEqual(calls.map(c => c.stage), ["route", "expert", "audit"]);
   assert.equal(await js("document.querySelector('#wf-measures .wf-explanation').open"),false);
   await click("#wf-measures .wf-explanation summary");
@@ -797,6 +808,12 @@ async function smoke() {
   sendPart(2);
   const quick = await completedRun(1);
   assert.equal(quick.mode, "quick");
+  const developerFacts=await text("developerPage("+q(quick.id)+").then(html=>new DOMParser().parseFromString(html,'text/html').body.textContent)");
+  assert.match(developerFacts,/Live inference/);
+  assert.match(developerFacts,/DASH device energy \(est\.\)/);
+  assert.match(developerFacts,/Remote server energy is unavailable/);
+  await wait(()=>js("document.querySelector('.response-token-usage')?.textContent.includes('12 J · 1.5 s sampled')"),"Saved energy replaces pending beside candidate tokens");
+  assert.equal(await js("window.dash.performance("+q(quick.id)+").then(p=>p.candidates.every(c=>c.energy===12 && c.energyCount===1))"),true);
   assert.equal(await js("JSON.parse(localStorage.getItem('dash.quick-lineups.v1')).active"),null,"Dispatch retires the active draft");
   assert.equal(quick.prompt, approvedText);
   assert.deepEqual(quick.candidates.map(c => c.model).sort(), Object.values(models).sort());
@@ -807,6 +824,7 @@ async function smoke() {
     assert.equal(body.options?.num_predict ?? body.max_tokens, 180);
   }
   assert.equal(quick.approvedPromptId, first.id);
+  assert.ok(first.planningAttempts?.every(a=>a.energy?.estimated_energy_j===12 && a.energy.sampled_seconds===1.5));
   assert.deepEqual(quick.approvedPrompt, first, "Persist the exact reviewed prompt, agents, and revisions with the run");
 
   const quickRecords = gradedDetail.parse(await js("window.dash.detail(" + q(quick.id) + ")"));

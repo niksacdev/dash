@@ -78,7 +78,8 @@ interface UiQuickPlan {options:UiQuickOptions|null;saved:Set<string>;designed:bo
 interface UiDatasetCaseSource {datasetId:string; datasetName:string; datasetVersion:string; caseId:string; scenarioId:string; scenarioVersion:string; contractHash:string}
 interface UiAssessment {datasetCase?:UiDatasetCaseSource;opikMetric?:{metricKey:UiOpikMetricKey;nativeScore:number;direction:"higher-is-better"|"higher-is-risk"};decisionAttempt?:UiDecisionAttempt;decisionRequest?:UiDecisionRequest;decision?:UiDecisionObservation;engine?:UiGradeType;name:string;version:number;candidate?:string|null;caseId?:string|null;judge?:string|null;value:number|null;pass:boolean|null;reason:string}
 interface UiScore {pass:boolean;ready?:boolean;falseAccept?:boolean;review?:boolean;reasons:string[]}
-interface UiTelemetry {latency_ms?:number|null;first_token_ms?:number|null;input_tokens?:number|null;output_tokens?:number|null;device_power?:{average_w?:number|null}|null}
+interface UiDeviceEnergy {scope?:string;source?:string|null;sampled_seconds?:number;estimated_energy_j?:number|null}
+interface UiTelemetry {latency_ms?:number|null;first_token_ms?:number|null;input_tokens?:number|null;output_tokens?:number|null;device_power?:(UiDeviceEnergy & {average_w?:number|null})|null}
 interface UiResult {structuredOutputCheck?:{valid:boolean;message:string};gradingError?:string;candidateId:string;caseId:string;dispatchState?:"pending"|"canceled"|"interrupted";error?:string|null;output?:string|null;score?:UiScore|null;telemetry?:UiTelemetry|null;
   trace?:unknown;guardrail?:UiGuardrail|null;inputBudget?:{tokens:number;cap:number|null;source:string}|null}
 interface UiRunSummary {id:string;mode:UiMode;status:string;title:string;created:string;fixture:boolean|number;industry?:string|null;datasetId?:string|null}
@@ -111,6 +112,7 @@ interface PlanningUsage {
   inputTokens:number|null; outputTokens:number|null; estimatedCostUsd:number|null;
 }
 interface UiPlanningAttempt {
+  energy?:UiDeviceEnergy;
   startedAt?:number; elapsedMs?:number; discoveryMs?:number; firstTokenMs?:number; tokensPerSecond?:number;
   progress?:{phase:"processing-prompt";percent:number}|{phase:"generating";approximateOutputTokens:number|null};
   stage:string; model:string; provider?:string; revision?:string|null; attempt?:number;

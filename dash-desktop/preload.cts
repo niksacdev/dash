@@ -32,7 +32,15 @@ function validPlanningProgress(value:unknown):boolean {
   return value.phase==="generating" && "approximateOutputTokens" in value && (value.approximateOutputTokens===null ||
     typeof value.approximateOutputTokens==="number" && Number.isSafeInteger(value.approximateOutputTokens) && value.approximateOutputTokens>=0);
 }
-function isPlanningEvent(value:unknown):value is UiPlanningEvent {
+function planningEnergy(value:unknown):UiDeviceEnergy|undefined {
+  if (!value || typeof value!=="object" || !("scope" in value) || value.scope!=="Whole device" ||
+      !("source" in value) || !(value.source===null || (typeof value.source==="string" && value.source.length<=240)) ||
+      !("sampled_seconds" in value) || typeof value.sampled_seconds!=="number" || !Number.isFinite(value.sampled_seconds) || value.sampled_seconds<0 ||
+      !("estimated_energy_j" in value) || !(value.estimated_energy_j===null || (typeof value.estimated_energy_j==="number" &&
+        Number.isFinite(value.estimated_energy_j) && value.estimated_energy_j>=0 && value.sampled_seconds>0))) return undefined;
+  return {scope:value.scope,source:value.source,sampled_seconds:value.sampled_seconds,estimated_energy_j:value.estimated_energy_j};
+}
+function isPlanningEvent(value:unknown):value is Omit<UiPlanningEvent,"energy"> & {energy?:unknown} {
   return typeof value==="object" && value!==null &&
     "mode" in value && (value.mode==="quick" || value.mode==="dataset" || value.mode==="grader") &&
     "requestId" in value && typeof value.requestId==="string" &&
@@ -54,7 +62,10 @@ const bridge:DashBridge = {
   onPlanningStage(callback) {
     if (typeof callback !== "function") return;
     ipcRenderer.on("dash:planningStage",(_event, stage:unknown) => {
-      if (isPlanningEvent(stage)) callback(stage);
+      if (!isPlanningEvent(stage)) return;
+      const {energy,...receipt}=stage;
+      const measured=planningEnergy(energy);
+      callback(measured ? {...receipt,energy:measured} : receipt);
     });
   },
   list: () => invoke("list"),

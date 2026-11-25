@@ -18,6 +18,7 @@ interface DesignerBench {
   active:unknown;designing:boolean;readonly modelLoading:boolean;readonly adapters:PlannerAdapters;readonly db:DatabaseSync;readonly graders:Graders;
   workflow:{get(id:string):ApprovedPrompt};dataset(id:string):DatasetSnapshot;pack(id:string):{pack:ScenarioPack};
   quickGraderOptions(id:string):CatalogOptions;datasetGraderOptions(id:string):CatalogOptions;
+  powerSampler?:import("./planner-routing.cjs").PlannerOptions["powerSampler"];
   plannerSettings:Pick<PlannerSettings,"fallback">;servers:RuntimeInventory[];
 }
 const textId=z.string().trim().min(1).max(250);
@@ -204,7 +205,7 @@ export async function designGraderPlan(bench:DesignerBench,raw:unknown,onStage?:
     const methods=supportedMethods(brief,literals);
     const goals=[...new Set(brief.metrics)].map((metric,i)=>({key:"M"+(i+1),metric,external:brief.metricAudit?.some(row=>row.metric===metric && row.status==="external") || isExternalOutcomeMetric(metric),answerContent:asksForAnswerContent(metric)}));
     if(!goals.length)throw Error("Enter at least one success measure.");
-    const route=await PlanningRoute.start(bench.adapters,{openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),
+    const route=await PlanningRoute.start(bench.adapters,{powerSampler:bench.powerSampler,openaiFallback:()=>bench.plannerSettings.fallback()},AbortSignal.timeout(150000),
       event=>onStage?.({...event,mode:"grader"}),request.requestId);
     const agent=loadAgent("grader-designer");
     type Visible=typeof choices;

@@ -44,6 +44,8 @@ During **Suggest Metrics** or **Draft evaluation prompt**, the activity indicato
 
 Local calls show **No API charge**. For a supported OpenAI standard-tier snapshot, **est.** is an estimate in US dollars using the reported cached input, uncached input and output tokens. An unreported value stays **Unreported**. These numbers cover planning queries. The candidate run has its own measurements. [Pricing sources and scope](https://github.com/niksacdev/dash/blob/main/docs/adr/0021-planning-activity.md)
 
+AI planning query details also show **Device energy (est.)** and the sampled duration when the DASH host provides readings. [Read device energy](results.md#read-device-energy) explains coverage for local and hosted queries.
+
 ## Check the planning domain
 
 Under **Try an outcome**, select an industry example to fill **Task objective**. Selecting it again keeps one copy. Selecting another replaces the previous example. If you have written or edited the objective, choose **Stay here** to keep your text or **Replace objective** to use the example. Quick compare includes the sample case, while a Dataset run variant uses the task with the selected dataset.

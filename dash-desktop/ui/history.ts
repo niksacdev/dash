@@ -10,7 +10,7 @@ async function runPerformance(id: string, loadedRun?: UiRunDetail): Promise<UiPe
   const run = loadedRun || await api.detail(id), m = run.manifest;
   const records = run.results.map(r => ({candidate:r.candidateId, error:r.dispatchState ? null : r.error, pass:r.score?.pass,
     review:r.score?.review, latency:r.telemetry?.latency_ms, input:r.telemetry?.input_tokens,
-    output:r.telemetry?.output_tokens, watts:r.telemetry?.device_power?.average_w}));
+    output:r.telemetry?.output_tokens, watts:r.telemetry?.device_power?.average_w, energy:r.telemetry?.device_power}));
   return {id,readError,packKind:m.pack?.kind, title:m.title,created:m.created,status:run.status,fixture:m.fixture,mode:m.mode,
     datasetId:m.datasetId,version:m.datasetVersion,split:m.split,perCandidate:m.caseIds.length,
     candidates:candidateMetrics(m.candidates,records),history:[]};
@@ -58,6 +58,12 @@ function performanceCharts(s: UiPerformance & {readError?:string}) {
         const value=c[field];
         return {label:c.model,value,display:value===null?"Unreported":metricNumber(value)+" tokens",note:c[count]+" measured"};
       })));
+    }
+    if(s.candidates.some(c=>c.energyCount!==undefined)) {
+      cards.push(chartPanel("Device energy (est.)","Average joules over sampled intervals per measured case on the device running DASH. Remote server energy is unavailable.",s.candidates.map(c=>({
+        label:c.model,value:c.energy ?? null,display:c.energy==null?"Unmeasured":energyNumber(c.energy)+" J",
+        note:(c.energyCount ?? 0)+" of "+c.recorded+" recorded cases measured"
+      }))));
     }
     cards.push(chartPanel("DASH host power","Mean of the measured case averages on the device running DASH. Hosted inference server power is unavailable.",s.candidates.map(c=>({
       label:c.model,value:c.watts,display:c.watts==null?"Unmeasured":metricNumber(c.watts)+" W",

@@ -2,7 +2,7 @@ import type {DatabaseSync} from "node:sqlite";
 import type {Candidate} from "./runtime-types.cjs";
 import {stringValue,statusValue} from "./run-types.cjs";
 import {decodeManifest} from "./run-decode.cjs";
-interface ChartSample {candidate:string;error:number|null;pass:number|null;review:number|null;latency:number|null;input:number|null;output:number|null;watts:number|null}
+interface ChartSample {candidate:string;error:number|null;pass:number|null;review:number|null;latency:number|null;input:number|null;output:number|null;watts:number|null;energy:UiDeviceEnergy}
 const charts:{candidateMetrics(c:Candidate[],r:ChartSample[]):UiCandidateMetrics[]}=require("../ui/performance-summary.js");
 function numberOrMissing(value:unknown):number|null {
   if(value==null) return null;
@@ -18,8 +18,14 @@ function records(db:DatabaseSync, run:string):ChartSample[] {
   return db.prepare(`SELECT candidate, (json_extract(record,'$.error') IS NOT NULL AND json_extract(record,'$.dispatchState') IS NULL) AS error,
     json_extract(record,'$.score.pass') AS pass, json_extract(record,'$.score.review') AS review,
     json_extract(record,'$.telemetry.latency_ms') AS latency, json_extract(record,'$.telemetry.device_power.average_w') AS watts,
+    CASE WHEN json_type(record,'$.telemetry.device_power.estimated_energy_j') IN ('integer','real')
+      THEN json_extract(record,'$.telemetry.device_power.estimated_energy_j') END AS joules,
+    CASE WHEN json_type(record,'$.telemetry.device_power.sampled_seconds') IN ('integer','real')
+      THEN json_extract(record,'$.telemetry.device_power.sampled_seconds') END AS seconds,
+    json_extract(record,'$.telemetry.device_power.scope') AS scope,
     json_extract(record,'$.telemetry.input_tokens') AS input,
-    json_extract(record,'$.telemetry.output_tokens') AS output FROM results WHERE run=? AND json_extract(record,'$.dispatchState') IS NOT 'pending'`).all(run).map(r=>({candidate:stringValue(r.candidate),error:numberOrMissing(r.error),pass:numberOrMissing(r.pass),review:numberOrMissing(r.review),latency:numberOrMissing(r.latency),input:numberOrMissing(r.input),output:numberOrMissing(r.output),watts:numberOrMissing(r.watts)}));
+    json_extract(record,'$.telemetry.output_tokens') AS output FROM results WHERE run=? AND json_extract(record,'$.dispatchState') IS NOT 'pending'`).all(run).map(r=>({candidate:stringValue(r.candidate),error:numberOrMissing(r.error),pass:numberOrMissing(r.pass),review:numberOrMissing(r.review),latency:numberOrMissing(r.latency),input:numberOrMissing(r.input),output:numberOrMissing(r.output),watts:numberOrMissing(r.watts),
+    energy:{scope:typeof r.scope==="string"?r.scope:undefined,estimated_energy_j:typeof r.joules==="number"?r.joules:null,sampled_seconds:typeof r.seconds==="number"?r.seconds:undefined}}));
 }
 export function performance(db:DatabaseSync, id:string) {
   const row = db.prepare("SELECT status,manifest FROM runs WHERE id=?").get(id);
