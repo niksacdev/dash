@@ -85,7 +85,7 @@ function initialize():void {
     return {...run,results:run.results.map(row=>row.error ? {...row,error:operatorProviderMessage(row.error)} : row)};
   });
   const cursorNumber=z.number().int().nonnegative().safe();
-  bind("runProgress",(id,revision,offset)=>bench.runProgress(identifier(id),cursorNumber.parse(revision),cursorNumber.parse(offset)));
+  bind("runProgress",(id,revision,offset,usageRevision)=>bench.runProgress(identifier(id),cursorNumber.parse(revision),cursorNumber.parse(offset),cursorNumber.optional().parse(usageRevision)),3);
   bind("guidePrompt",value=>bench.active || bench.modelLoading ? {status:"busy"} : bench.withRuntimeUse(()=>guide.suggest(value)));
   bind("cancelGuide",()=>guide.cancel());
   const onStage=(stage:UiPlanningEvent)=>win?.webContents.send("dash:planningStage",stage);

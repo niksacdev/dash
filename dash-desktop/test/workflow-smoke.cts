@@ -803,6 +803,7 @@ async function smoke() {
   assert.equal(await js("document.querySelector('#setup .go-button').disabled"),true);
   await reveal("[data-restore-quick-rubric]");await click("[data-restore-quick-rubric]");
   await wait(()=>js("document.querySelector('#setup .go-button')?.disabled===false"),"Ready after restoring approved scoring rubric");
+  assert.deepEqual(await js("window.dash.runProgress('previous-session',0,0)"),{kind:"refresh"},"Prior preload argument count");
   streamedQuick.armed=true;
   await click("#setup .go-button");
   await wait(()=>Promise.resolve(!!streamedQuick.send),"Quick stream opened");
@@ -813,6 +814,9 @@ async function smoke() {
   sendPart(0);
   await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,4))),"First visible response fragment");
   await js("document.querySelector("+q(liveField)+").dataset.qaIdentity='original'");
+  await wait(()=>js("document.querySelector('[data-current-usage] [data-first-output]')?.textContent.includes('First visible output')"),"Provider supplied first visible output timing");
+  assert.equal(await text("document.querySelector('[data-current-usage] [data-output-count]').textContent"),"Pending","Ollama text fragments supply no token counts");
+  assert.match(await text("document.querySelector('[data-current-usage]').textContent"),/Device energy \(est\.\) Pending/,"Live token updates retain the pending energy measurement");
   sendPart(1);
   await wait(()=>js("document.querySelector("+q(liveField)+")?.textContent==="+q(expectedContent.slice(0,8))),"Incremental response fragment");
   assert.equal(await js("document.querySelector("+q(liveField)+").dataset.qaIdentity"),"original","A token update must retain the visible run view");

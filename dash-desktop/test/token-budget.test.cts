@@ -77,19 +77,39 @@ test("uses the loaded tokenizer on complete rendered case and instructions, and 
 });
 
 test("dispatches the original messages once through the checked model with the exact output cap", async t => {
-  const f = fixture(t), seen: string[] = [];
+  const f = fixture(t), seen: string[] = [], usage:CandidateUsage[] = [];
   const inputBudget = await f.checkInputBudget({ candidate, messages, cap: 41 });
   assert.ok(inputBudget);
-  const result = await f.invokeBudgeted(candidate, messages, { signal, inputBudget, maxTokens: 4, structured: schema, onText: s => seen.push(s) });
+  const result = await f.invokeBudgeted(candidate, messages, { signal, inputBudget, maxTokens: 4, structured: schema, onText: s => seen.push(s), onCandidateUsage: sample=>usage.push(sample) });
   assert.deepEqual(Object.keys(inputBudget).sort(), ["source", "tokens"]);
   assert.equal(responseCall(f.calls,1).chat, messages);
   assert.equal(responseCall(f.calls,1).options.maxTokens, 4);
   assert.deepEqual(responseSchema(responseCall(f.calls,1).options), schema);
   assert.deepEqual(seen, ["WO-402"]);
+  assert.deepEqual(usage.filter(x=>x.firstTokenMs===undefined),[{inputTokens:40},{approximateOutputTokens:1},{approximateOutputTokens:4}]);
+  assert.ok(usage.some(x=>x.firstTokenMs!=null && x.firstTokenMs>=0));
   assert.equal(result.telemetry.input_tokens, inputBudget.tokens);
   assert.equal(result.telemetry.output_tokens, 4);
   assert.equal(result.output, "WO-402");
   assert.equal(result.finishReason, "length");
+});
+
+test("an overflowing SDK fragment total clears the live estimate without changing the provider receipt", async t => {
+  const {model}=sdkFixture(t,candidate.model,{
+    template:()=> "rendered", count:()=>41, context:1024,
+    respond(_chat,options) {
+      for (const count of [2,Number.MAX_SAFE_INTEGER,1])
+        options.onPredictionFragment?.({content:"private",tokensCount:count,containsDrafted:false,isStructural:false,reasoningType:"reasoning"});
+      return {stats:{promptTokensCount:41,predictedTokensCount:3,stopReason:"eosFound"},nonReasoningContent:""};
+    },
+  });
+  const adapter=createTokenBudget(async()=>[model]);
+  const inputBudget=await adapter.checkInputBudget({candidate,messages,cap:64});
+  assert.ok(inputBudget);
+  const samples:unknown[]=[];
+  const result=await adapter.invokeBudgeted(candidate,messages,{inputBudget,maxTokens:8,signal,onCandidateUsage:sample=>samples.push(sample)});
+  assert.deepEqual(samples,[{approximateOutputTokens:2},{approximateOutputTokens:null}]);
+  assert.equal(result.telemetry.output_tokens,3);
 });
 
 test("a receipt cannot be reused for another case or another candidate", async t => {

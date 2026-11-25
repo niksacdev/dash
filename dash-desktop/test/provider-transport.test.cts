@@ -36,7 +36,9 @@ test("compatible completion consumes usage before DONE and releases an open stre
     'data: [DONE]\ndata: invalid extra frame\n']);
   t.after(held.dispose);
   t.mock.method(globalThis,"fetch",async()=>held.response);
-  const result=await invoke(hosted,[...prompt],options());
+  const usage:CandidateUsage[]=[];
+  const result=await invoke(hosted,[...prompt],{...options(),onCandidateUsage:value=>usage.push(value)});
+  assert.deepEqual(usage.filter(x=>x.firstTokenMs===undefined),[{inputTokens:6},{inputTokens:6,outputTokens:1}]);
   assert.equal(result.output,"ready");
   assert.equal(result.finishReason,"stop");
   assert.equal(result.telemetry.input_tokens,6);

@@ -245,9 +245,9 @@ async function nativeDataset(candidate: ModelCandidate, messages: ChatTurn[], si
     },
   };
 }
-export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, strictSchema, onText, apiKey, inputBudget, planning, onPlanningProgress, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
+export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { signal, structured, strictSchema, onText, onCandidateUsage, apiKey, inputBudget, planning, onPlanningProgress, judging, maxTokens = settings.maxTokens }: InvokeOptions): Promise<InferenceResult> {
   if (inputBudget != null)
-    return invokeBudgeted(candidate, messages, { inputBudget, maxTokens, signal, structured, onText });
+    return invokeBudgeted(candidate, messages, { inputBudget, maxTokens, signal, structured, onText, onCandidateUsage });
   if (judging && candidate.provider === "lmstudio")
     return invokeJudge(candidate, messages, { maxTokens, signal, structured });
   if (planning && candidate.provider === "lmstudio")
@@ -337,10 +337,16 @@ export async function invoke(candidate: ModelCandidate, messages: ChatTurn[], { 
       inputTokens = count(d.usage.prompt_tokens) ?? inputTokens;
       outputTokens = count(d.usage.completion_tokens) ?? outputTokens;
     }
+    if (onCandidateUsage && ((native && d.done===true) || (!native && isRecord(d.usage))) &&
+        (inputTokens!==null || outputTokens!==null))
+      onCandidateUsage({...(inputTokens!==null && {inputTokens}),...(outputTokens!==null && {outputTokens})});
     const delta = native ? d.message : choice?.delta;
     const chunk = isRecord(delta) ? delta.content : null;
     if (typeof chunk === "string" && chunk) {
-      first ??= performance.now() - start;
+      if (first===null) {
+        first=performance.now()-start;
+        onCandidateUsage?.({firstTokenMs:Math.round(first)});
+      }
       output += chunk;
       onText?.(output);
     }

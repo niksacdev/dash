@@ -31,6 +31,24 @@ const datasetCaseTest = z.strictObject({
   caseId:z.string().min(1).max(200),output:z.string().min(1).max(100000),
 });
 class RunCheckpointError extends Error {}
+
+function mergeCandidateUsage(previous:CandidateUsageSample|undefined, observation:CandidateUsage) {
+  const keys=["inputTokens","outputTokens","approximateOutputTokens","firstTokenMs"] as const;
+  const sample={...previous,revision:(previous?.revision ?? 0)+1};
+  let changed=false;
+  for (const key of keys) {
+    const value=observation[key];
+    if (typeof value!=="number" || !Number.isSafeInteger(value) || value<0 || value===previous?.[key]) continue;
+    sample[key]=value;
+    changed=true;
+  }
+  if (observation.approximateOutputTokens===null && previous?.approximateOutputTokens!=null) {
+    delete sample.approximateOutputTokens;
+    changed=true;
+  }
+  return changed ? sample : previous;
+}
+
 interface Job {id:string;mode:StartRun["mode"];revision:number;controller:AbortController;partial:RunPartial|null;done?:Promise<void>}
 export const replayCandidate:FixtureCandidate = {
   id: "fixture/replay-v1",
@@ -647,7 +665,7 @@ export class Bench {
           const checkedInputTokens=decision?.receipt?.tokens;
           job.partial = {candidateId:c.id,caseId:row.case_id,text:"",...(checkedInputTokens!=null && {checkedInputTokens})};
           let observedOutput = false;
-          if (m.mode==="quick" || checkedInputTokens!=null) job.revision++;
+          if (!m.fixture) job.revision++;
           const candidateStep={at:now(),action:m.fixture ? "Read recorded fixture response" : "Invoke "+c.provider};
           trace.steps.push(candidateStep);
           try {
@@ -682,9 +700,14 @@ export class Bench {
                   inputBudget,
                   structured: m.pack?.outputSchema ?? m.approvedPrompt?.outputSchema,
                   ...(m.approvedPrompt?.outputSchema && {strictSchema:true}),
+                  onCandidateUsage: observed => {
+                    const part=job.partial;
+                    if (!observing || !part || !("candidateId" in part)) return;
+                    part.usage=mergeCandidateUsage(part.usage,observed);
+                  },
                   onText: text => {
                     if (!observing) return;
-                    if (job.partial) job.partial.text=text;
+                    if (job.mode==="quick" && job.partial) job.partial.text=text;
                     rec.output=text;
                     // Store the first visible response and at most one update per second.
                     const elapsed=performance.now();
@@ -814,15 +837,17 @@ export class Bench {
     // the original case evidence and terminal status are durable and detail() can rebuild it.
     this.detail(m.id);
   }
-  runProgress(id:string, revision:number, offset:number):UiRunProgress {
+  runProgress(id:string, revision:number, offset:number, usageRevision?:number):UiRunProgress {
     const job=this.active;
     if (!job || job.id!==id || job.revision!==revision) return {kind:"refresh"};
     const part=job.partial;
-    if (job.mode==="quick" && part && "candidateId" in part) {
+    if (!part || !("candidateId" in part)) return {kind:"unchanged"};
+    const usage=usageRevision!==undefined && part.usage && part.usage.revision!==usageRevision ? {usage:part.usage} : {};
+    if (job.mode==="quick") {
       if (offset>part.text.length) return {kind:"refresh"};
-      if (offset<part.text.length) return {kind:"append",candidateId:part.candidateId,text:part.text.slice(offset)};
+      if (offset<part.text.length) return {kind:"append",candidateId:part.candidateId,text:part.text.slice(offset),...usage};
     }
-    return {kind:"unchanged"};
+    return {kind:"unchanged",...usage};
   }
   stop(id:string) {
     if (id !== this.active?.id) throw Error("This run is no longer active.");
@@ -859,7 +884,7 @@ export class Bench {
       assessments: this.graders.recorded(id),
       partial: this.active?.id === id ? this.active.partial : null,
     };
-    return {...detail,liveRevision:this.active?.id===id ? this.active.revision : null,report:this.reports.get(detail)};
+    return {...detail,liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report:this.reports.get(detail)};
   }
   exportRun(id:string) {
     const detail=this.detail(id);

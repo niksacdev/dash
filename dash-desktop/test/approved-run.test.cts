@@ -163,10 +163,20 @@ test("live polling sends only new Quick text or a changed run revision", async t
     const live=bench.detail(id),revision=present(live.liveRevision);
     assert.ok(live.partial && "candidateId" in live.partial);
     assert.equal(live.partial.checkedInputTokens,43);
+    const extra={inputTokens:43,firstTokenMs:NaN,outputTokens:-1,unrelated:"PRIVATE_RUNTIME_FRAGMENT"};
+    options.onCandidateUsage?.(extra);
+    const sample={inputTokens:43,revision:1};
+    assert.deepEqual(bench.runProgress(id,revision,0,0),{kind:"unchanged",usage:sample});
+    options.onCandidateUsage?.({inputTokens:43});
+    assert.deepEqual(bench.runProgress(id,revision,0,1),{kind:"unchanged"});
     assert.deepEqual(bench.runProgress(id,revision,0),{kind:"unchanged"});
+    options.onCandidateUsage?.({approximateOutputTokens:4});
     options.onText?.("partial");
+    assert.deepEqual(bench.runProgress(id,revision,0,1),{kind:"append",candidateId:ids[0],text:"partial",usage:{...sample,revision:2,approximateOutputTokens:4}});
     assert.deepEqual(bench.runProgress(id,revision,0),{kind:"append",candidateId:ids[0],text:"partial"});
     assert.deepEqual(bench.runProgress(id,revision,7),{kind:"unchanged"});
+    options.onCandidateUsage?.({approximateOutputTokens:null});
+    assert.deepEqual(bench.runProgress(id,revision,7,2),{kind:"unchanged",usage:{inputTokens:43,revision:3}});
     options.onText?.("partial answer");
     assert.deepEqual(bench.runProgress(id,revision,7),{kind:"append",candidateId:ids[0],text:" answer"});
     assert.deepEqual(bench.runProgress(id,revision,900),{kind:"refresh"});
@@ -216,7 +226,7 @@ test("idle dataset polls do not repeat previous responses or expose the current 
   const hold=new Promise<void>(resolve=>{release=resolve;});
   let calls=0;
   bench.adapters.invoke=async(_candidate,_messages,options)=>{
-    if (++calls===2) {options.onText?.("unpublished case output");enter();await hold;}
+    if (++calls===2) {options.onText?.("unpublished case output");options.onCandidateUsage?.({outputTokens:7});enter();await hold;}
     return reply("recorded response".repeat(256),{},"stop");
   };
   const id=bench.start({mode:"dataset",datasetId:d.id,candidateIds:[ids[0]]});
@@ -226,7 +236,10 @@ test("idle dataset polls do not repeat previous responses or expose the current 
     const run=bench.detail(id), revision=present(run.liveRevision);
     assert.equal(run.results.length,1);
     assert.ok((run.results[0].output?.length ?? 0)>4000);
-    for(let i=0;i<8;i++) assert.deepEqual(bench.runProgress(id,revision,0),{kind:"unchanged"});
+    assert.equal(run.partial?.text,"","Opening the active dataset view omits unfinished answer text");
+    assert.deepEqual(bench.runProgress(id,revision,0,0),{kind:"unchanged",usage:{revision:1,outputTokens:7}});
+    for(let i=0;i<8;i++) assert.deepEqual(bench.runProgress(id,revision,0,1),{kind:"unchanged"});
+    assert.deepEqual(bench.runProgress(id,revision,0),{kind:"unchanged"},"last-released three-argument caller");
   } finally {release();await done;}
   assert.equal(bench.detail(id).status,"completed");
 });

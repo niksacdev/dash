@@ -98,3 +98,7 @@ In a local Quick compare check, LFM3 1.7B completed both synthetic tasks. It rep
 Mercedes-Benz described a pilot for querying production and quality data in its MO360 system. This motivated the quality handoff around competing evidence. [Mercedes-Benz pilot description](https://media.mercedes-benz.com/en/article/dd57aac5-7911-48bb-b61a-7c3d54cdfdff)
 
 LSEG describes earnings-call analysis that identifies speakers, statements and topics in transcripts. The analyst briefing exercises this attribution skill using a short invented quotation. [LSEG earnings-call analysis](https://www.lseg.com/en/insights/data-analytics/ai-unlock-investment-risk-management-opportunities-earnings-call-transcripts)
+
+## Observe candidate usage during dispatch
+
+An inspection operator opens a running Quick comparison or a dataset case. An SDK-backed candidate reports the effective input size and approximate generated tokens during prediction. A compatible provider can report input and output in separate usage frames. Text by itself supplies no token count. Switching lanes or cases resets the display, and completed rows and history use durable final measurements. An older runner still streams previously supported progress and explains how to enable live usage.

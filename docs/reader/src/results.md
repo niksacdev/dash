@@ -8,7 +8,7 @@ The **Traceability and Observability** slide uses a GAAP-versus-adjusted EPS mis
 
 After starting the evaluation, **Evaluation in progress** identifies the candidate answering or the grader scoring it. **Answers received** counts completed responses. **Grader assessments recorded** counts recorded assessments, including an unscored assessment when a judge lacks evidence. An activity bar keeps moving while a call is pending. The counters advance when DASH records evidence. Open the final results to inspect each response, criterion and score.
 
-A live candidate can show **Input tokens** with the label **checked** when its local tokenizer measured the formatted prompt before dispatch. Each Quick response shows its input and output counts together. In **Run history**, the two token charts show per-model averages over the responses that reported each count. An unreported count stays out of its average.
+A live candidate can show **Input tokens** with the label **checked** when its local tokenizer measured the formatted prompt before dispatch. Quick compare and the active Dataset case show counts as the runtime reports them. The input total usually stays fixed for one request. A native LM Studio run can show a growing **≈** output count from its prediction fragments, including tokens spent on reasoning. Only the answer text is displayed. First visible output records the delay before answer text arrived. An endpoint that only supplies final usage leaves the running token count pending. Completed results use the provider’s final receipt. In **Run history**, the two token charts show per-model averages over the responses that reported each count. An unreported count stays out of its average.
 
 ## Compare two answers by business measure
 

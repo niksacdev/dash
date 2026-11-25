@@ -624,13 +624,18 @@ function observationLabel(result:UiResult):string|null {
   if (result.dispatchState==="interrupted") return "Observation interrupted";
   return null;
 }
-function responseTokenUsage(row:UiResult|undefined,checked:number|undefined,running:boolean,provider:string) {
-  const actual=row?.telemetry?.input_tokens, output=row?.telemetry?.output_tokens;
+function usageLabels(row:UiResult|undefined,checked:number|undefined,running:boolean,usage?:CandidateUsage) {
+  const actual=row?.telemetry?.input_tokens ?? usage?.inputTokens, output=row?.telemetry?.output_tokens ?? usage?.outputTokens;
   const verified=row?.inputBudget?.tokens ?? checked;
   const waiting=running?"Pending":"Unreported";
   const input=actual!=null?actual.toLocaleString():verified!=null?verified.toLocaleString()+" checked":waiting;
-  return '<p class="muted response-token-usage">Input tokens <strong>'+esc(input)+'</strong> · Output tokens <strong>'+
-    esc(output!=null?output.toLocaleString():waiting)+'</strong> · Device energy (est.) <strong>'+
+  const produced=output!=null?output.toLocaleString():usage?.approximateOutputTokens!=null?"≈"+usage.approximateOutputTokens.toLocaleString():waiting;
+  return {input,produced,first:usage?.firstTokenMs!=null?" · First visible output "+planningSeconds(usage.firstTokenMs):""};
+}
+function responseTokenUsage(row:UiResult|undefined,checked:number|undefined,running:boolean,provider:string,usage?:CandidateUsage) {
+  const {input,produced,first}=usageLabels(row,checked,running,running ? usage : undefined);
+  return '<p class="muted response-token-usage"'+(running?' data-current-usage':'')+'>Input tokens <strong data-input-count>'+esc(input)+
+    '</strong> · Output tokens <strong data-output-count>'+esc(produced)+'</strong><span data-first-output>'+esc(first)+'</span> · Device energy (est.) <strong>'+
     deviceEnergyReading(row?.telemetry?.device_power,provider,running)+'</strong></p>';
 }
 function quickExecutionProgress(run:UiRunDetail) {
@@ -712,13 +717,15 @@ async function runPage(id:string, record:string|undefined, seq:number) {
     (live ? btn("Stop run", "stop") : btn("Export run JSON", "export")) +
     "</div>";
   if (live) out+='<div id="live-read-status"></div>'+(m.mode==="quick" ? quickExecutionProgress(run) : "");
+  if (live && !m.fixture && run.liveUsageVersion!==1)
+    out+='<p class="muted">This runner reports token usage when a response finishes. Quit and reopen DASH for live provider counts.</p>';
   if (m.error) out += '<div class="wf-error spacer" role="alert">' + esc(m.error) + "</div>";
-  if (live && m.mode==="dataset" && run.partial?.checkedInputTokens!=null) {
+  if (live && !m.fixture && m.mode==="dataset" && run.partial?.candidateId && !run.partial.grading) {
     const {candidateId,caseId,checkedInputTokens}=run.partial;
     const candidate=m.candidates.find(c=>c.id===candidateId);
     const saved=run.results.find(r=>r.candidateId===candidateId && r.caseId===caseId);
     if (candidate && (!saved || saved.dispatchState==="pending")) out+='<p class="muted">'+esc(displayModel(candidate.model))+
-      ' · '+esc(caseId)+' · Input tokens <strong>'+esc(checkedInputTokens.toLocaleString())+' checked</strong></p>';
+      ' · '+esc(caseId)+'</p>'+responseTokenUsage(saved,checkedInputTokens,true,candidate.provider,run.partial.usage);
   }
   if (live && m.mode!=="quick" && run.partial?.stage) out += '<p role="status">'+esc(run.partial.stage)+' is reviewing the recorded scores…</p>';
   if (m.guardrailFailure) out += guardrailDetails(m.guardrailFailure);
@@ -752,7 +759,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
                 (live ? "Waiting…" : "No response"),
             ) +
             "</pre>" +
-            (r || part ? responseTokenUsage(r,part?.checkedInputTokens,live && (!r || r.dispatchState==="pending"),c.provider) : "")+
+            (r || part ? responseTokenUsage(r,part?.checkedInputTokens,live && (!r || r.dispatchState==="pending"),c.provider,part?.usage) : "")+
             (r && observationLabel(r) ? tag(observationLabel(r) ?? "") : "") +
             (r ? link("Inspect trace", "run/" + id + "/" + i, "link") : "") +
             "</article>"
@@ -869,10 +876,21 @@ function pollRunProgress(seq:number, id:string, run:UiRunDetail, offset=run.part
   }
   poll=window.setTimeout(async () => {
     try {
-      const update=await api.runProgress(id,revision,offset);
+      const update=run.liveUsageVersion===1 ? await api.runProgress(id,revision,offset,run.partial?.usage?.revision ?? 0) :
+        await api.runProgress(id,revision,offset);
       if (seq!==token) return;
       document.getElementById("live-read-status")?.replaceChildren();
       if (update.kind==="refresh") { await render(); return; }
+      if (update.usage && run.partial) {
+        run.partial.usage=update.usage;
+        const slot=document.querySelector<HTMLElement>("[data-current-usage]");
+        if (slot) {
+          const labels=usageLabels(undefined,run.partial.checkedInputTokens,true,update.usage);
+          requireElement("[data-input-count]",HTMLElement,slot).textContent=labels.input;
+          requireElement("[data-output-count]",HTMLElement,slot).textContent=labels.produced;
+          requireElement("[data-first-output]",HTMLElement,slot).textContent=labels.first;
+        }
+      }
       if (update.kind==="append") {
         const field=document.querySelector<HTMLElement>('[data-live-candidate="'+CSS.escape(update.candidateId)+'"]');
         if (!field || !run.partial || run.partial.candidateId!==update.candidateId) { await render(); return; }
