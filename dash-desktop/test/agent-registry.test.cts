@@ -95,6 +95,26 @@ test("the manifest rejects duplicate or external prompt files before a role can 
   assert.throws(()=>readAgentRegistry(assets),/Markdown path/);
 });
 
+test("changing shared grading guidance revises only its consumers and rejects an external guide",t=>{
+  const {assets,manifest,manifestFile}=setup(t);
+  const registry=readAgentRegistry(assets);
+  const file="prompts/grading-evidence-v1.md";
+  const consumers=manifest.agents.filter(entry=>entry.guidance===file);
+  assert.deepEqual(consumers.map(a=>a.id).sort(),["grader-designer","report-analyzer","report-reporter","workflow-expert","workflow-metric-auditor"]);
+  fs.appendFileSync(path.join(assets,file),"\nSynthetic revision to the shared evidence policy.\n");
+  const updated=readAgentRegistry(assets);
+  for(const entry of manifest.agents){
+    const before=registry.get(entry.id),after=updated.get(entry.id);
+    if(entry.guidance===file){
+      assert.notEqual(before.hash,after.hash);
+      assert.ok(after.instructions.endsWith("Synthetic revision to the shared evidence policy."));
+    }else assert.equal(before.hash,after.hash);
+  }
+  consumers[0].guidance="../outside.md";
+  fs.writeFileSync(manifestFile,JSON.stringify(manifest));
+  assert.throws(()=>readAgentRegistry(assets),/Markdown path/);
+});
+
 test("the dispatched domain prompt and approved plan pin the deployed Markdown version",async t=>{
   const {db,manifest,manifestFile,assets}=setup(t);
   const calls:string[]=[];

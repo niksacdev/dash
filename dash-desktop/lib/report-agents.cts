@@ -82,7 +82,7 @@ export async function assistReport(report:RunReport, adapters:RuntimeAdapters, s
   }
   const selectedModel=model, invoke=adapters.reportStage.bind(adapters);
   const identity = { provider: model.provider, model: model.model, revision: model.revision || null };
-  const criteria = report.metrics.flatMap((m, i) => m.comparisonIssue || m.informational ? [] : [{ criterion: "M" + (i + 1), name: m.label.slice(0, 180),
+  const criteria = report.metrics.flatMap((m, i) => m.comparisonIssue || m.informational ? [] : [{ criterion: "M" + (i + 1), name: m.label.slice(0, 180), method:m.method,
     mean: m.values.map(v => v.score), paired: m.pairedCases, expected: m.totalCases }]);
   const winner = report.winnerId === null ? "none" : report.candidates[0].id === report.winnerId ? "A" : "B";
   const publicEvidence = ({ id, criterion, scores }:Evidence) => ({ id, criterion, scores });
