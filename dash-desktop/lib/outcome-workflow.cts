@@ -1,4 +1,4 @@
-import {domainStarters} from "./domain-starters.cjs";
+import {quickStarterFor} from "./domain-starters.cjs";
 import {declaredOutputKeys,declaredPlannerFields,proposedOutputSchema} from "./quick-declaration.cjs";
 import {decodeQuickOutputSchema, decodeQuickTaskInput, inputsFromTask, reviewProposedFields, plannerFieldNotesSchema, plannerFieldsSchema, plannerInputsSchema, type QuickOutputSchema, type QuickTaskInput} from "./quick-structure.cjs";
 import {randomUUID} from "node:crypto";
@@ -146,7 +146,7 @@ export class OutcomeWorkflow {
     if (manual && !isDomain(manual)) throw Error("Choose Financial Services, Manufacturing or General.");
     const pinned = isDomain(dataset?.industry) ? dataset.industry : null;
     if (pinned && manual && manual !== pinned) throw Error("Use the domain assigned to this dataset snapshot.");
-    const starter=request.mode==="quick" ? domainStarters.find(s=>s.quickObjective===objective) : undefined;
+    const starter=request.mode==="quick" ? quickStarterFor(objective) : undefined;
     const parent = request.parentId ? this.get(request.parentId) : null;
     if (parent && (parent.mode !== request.mode || parent.datasetId !== (dataset?.datasetId ?? null)))
       throw Error("Revise this prompt with its original run type and dataset snapshot.");

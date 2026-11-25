@@ -36,10 +36,10 @@ function workflowPage(mode:UiMode) {
 function outcomeExamples(w:UiWorkflow) {
   if (w.parentId) return "";
   const available=state.packs.filter(p=>w.mode==="quick" || p.id===packId);
-  const examples=available.flatMap(p=>p.starter ? [{id:p.id,title:p.starter.title}] : []);
+  const examples=available.flatMap(p=>p.starter ? [{id:p.id,title:w.mode==="quick" ? p.starter.title : p.title}] : []);
   if (!examples.length) return w.mode==="quick" && available.some(p=>p.id==="earnings" || p.id==="manufacturing")
     ? '<p class="wf-hint">Quit and reopen DASH to load the bundled industry examples.</p>' : "";
-  return '<div class="wf-examples"><small>Try an outcome</small>'+examples.map(p=>'<button type="button" data-wf-example="'+esc(p.id)+'">'+esc(p.title)+'</button>').join("")+'</div>';
+  return '<div class="wf-examples"><small>'+ (w.mode==="quick" ? "Language model examples" : "Dataset objective") +'</small>'+examples.map(p=>'<button type="button" data-wf-example="'+esc(p.id)+'">'+esc(p.title)+'</button>').join("")+'</div>';
 }
 function planningDomainLabel(domain:string,source?:string) {
   const labels:Record<string,string>={dataset:"Dataset domain",user:"Selected domain",starter:"Example domain",inferred:"Inferred domain"};

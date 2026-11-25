@@ -111,6 +111,26 @@ test("exact Quick starters select the pack expert and implementer, independently
   assert.equal(manual.domainSource,"user");assert.equal(manual.domain,"General");
 });
 
+test("old Quick objectives keep their attribution while only current examples appear in the picker",async t=>{
+  const {work}=fixture(t);
+  const previous=[
+    {domain:"Financial Services",objective:"Identify earnings figures that need analyst review. Cite the reported period and basis for each figure and flag missing evidence.\n\nSynthetic release excerpt: For the quarter ended June 30, diluted GAAP EPS was $0.74. Adjusted diluted EPS was $0.85. The release provides no reconciliation."},
+    {domain:"Manufacturing",objective:"Help receiving inspection decide which supplier lots need review using the measurement, tolerance and drawing revision in each record.\n\nSynthetic inspection record: Lot K7, shaft diameter. Active drawing B specifies 10.00 ± 0.03 mm. Reading: 10.04 mm. The receiving rule accepts only readings within the stated limits."},
+  ];
+  assert.deepEqual(domainStarters.map(s=>s.packId),["earnings","manufacturing"]);
+  for(const {domain,objective} of previous){
+    const draft=await work.design({mode:"quick",objective});
+    assert.equal(draft.domainSource,"starter");
+    assert.equal(draft.domain,domain);
+    assert.ok(!draft.workflowAgents?.some(a=>a.id==="workflow-router"));
+    assert.ok(!domainStarters.some(s=>s.quickObjective===objective));
+  }
+  for(const starter of domainStarters){
+    assert.doesNotMatch(starter.task,/K7|10\.04|0\.85|Freight|signed recheck|two-sentence/);
+    assert.match(starter.task,/each case|each sampled dimension/);
+  }
+});
+
 test("correcting a domain starts a fresh expert brief without rewriting the original approval",async t=>{
   const {work,calls}=fixture(t,{reply:r=>r.prompt ? JSON.stringify({...r,fields:[{name:"inspection",type:"string",nullable:false}],inputs:[],fieldNotes:[]}) : null});
   const parentDraft=await work.design({...quick,domain:"Financial Services",structuredOutput:true});
