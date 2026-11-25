@@ -1,3 +1,4 @@
+import {activation,checklistHelp,completenessChecklist,completenessId,completenessPreset,completenessReceipt,isCompleteness,type CompletenessChecklist} from "./semantic-completeness.cjs";
 import {isInspectionCheck,canScoreInspection,hasInspectionReferenceFor,inspectionEvidenceHelp} from "./inspection-decision.cjs";
 import { z } from "opik";
 import type {MeasureOption} from "./measure-graders.cjs";
@@ -41,8 +42,9 @@ export const decisionSettings = z.object({
 export const savedGrader = z.union([
   base.extend({type:z.literal("catalog"),ruleKey:z.string().min(1),ruleVersion:z.number().int().positive(),judge:z.null()}),
   base.extend({type:z.literal("opik-metric"),metricKey:opikMetricKey,judge:judgeModel}),
-  base.extend({type:z.literal("decision"),judge:z.null(),decision:decisionConfig,decisionView:rubricEvidenceView.optional(),requiredEvidence:requiredEvidence.optional()})
-    .refine(g => g.decision.failAt < g.threshold, "Invalid decision cutoffs."),
+  base.extend({type:z.literal("decision"),judge:z.null(),presetId:z.literal(completenessId).optional(),decision:decisionConfig,decisionView:rubricEvidenceView.optional(),requiredEvidence:requiredEvidence.optional()})
+    .refine(g => g.decision.failAt < g.threshold, "Invalid decision cutoffs.")
+    .refine(g=>!g.presetId || (g.version===1 && g.criteria===completenessPreset.criteria && g.decisionView==="task-answer" && !g.requiredEvidence?.length && activation.safeParse({presetId:g.presetId,decision:g.decision,threshold:g.threshold}).success),"Invalid requested-items preset policy."),
   base.extend({type:z.enum(["judge","opik"]),judge:judgeModel,scoreScale:z.literal("binary").optional(),requiredEvidence:requiredEvidence.optional(),evidenceView:rubricEvidenceView.optional()}),
   base.extend({type:z.enum(["contains","exact","field","trajectory"]),judge:z.null()}),
 ]);
@@ -60,6 +62,7 @@ export function graderRequiredEvidence(source:GraderSpec|undefined):("reference"
 }
 const inputSource = z.enum(["recorded-dispatch", "reconstructed-case", "fixture-case"]);
 export interface GraderEvidence {
+  completenessChecklist?:CompletenessChecklist|null;
   quickOutputSchema?:import("./quick-structure.cjs").QuickOutputSchema;
   input:unknown; reference:unknown; output:string; inputSource?:z.infer<typeof inputSource>;
   finishReason?:string|null; caseContext?:{pack:ScoredPack;row:CaseRow};
@@ -84,6 +87,7 @@ export function hasExpectedAnswerFor(grader:GraderSpec,reference:unknown):boolea
 
 // An explicit Test or Grade action can ask for evidence before creating an assessment.
 export function requireAssessmentEvidence(grader:GraderSpec,evidence:GraderEvidence):void {
+  if(isCompleteness(grader) && !(evidence.completenessChecklist===undefined ? completenessChecklist({input:evidence.input}) : evidence.completenessChecklist))throw Error(checklistHelp);
   if(isInspectionCheck(grader)){if(!canScoreInspection(grader,evidence))throw Error(inspectionEvidenceHelp(grader));return;}
   if (grader.type==="catalog" && grader.library?.scenario && !evidence.caseContext)
     throw Error("Choose a labeled case from this grader’s industry dataset to test its scenario rule.");
@@ -102,7 +106,7 @@ const datasetCaseSource = z.object({
 });
 export type DatasetCaseSource = z.infer<typeof datasetCaseSource>;
 export const storedAssessment = z.object({
-  datasetCase:datasetCaseSource.optional(),
+  datasetCase:datasetCaseSource.optional(),judgeConflict:z.literal(true).optional(),
   graderId:z.string(),name:z.string(),version:z.number(),category:z.string(),engine:graderType,threshold:z.number(),
   judge:z.string().nullable(),value:z.number().min(0).max(1).nullable(),pass:z.boolean().nullable(),reason:z.string(),
   decisionRequest:z.object({
@@ -110,7 +114,7 @@ export const storedAssessment = z.object({
     protocol:protocolSchema.optional(), fallbackModel:z.string().min(1).optional(),
     failAt:z.number().min(0).lt(1), passAt:z.number().gt(0).max(1),
   }).optional(),
-  decision:observationSchema.optional(), decisionAttempt:fallbackAttemptSchema.optional(),
+  completeness:completenessReceipt.optional(),decision:observationSchema.optional(), decisionAttempt:fallbackAttemptSchema.optional(),
   evaluator:z.string().optional(),opikMetric:opikMetricResult.optional(),inputSource:inputSource.optional(),id:z.string(),created:z.string(),
   evidence:z.object({output:z.string()}).passthrough().optional(),
 });

@@ -7,6 +7,8 @@ import {jsonText} from "./run-types.cjs";
 import {opikMetricResult,getOpikTemplate} from "./opik-library.cjs";
 import {graderLibrary} from "./grader-types.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
+import {completenessReceipt,coverageValue,isCompleteness} from "./semantic-completeness.cjs";
+import {hash} from "./packs.cjs";
 import {observationSchema} from "./decision-model.cjs";
 import {assistReport} from "./report-agents.cjs";
 export const reportCandidate = z.object({id:z.string(),label:z.string()});
@@ -16,7 +18,7 @@ const decisionEvidence = decisionPolicy.extend({
   status:z.enum(["passed","failed","review","unscored"]),
   ...observationSchema.pick({actualModel:true,probabilityYes:true,usage:true,dispatchedModel:true,fallbackReason:true,identityVerification:true}).partial().shape,
 });
-const scoreValue = z.object({decision:decisionEvidence.optional(),opikMetric:opikMetricResult.optional(),candidateId:z.string(),score:z.number().nullable(),pass:z.boolean().nullable(),reason:z.string()});
+const scoreValue = z.object({decision:decisionEvidence.optional(),completeness:completenessReceipt.optional(),opikMetric:opikMetricResult.optional(),candidateId:z.string(),score:z.number().nullable(),pass:z.boolean().nullable(),reason:z.string()});
 const gradedCase = z.object({caseId:z.string(),values:z.array(scoreValue)});
 const method = z.enum(["deterministic","llm-judge","opik-judge","opik-metric","decision-model"]);
 const lineage = graderLibrary.pick({scope:true,familyId:true,parentRevisionId:true});
@@ -81,7 +83,7 @@ function decisionPolicyFor(grader:DecisionGrader) {
   return {provider:pin.provider, requestedModel:pin.model, failAt:pin.failAt, passAt:grader.threshold,
     ...(pin.provider === "local" && {protocol:pin.protocol ?? "systemone",...(pin.fallbackModel && {fallbackModel:pin.fallbackModel})})};
 }
-function gradeDecision(grader:DecisionGrader, a:RecordedAssessment):Omit<z.infer<typeof scoreValue>,"candidateId"> {
+function gradeDecision(grader:DecisionGrader, a:RecordedAssessment,checklistHash?:string):Omit<z.infer<typeof scoreValue>,"candidateId"> {
   const pin = grader.decision;
   const policy=decisionPolicyFor(grader);
   const request = a.decisionRequest, observed = a.decision;
@@ -92,6 +94,22 @@ function gradeDecision(grader:DecisionGrader, a:RecordedAssessment):Omit<z.infer
       request.endpoint !== pin.endpoint || request.fallbackModel !== pin.fallbackModel ||
       request.failAt !== pin.failAt || request.passAt !== grader.threshold ||
       a.threshold !== grader.threshold) return missing("The decision request does not match the pinned grader.");
+  if(a.judgeConflict){
+    const unusable=missing("The decision service returned a candidate checkpoint as the judge. Choose an independent judge and review the saved answers.");
+    return {...unusable,decision:{...unusable.decision,...(observed && {actualModel:observed.actualModel,usage:observed.usage,identityVerification:observed.identityVerification})}};
+  }
+  if(isCompleteness(grader)){
+    const receipt=a.completeness;
+    if(!receipt)return missing(a.reason || "The item-by-item decision receipts are missing.");
+    const pinHash=hash({source:receipt.source,items:receipt.items.map(i=>i.requirement)});
+    if(observed || !checklistHash || checklistHash!==pinHash)return missing("The requested items do not match the checklist pinned for this case.");
+    const value=coverageValue(receipt,pin,grader.threshold);
+    if(value===undefined)return missing("The recorded item receipts could not be verified against the pinned grader.");
+    const pass=value===null ? null : value===1;
+    if(a.value!==value || a.pass!==pass)return missing("The recorded coverage grade does not match the item decisions.");
+    return {score:value,pass,reason:a.reason,completeness:receipt,decision:{...policy,...(value!==null && {actualModel:pin.model}),status:
+      pass===true ? "passed" : pass===false ? "failed" : receipt.items.every(i=>i.decision) ? "review" : "unscored"}};
+  }
   if (!observed) {
     const unscored=missing(a.reason || "No decision-model response was recorded."), attempt=a.decisionAttempt;
     if (attempt && pin.provider === "local" && attempt.requestedModel === pin.model &&
@@ -121,7 +139,7 @@ function gradeDecision(grader:DecisionGrader, a:RecordedAssessment):Omit<z.infer
       decision:{...evidence,status:"unscored"}};
   return {score:a.value,pass:expected,reason:a.reason,decision:{...evidence,status:expected?"passed":"failed"}};
 }
-function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undefined, builtIn:boolean, grader:GraderSpec|undefined):Omit<z.infer<typeof scoreValue>,"candidateId"> {
+function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undefined, builtIn:boolean, grader:GraderSpec|undefined,checklistHash?:string):Omit<z.infer<typeof scoreValue>,"candidateId"> {
   const missing = (reason:string) => ({ score: null, pass: null, reason });
   if (!result) return missing("No response was recorded.");
   if (grader?.type!=="catalog" || !isInformationalRule(grader.ruleKey)) {
@@ -136,7 +154,7 @@ function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undef
       : score.reasons?.join(" · ") || "The response failed the pinned scenario check." };
   }
   if (!assessment) return missing("The selected grader has no assessment for this case.");
-  if (grader?.type === "decision") return gradeDecision(grader, assessment);
+  if (grader?.type === "decision") return gradeDecision(grader, assessment,checklistHash);
   if (assessment.value===null || !Number.isFinite(assessment.value) || assessment.value < 0 || assessment.value > 1 || typeof assessment.pass !== "boolean")
     return missing(assessment.reason || "The grader did not return a valid score.");
   if (grader?.type === "opik-metric") {
@@ -149,12 +167,12 @@ function gradeAt(result:RunResult|undefined, assessment:RecordedAssessment|undef
   return { score: assessment.value, pass: assessment.pass, reason: assessment.reason || "" };
 }
 
-function analyzeMetric(spec:MetricSpec, cases:string[], candidates:Candidate[], byCase:Results, judgments:Judgments|undefined, grader:GraderSpec|undefined):Metric {
+function analyzeMetric(spec:MetricSpec, cases:string[], candidates:Candidate[], byCase:Results, judgments:Judgments|undefined, grader:GraderSpec|undefined,checklistHashes?:Record<string,string>):Metric {
   const caseScores = cases.map(caseId => ({
     caseId,
     values: candidates.map(c => {
       const key = coordinate(c.id, caseId);
-      return { candidateId: c.id, ...gradeAt(byCase.get(key), judgments?.get(key), spec.builtIn, grader) };
+      return { candidateId: c.id, ...gradeAt(byCase.get(key), judgments?.get(key), spec.builtIn, grader,checklistHashes?.[caseId]) };
     }),
   }));
   // Model aliases can resolve to different served revisions during a run.
@@ -218,7 +236,7 @@ export function analyzeOutputs({ manifest, results, assessments }:Pick<RunData,"
     // A later manual re-grade has a separate identity and never replaces the original verdict.
     if (map && !map.has(key)) map.set(key, a);
   }
-  const metrics = specs.map(spec => analyzeMetric(spec, cases, candidates, byCase, judgments.get(spec.id), pinned.get(spec.id)));
+  const metrics = specs.map(spec => analyzeMetric(spec, cases, candidates, byCase, judgments.get(spec.id), pinned.get(spec.id),manifest.deliverableChecklistHashes));
   return {
     analyzer: { name: "Output Analyzer", method: "deterministic" },
     caseCount: cases.length, candidates, metrics, targets: manifest.approvedPrompt?.metrics || [],

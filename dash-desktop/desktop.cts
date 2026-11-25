@@ -9,6 +9,7 @@ import {previewStructuredMessages} from "./lib/quick-structure.cjs";
 import {measureGraderRequest} from "./lib/measure-graders.cjs";
 import {operatorRunDetail} from "./lib/export-diagnostics.cjs";
 import { desktopFailure } from "./lib/desktop-errors.cjs";
+import type {JudgeComparison} from "./lib/judge-independence.cjs";
 import { Bench } from "./lib/bench.cjs";
 import { scenarioCacheSupport } from "./lib/runtime-types.cjs";
 import { PromptGuide } from "./lib/prompt-guide.cjs";
@@ -110,7 +111,7 @@ function initialize():void {
     z.enum(["systemone","mlx-vlm"]).optional().parse(protocol)),1);
   bind("saveGrader",value=>bench.graders.save(value,bench.servers.filter(s=>s.online).flatMap(s=>s.models)));
   bind("graderDatasetIds", id=>bench.graderDatasetIds(identifier(id)));
-  bind("datasetGraderOptions", id=>bench.datasetGraderOptions(identifier(id)));
+  bind("datasetGraderOptions", (id,prompt)=>bench.datasetGraderOptions(identifier(id),prompt===undefined ? undefined : identifier(prompt)));
   bind("graderRuns", id=>bench.graderRuns(identifier(id)));
   bind("setGeneralGraderDefault",(id,enabled)=>bench.setGeneralGraderDefault(identifier(id),z.boolean().parse(enabled)));
   bind("quickGraderOptions",value=>bench.quickGraderOptions(identifier(value)));
@@ -120,7 +121,7 @@ function initialize():void {
   bind("assess",async value=>{
     if(isRecord(value) && "datasetId" in value)return bench.testGraderOnDatasetCase(value);
     const saved=caseAssessment.safeParse(value);
-    let evidence:GraderEvidence, graderId:string;
+    let evidence:GraderEvidence, graderId:string, comparison:JudgeComparison|undefined;
     let allowHostedDecision = false;
     let where:{run?:string;candidate?:string;caseId?:string}={};
     if (saved.success) {
@@ -130,6 +131,7 @@ function initialize():void {
       if (!result || result.error) throw Error("Choose a completed response.");
       const row=manifest.datasetId ? bench.dataset(manifest.datasetId).rows.find(x=>x.case_id===result.caseId) : undefined;
       const selected=bench.graders.get(grader);
+      comparison=bench.requireIndependentJudge(selected,manifest.candidates);
       evidence=graderEvidence(manifest,row ?? {case_id:result.caseId},result,selected.type==="catalog",grader);
       if (manifest.mode==="quick" && graderRequiredEvidence(selected).includes("reference"))
         evidence.reference=quickGradingReference(selected,bench.quickExpectedAnswer(run));
@@ -144,8 +146,9 @@ function initialize():void {
       evidence={...data,input:data.input??null,reference:data.reference??null};
     }
     const grader=bench.graders.get(graderId);
+    if(!comparison && grader.judge)bench.requireIndependentJudge(grader,[]);
     requireAssessmentEvidence(grader,evidence);
-    const record=()=>bench.graders.record(grader,evidence,where,bench.adapters,AbortSignal.timeout(190000),allowHostedDecision);
+    const record=()=>bench.graders.record(grader,evidence,where,bench.adapters,AbortSignal.timeout(190000),allowHostedDecision,comparison);
     return grader.judge || (grader.type==="decision" && grader.decision.provider==="local") ? bench.withRuntimeUse(record) : record();
   });
   const host={platform:process.platform,os:os.version(),arch:os.arch(),cpu:os.cpus()[0]?.model?.trim() ?? "",memoryGiB:Math.round(os.totalmem()/2**30)};

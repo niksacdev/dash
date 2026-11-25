@@ -13,11 +13,13 @@ import {checkStructuredOutput} from "./quick-structure.cjs";
 import {inspectionRangeReference,hasInspectionSource,isInspectionCheck,inspectionSourceConflict,inspectionSchemaIssue,suggestedInspectionGrader,inspectionReference,inspectionRuleId,inspectionRangeId,inspectionRangeKey,inspectionRuleKey,inspectionCaseReference,hasInspectionReferenceFor,inspectionEvidenceHelp} from "./inspection-decision.cjs";
 import type {ApprovedPrompt} from "./outcome-contracts.cjs";
 import {starterInspectionV1} from "./domain-starters.cjs";
+import {completenessChecklist,completenessPreset,isCompleteness,checklistHelp} from "./semantic-completeness.cjs";
 import {referencePack,caseMessages as candidateMessages,graderEvidence,exactReference,caseJudgeSpec} from "./evaluation-cases.cjs";
 import {canChallengeVerdict,SavedScoreReviews,reviewRequest,reviewResults} from "./saved-score-review.cjs";
 import {checkLocalDecision} from "./decision-model.cjs";
 import {quickVerdictIssue,scoringOptions} from "./score-readiness.cjs";
 import {RunReports} from "./run-report.cjs";
+import {independentJudgeIssue,judgeConflictMap,judgeRegistrationIssue,type JudgeComparison} from "./judge-independence.cjs";
 import {isInformationalRule} from "./grader-catalog.cjs";
 import {getOpikTemplate,opikLibraryTemplates,hasEvidence} from "./opik-library.cjs";
 import type {GraderSpec} from "./graders.cjs";
@@ -273,6 +275,7 @@ export class Bench {
     });
     if(!measures.length)automatic.push(...sources);
     const readiness=this.scoringOptions([...options.available,...automatic]);
+    if(!completenessChecklist({approved}))for(const g of options.available.filter(isCompleteness))readiness.setupIssues[g.id]=checklistHelp;
     for(const g of options.available.filter(isInspectionCheck)){
       const issue=inspectionSchemaIssue(g,approved.outputSchema,sourcedInspection?starterInspectionV1:null);
       if(issue)readiness.setupIssues[g.id]=issue;
@@ -280,7 +283,8 @@ export class Bench {
     return {...options,measures,sourcedInspection,expectedAnswerVersion:1 as const,automatic,...readiness};
   }
   private scoringOptions(graders:GraderSpec[]) {
-    return scoringOptions(graders,this.servers.filter(server=>server.online).flatMap(server=>server.models));
+    const models=this.servers.filter(server=>server.online).flatMap(server=>server.models);
+    return {...scoringOptions(graders,models),...judgeConflictMap(graders,models,[...models,...this.endpoints.list()])};
   }
   graderDatasetIds(graderId:string):string[] {
     const grader=this.graders.get(graderId);
@@ -309,7 +313,9 @@ export class Bench {
     requireAssessmentEvidence(grader,evidence);
     return this.graders.record(grader,evidence,{caseId,datasetCase},this.adapters,AbortSignal.timeout(190000));
   }
-  datasetGraderOptions(datasetId:string) {
+  datasetGraderOptions(datasetId:string,approvedPromptId?:string) {
+    const approved=approvedPromptId ? this.workflow.get(approvedPromptId) : null;
+    if(approved && (approved.mode!=="dataset" || approved.datasetId!==datasetId))throw Error("Choose an approved task for this dataset snapshot.");
     const dataset = this.dataset(datasetId);
     const pack = this.pack(dataset.pack).pack;
     const expectedAnswerCount=countExpectedAnswers(dataset.rows);
@@ -322,7 +328,13 @@ export class Bench {
       return dataset.rows.filter(row=>hasInspectionReferenceFor(check,inspectionCaseReference(check,row,pack))).length;
     };
     const inspectionCaseCount=inspectionCoverage(inspectionRuleKey), inspectionRangeCount=inspectionCoverage(inspectionRangeKey);
-    return {...this.scoringOptions([...available,...automatic]),inspectionCaseCount,inspectionRangeCount,expectedAnswerCount,fieldCoverage,literalAnswerCount:dataset.rows.filter(row=>row.reference!=null).length,
+    const readiness=this.scoringOptions([...available,...automatic]);
+    const presets=available.filter(isCompleteness);
+    if(presets.length){
+      const missing=dataset.rows.find(row=>!completenessChecklist({row,pack,approved}));
+      if(missing)for(const g of presets)readiness.setupIssues[g.id]="Case "+missing.case_id+": "+checklistHelp;
+    }
+    return {...readiness,inspectionCaseCount,inspectionRangeCount,expectedAnswerCount,fieldCoverage,literalAnswerCount:dataset.rows.filter(row=>row.reference!=null).length,
       casesWithoutGuidance:dataset.rows.filter(row=>!hasEvidence(row.reference ?? row.gold) && !row.rubric).length,
       hasReferences:expectedAnswerCount>0,automatic,available};
   }
@@ -416,6 +428,7 @@ export class Bench {
       endpoints: this.endpoints.list(),
       scenarioCacheSupport,
       graders: this.graders.list().map(grader=>({...grader,generalDefaultKey:generalDefaultKey(grader)})),
+      completenessPreset,
       generalGraderDefaults:this.configuredGeneralGraders().map(g=>g.id),
       opikLibraryTemplates,
       opikReady: sdkEnabled(),
@@ -655,7 +668,14 @@ export class Bench {
           manifest.policyHash = hash(taskAnswerIds.length ? [...policy,{taskAnswerDecisionGraderIds:taskAnswerIds}] : policy);
         }
       }
-      const readiness=this.scoringOptions(manifest.graders);
+      if(manifest.graders.some(isCompleteness))manifest.deliverableChecklistHashes=Object.fromEntries(rows.map(row=>{
+        const checklist=completenessChecklist(pack ? {row,pack,approved} : {approved});
+        if(!checklist)throw Error("Case "+row.case_id+": "+checklistHelp);
+        return [row.case_id,hash(checklist)];
+      }));
+      const conflict=independentJudgeIssue(manifest.graders,this.servers.flatMap(s=>s.models),manifest.candidates);
+      if(conflict)throw Error(conflict);
+      const readiness=scoringOptions(manifest.graders,this.servers.filter(s=>s.online).flatMap(s=>s.models));
       const unavailable=Object.values(readiness.setupIssues)[0];
       if (unavailable) throw Error(unavailable);
       if (mode==="quick" && !inspectionOnly && approved) {
@@ -714,6 +734,7 @@ export class Bench {
     return id;
   }
   async execute(job:Job, m:CurrentManifest, rows:CaseRow[], replay:Record<string,unknown>) {
+    const comparison={candidates:m.candidates,inventory:this.servers.flatMap(s=>s.models)};
     const fatal=new AbortController();
     const signal=AbortSignal.any([job.controller.signal,fatal.signal]);
     const fail=(error:unknown)=>{if(!fatal.signal.aborted)fatal.abort(error);};
@@ -946,7 +967,7 @@ export class Bench {
               if (m.mode==="quick" && graderRequiredEvidence(scorer).includes("reference"))
                 evidence.reference=quickGradingReference(scorer,this.quickExpectedAnswer(m.id));
               await this.graders.record(scorer,evidence,
-                {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true);
+                {run:m.id,candidate:c.id,caseId:row.case_id},this.adapters,signal,m.hostedDecisionApproved === true,comparison);
               job.revision++;
             }
           }
@@ -1040,6 +1061,12 @@ export class Bench {
   private visibleStatus(id:string,saved:RunStatus):RunStatus {
     return (saved==="queued" || saved==="running") && this.unrecordedTerminals.has(id) ? "interrupted" : saved;
   }
+  requireIndependentJudge(grader:GraderSpec,candidates:readonly Candidate[]):JudgeComparison {
+    const inventory=this.servers.filter(s=>s.online).flatMap(s=>s.models);
+    const issue=judgeRegistrationIssue(grader,inventory) ?? independentJudgeIssue([grader],inventory,candidates);
+    if(issue)throw Error(issue);
+    return {inventory,candidates};
+  }
   async reviewSavedCase(raw:unknown) {
     const request=reviewRequest.parse(raw);
     if(this.active)throw Error("Wait for the active evaluation to finish before reviewing saved answers.");
@@ -1049,11 +1076,13 @@ export class Bench {
     if(original && run.report && canChallengeVerdict(run.report,run))
       throw Error("Choose a different grader version for this challenge. The original grades are already recorded.");
     const grader=original ?? this.graders.get(request.grader);
-    const problem=this.scoringOptions([grader]).setupIssues[grader.id];
+    const models=this.servers.filter(s=>s.online).flatMap(s=>s.models);
+    const comparison=this.requireIndependentJudge(grader,run.manifest.candidates);
+    const problem=scoringOptions([grader],models).setupIssues[grader.id];
     if(problem)throw Error(problem);
     const row=run.manifest.datasetId ? this.dataset(run.manifest.datasetId).rows.find(r=>r.case_id===request.caseId) : {case_id:request.caseId};
     if(!row)throw Error("This case is missing from its saved dataset snapshot.");
-    return this.withRuntimeUse(()=>this.scoreReviews.assess(request,run,grader,row,this.quickExpectedAnswer(request.run),this.graders,this.adapters));
+    return this.withRuntimeUse(()=>this.scoreReviews.assess(request,run,grader,row,this.quickExpectedAnswer(request.run),this.graders,this.adapters,comparison));
   }
   detail(id:string):RunDetail {
     const run = this.db
@@ -1095,7 +1124,9 @@ export class Bench {
       hasSourcedInspectionDecision:manifest.industry==="Manufacturing" && detail.results.length>0 &&
         detail.results.every(r=>hasInspectionSource(r.dispatchedMessages,manifest.approvedPrompt?.objective)),
     } : {};
-    return {...detail,liveLaneProgressVersion:1,candidatePartials:this.active?.id===id?[...this.active.lanes.values()]:[],...quickFields,...reviewResults(detail,report,savedReviews),...(manifest.mode==="quick" && {hasQuickExpectedAnswer:!!this.db.prepare("SELECT 1 FROM quick_expected_answers WHERE run=?").get(id)}),liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report};
+    const reviewGraders=terminal && report ? [...this.graders.list(),...manifest.graders] : [];
+    const conflictingReviewGraderIds=reviewGraders.length ? Object.keys(judgeConflictMap(reviewGraders,this.servers.flatMap(s=>s.models),manifest.candidates).judgeCandidateConflicts) : undefined;
+    return {...detail,...(conflictingReviewGraderIds && {conflictingReviewGraderIds}),liveLaneProgressVersion:1,candidatePartials:this.active?.id===id?[...this.active.lanes.values()]:[],...quickFields,...reviewResults(detail,report,savedReviews),...(manifest.mode==="quick" && {hasQuickExpectedAnswer:!!this.db.prepare("SELECT 1 FROM quick_expected_answers WHERE run=?").get(id)}),liveUsageVersion:1,liveRevision:this.active?.id===id ? this.active.revision : null,report};
   }
   exportRun(id:string) {
     const detail=this.detail(id);

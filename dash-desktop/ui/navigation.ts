@@ -2,7 +2,7 @@
 
 // Only mark edits that live in the current DOM. Workflow and retry drafts have their own owners.
 const volatileForms:Record<string,string>={
-  "grade-create":"manual grader edits","grade-sample":"the unsaved test input",
+  "requested-items-setup":"unsaved local judge settings","grade-create":"manual grader edits","grade-sample":"the unsaved test input",
   "catalog-import":"dataset import metadata","endpoint-form":"unsaved endpoint settings",
   "planner-fallback":"unsaved fallback settings"
 };

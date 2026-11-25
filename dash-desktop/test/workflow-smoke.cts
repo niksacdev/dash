@@ -62,6 +62,7 @@ const gradedDetail = z.object({
     assistance:z.object({analyzer:stageStatus,reporter:stageStatus})}),
 });
 const models = { ollama: "lfm3-qa-7b", lmstudio: "qa-ledger-2b" };
+const independentJudge="qa-independent-judge";
 const quickGoal = "Help inspection staff decide which nonconforming parts need a second inspection.";
 const metric = "Inspection evidence citation rate";
 const markerMetric="Hold instruction compliance";
@@ -159,6 +160,7 @@ globalThis.fetch = async (url, options = {}) => {
     if(holdDiscovery)await holdDiscovery();
     return Response.json({ models: [
       { name: models.ollama, digest: "qa-7b-v1", context_length: 4096, details: { parameter_size: "7B" } },
+      { name: independentJudge, digest: "qa-independent-v1", context_length:8192, details:{parameter_size:"3B"} },
       { name: "qa-short-context", digest: "qa-short-v1", context_length: 128, details: { parameter_size: "1B" } },
     ] });
   }
@@ -370,6 +372,76 @@ async function smoke() {
     await wait(() => db.prepare("SELECT count(*) n FROM runs WHERE status='completed'").get()?.n === count, "Expected " + count + " completed runs");
     return decodeManifest(db.prepare("SELECT manifest FROM runs ORDER BY rowid DESC LIMIT 1").get()?.manifest);
   }
+
+  async function verifyRequestedItems(){
+    const task="Write a receiving handoff.\nRequired deliverables:\n- the shift handoff\n- the responsible reviewer";
+    const alias="fixture/d1-local";
+    let decisions=0;
+    const server=createServer(async(req,res)=>{
+      res.setHeader("content-type","application/json");
+      if(req.url==="/v1/models"){res.end(JSON.stringify({data:[{id:alias,output_modalities:["decisions"]}]}));return;}
+      if(req.url==="/v1/systemone"){
+        let body="";for await(const part of req)body+=part;
+        const request=decisionQuestion.parse(JSON.parse(body));
+        assert.equal(request.model,alias);decisions++;res.end(JSON.stringify(decisionAnswer(alias,.95)));return;
+      }
+      res.writeHead(404);res.end();
+    });
+    server.listen(0,"127.0.0.1");await once(server,"listening");
+    const address=server.address();assert.ok(address && typeof address!=="string");
+    decisionOrigin="http://127.0.0.1:"+address.port;
+    try{
+      await route("compare");await fill("#wf-objective","Write an incoming inspection handoff for the receiving lead.");
+      await click("#wf-design");await fill("#wf-prompt",task);await fill("#wf-review-metrics","");await click("#wf-approve");
+      await wait(()=>exists("#setup"),"Approved Quick compare");
+      assert.equal(await js("document.querySelector('[data-selected-graders]').querySelector('li')===null"),true);
+      const judgeId="ollama/"+models.ollama;
+      const pinned=await text("window.dash.saveGrader("+q({intent:"create",name:"Independent handoff rubric",type:"opik",industry:"Manufacturing",category:"Receiving",
+        criteria:"Check that the handoff names the next inspection step.",threshold:1,judgeId})+")");
+      await click("[data-run-requested-items]");await wait(()=>exists("#requested-items-setup"),"Native setup in the Quick grader library");
+      const form="#requested-items-setup";
+      await fill(form+" [data-native=protocol]","systemone");await fill(form+" [data-native=endpoint]",decisionOrigin);
+      await click(form+" [data-native-discover]");
+      await wait(()=>js("document.querySelector('#requested-items-setup [data-native=selected]').value==="+q(alias)),"Advertised native D1");
+      assert.equal(decisions,0);
+      await click(form+" [type=submit]");
+      await wait(()=>exists("[data-quick-confirm]"),"Review the saved local grader for this prompt");
+      const saved=z.string().parse(db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.presetId')=?").get("dash/semantic-completeness/v1")?.id);
+      assert.equal(decisions,0);
+      await click(catalogVersion(saved)+" [data-quick-confirm]");
+      await wait(()=>exists(selectedGrader(saved)),"Explicit requested-items attachment returned to the same Quick setup");
+      await click("[data-run-choose-graders]");await click(catalogVersion(pinned)+" [data-quick-attach]");await click(catalogVersion(pinned)+" [data-quick-confirm]");
+      await wait(()=>exists(selectedGrader(pinned)),"Manually pinned chat grader returned to the same Quick setup");
+      for(const id of [judgeId,"lmstudio/"+models.lmstudio])await click('[data-model="'+id+'"]');
+      assert.ok(await js("document.querySelector('[data-picker-submit=quick]').disabled"));
+      assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/starting line|independent judge/);
+      assert.equal(decisions,0,"Self-grading blocks launch before any model assessment");
+      await click(selectedGrader(pinned));await wait(async()=>!await exists(selectedGrader(pinned)),"Conflicting explicit grader removed");
+      await click("[data-picker-submit=quick]");await completedRun(1);
+      assert.equal(decisions,4,"Two requested items for each of the two answers");
+
+      const imported=path.join(profile,"deliverables.jsonl");
+      writeFileSync(imported,JSON.stringify({case_id:"handoff",dataset_version:"1",split:"development",prompt:task,reference:"The inspection handoff identifies the receiving lead."})+"\n");
+      const file=mock.method(dialog,"showOpenDialog",async()=>({canceled:false,filePaths:[imported]}));
+      let datasetId:string;
+      try{datasetId=await text("window.dash.import('reference').then(d=>window.dash.commitImport(d.token,"+
+        q({industry:"Manufacturing",family:"Requested item QA",category:"Receiving",tags:[],source:"Synthetic UI fixture",changeNote:"",parentId:null})+"))");}
+      finally{file.mock.restore();}
+      await route("new");await fill("#pack","reference");await fill("#ds",datasetId);
+      await fill("[name=caseJudgeId]",judgeId);await click('[data-model="'+judgeId+'"]');
+      assert.ok(await js("document.querySelector('[data-picker-submit=dataset]').disabled"));
+      assert.match(await text("document.querySelector('#dataset-scoring-issue').textContent"),/independent judge/);
+      assert.ok(await js("document.querySelector('[name=caseJudgeId] option:checked').disabled"),"Explicit conflicting case judge remains visible");
+      await fill("[name=datasetScorer]","selected-graders");
+      await click("[data-run-requested-items]");await wait(()=>exists(catalogVersion(saved)+" [data-quick-attach]"),"Same saved version in Dataset run");
+      await click(catalogVersion(saved)+" [data-quick-attach]");await click(catalogVersion(saved)+" [data-quick-confirm]");
+      await wait(()=>exists(selectedGrader(saved)),"Dataset setup restored with native version attached");
+      await click("[data-picker-submit=dataset]");await completedRun(2);
+      assert.equal(decisions,6,"One candidate and two requested items in the dataset run");
+      await route("graders");await wait(()=>exists('[data-grade-version="'+saved+'"]'),"Same version in the standalone library");
+      assert.ok(await exists("[data-requested-items-preset]"));
+    }finally{const closed=once(server,"close");server.close();await closed;decisionOrigin="";}
+  }
   async function verifyStructuredQuick() {
     await route("compare");
     await wait(()=>js("!!document.querySelector('#wf-structured,[data-wf-reset]')"),"Quick planner or an approved prompt");
@@ -470,6 +542,10 @@ async function smoke() {
     assert.equal(await text("document.querySelector('#wf-objective').value"),approved.objective);
   }
   await wait(() => exists(".hero"), "Overview");
+  if(process.argv.includes("--requested-items")){
+    try {await verifyRequestedItems();}finally{db.close();}
+    return;
+  }
   if(process.argv.includes("--structured-quick")){
     try {await verifyStructuredQuick();}finally{db.close();}
     return;
@@ -732,11 +808,12 @@ async function smoke() {
   await fill(controls(rowA,"evidence"),"task-answer");
   assert.ok(await js("document.activeElement===document.querySelector("+q(controls(rowA,"evidence"))+") && document.activeElement.checkVisibility()"),"Editing the evidence keeps keyboard focus on the visible control");
   await click(rowA+" .qc-assignment > summary");
+  await fill(controls(rowA,"judgeId"),"ollama/"+independentJudge);
   await fill(controls(rowA,"threshold"),"0.8");
   await fill(controls(rowB,"choice"),"skip");
   assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/Hold instruction compliance.*Choose a grader/);
   await fill(controls(rowB,"choice"),"saved:"+markerGrader);
-  assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/2 of 2 measures ready.*2 model evaluations.*6 deterministic checks/);
+  assert.match(await text("document.querySelector('#qc-grade-status').textContent"),/2 of 2 measures ready.*2 grader assessments.*6 deterministic checks/);
   await click(pick("lmstudio"));
   await checkRosterColors();
   assert.equal(await js("document.querySelector('#setup .go-button').disabled"), true);
@@ -1438,13 +1515,12 @@ async function smoke() {
     await js("history.forward()");await wait(()=>exists(manualName),"Forward returns to the grader catalogue");
     assert.equal(await text("document.querySelector("+q(manualName)+").value"),"");
     assert.equal(calls.length,callsBeforeBack,"Navigation cannot dispatch a candidate, grade or planning request");
-    await reveal("[data-decision-starter=completeness]");
-    await click("[data-decision-starter=completeness]");
+    await reveal("[data-decision-starter=disclosure]");
+    await click("[data-decision-starter=disclosure]");
     assert.equal(await text("document.querySelector('#grade-type').value"),"decision");
     assert.equal(await text("document.querySelector('#grade-create [name=decision-view]').value"),"task-answer");
     assert.equal(await js("document.querySelector('#grade-create [value=reference]').checked"),false);
-    await click("[data-decision-starter=disclosure]");
-    assert.match(await text("document.querySelector('#grade-create [name=criteria]').value"),/withhold/);
+    assert.match(await text("document.querySelector('#grade-create [name=criteria]').value"),/reconciliation is unavailable/);
     await click("[data-decision-starter=earnings]");
     assert.equal(await text("document.querySelector('[data-decision-starter=earnings]').closest('details').querySelector('summary').textContent"),"Decision examples · grade an answer");
     assert.equal(await js("document.querySelector('#grade-create [value=reference]').checked"),true);
@@ -1707,7 +1783,7 @@ async function smoke() {
     await click('[data-grade-template="answer-relevance"]');
     await wait(()=>js("document.querySelector('#grade-type').value==='opik-metric'"),"Native Opik rubric configured");
     await fill("#grade-create [name=name]","QA native relevance");
-    await fill("#grade-create [name=judgeId]","ollama/"+models.ollama);
+    await fill("#grade-create [name=judgeId]","ollama/"+independentJudge);
     await click("#grade-create button.yellow");
     await wait(()=>loadVersion("QA native relevance",1),"Saved native metric and judge");
     const relevance=z.string().parse(loadVersion("QA native relevance",1));
@@ -1892,7 +1968,7 @@ async function smoke() {
     const scorerSelect='[name="datasetScorer"]', judgeSelect='[name="caseJudgeId"]';
     await fill(scorerSelect,"case-judge");
     await wait(()=>exists(judgeSelect),"The case judge selector appears when its scoring method is active");
-    const judgeId=await text("Array.from(document.querySelector("+q(judgeSelect)+").options).find(o=>o.value && !o.selected)?.value");
+    const judgeId="ollama/"+independentJudge;
     await fill(judgeSelect,judgeId);
     const datasetLanes=()=>js("Array.from(document.querySelectorAll('#dataset-models [data-remove]'),el=>el.dataset.remove)");
     const firstLane='#dataset-models [data-model="ollama/'+models.ollama+'"]';
@@ -2243,6 +2319,12 @@ async function smoke() {
   } finally {
     historyFixture.close();
   }
+  const sameModelGrader=await text("window.dash.saveGrader("+q({name:"Synthetic self-judge boundary",type:"judge",judgeId:studioId,
+    industry:"Manufacturing",category:"QA",criteria:"Grade this answer.",threshold:1})+")");
+  const beforeManual=calls.length;
+  const manualConflict=await text("window.dash.assess("+q({run:historical,index:0,grader:sameModelGrader})+").then(()=>'',e=>e.message)");
+  assert.match(manualConflict,/independent model/);
+  assert.equal(calls.length,beforeManual,"Manual grading of a saved answer checked both lanes before calling a judge");
   const generationCount=calls.filter(call=>call.stage==="candidate").length,scoringCount=calls.filter(call=>call.stage==="geval-score").length;
   await route("run/"+historical);await wait(()=>exists("[data-saved-review]"),"Open historical report recovery");
   assert.equal(await text("document.querySelector('[name=reviewGrader]').value"),judged.id);
@@ -2276,7 +2358,10 @@ async function smoke() {
   assert.ok(sampleTask);
   const source=new DatabaseSync(path.join(profile,"dash.sqlite"));
   try{
-    const disputed={...quick,id:disputedId,industry:"Manufacturing",approvedPrompt:{...first,objective:sampleTask},prompt:sampleTask};
+    const historicalJudge=quick.candidates.find(candidate=>candidate.id===ollamaId);
+    assert.ok(historicalJudge);
+    const disputed={...quick,id:disputedId,graders:quick.graders.map(g=>g.id===judged.id?{...g,judge:historicalJudge}:g),
+      industry:"Manufacturing",approvedPrompt:{...first,objective:sampleTask},prompt:sampleTask};
     source.prepare("INSERT INTO runs SELECT ?,created,status,? FROM runs WHERE id=?").run(disputedId,JSON.stringify(disputed),quick.id);
     for(const c of quick.candidates){
       const hold=c.id===studioId;
@@ -2284,8 +2369,8 @@ async function smoke() {
       source.prepare("INSERT INTO results SELECT ?,candidate,case_id,json_set(record,'$.output',?,'$.dispatchedMessages',json(?)) FROM results WHERE run=? AND candidate=?")
         .run(disputedId,answer,JSON.stringify([{role:"user",content:sampleTask}]),quick.id,c.id);
     }
-    source.prepare("INSERT INTO assessments SELECT ?||id,?,candidate,case_id,created,json_set(record,'$.pass',json('true'),'$.value',1,'$.reason','Original grader credited the answer.') FROM assessments WHERE run=?")
-      .run("challenged-",disputedId,quick.id);
+    source.prepare("INSERT INTO assessments SELECT ?||id,?,candidate,case_id,created,json_set(record,'$.judge',CASE WHEN json_extract(record,'$.graderId')=? THEN ? ELSE json_extract(record,'$.judge') END,'$.pass',json('true'),'$.value',1,'$.reason','Original grader credited the answer.') FROM assessments WHERE run=?")
+      .run("challenged-",disputedId,judged.id,historicalJudge.id,quick.id);
   }finally{source.close();}
   await route("history/"+disputedId);
   await wait(()=>exists("[data-open-challenge]"),"Challenge action in completed Run history");
@@ -2358,7 +2443,8 @@ async function smoke() {
 }
 
 app.whenReady().then(smoke).then(() => {
-  if(process.argv.includes("--structured-quick"))console.log("Structured Quick smoke passed: opt-in, input and schema approval, token preflight, matching dispatch and distinct per-model format results.");
+  if(process.argv.includes("--requested-items"))console.log("Requested items smoke passed using local simulated native decisions, Quick compare and Dataset run.");
+  else if(process.argv.includes("--structured-quick"))console.log("Structured Quick smoke passed: opt-in, input and schema approval, token preflight, matching dispatch and distinct per-model format results.");
   else console.log("Workflow smoke passed: mobile planning, mapped Quick graders, mixed verdict and case rationale, blocked preflight, direct dataset runs, approved variants, revisions, decision-grader consent, catalog forks, pinned prior revisions across two runs, native metric defaults, version-specific run links and structured Quick conformance.");
   rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   app.exit(0);

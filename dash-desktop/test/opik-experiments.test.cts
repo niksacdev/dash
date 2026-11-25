@@ -19,7 +19,8 @@ import type { Candidate } from "../lib/runtime-types.cjs";
 import { exportDiagnostics,publicProviderError } from "../lib/export-diagnostics.cjs";
 import { templateAdvice,httpGuidance } from "../lib/provider-errors.cjs";
 import { referencePack } from "../lib/evaluation-cases.cjs";
-import { loadPacks } from "../lib/packs.cjs";
+import { hash,loadPacks } from "../lib/packs.cjs";
+import {completenessId,completenessPreset} from "../lib/semantic-completeness.cjs";
 import { decodeApprovedPrompt } from "../lib/outcome-contracts.cjs";
 import { present } from "./runtime-fixtures.cjs";
 
@@ -623,6 +624,29 @@ test("actual SDK syncs saved traces and scores into native version-pinned experi
   await new OpikExperiments(bench(db,decision),{env}).sync(decision.manifest.id);
   assert.equal(scores.size,afterDecision);
   assert.deepEqual(seen(lastTrace()),[{...publicPin,dispatchedModel:masked.fallbackModel,fallbackReason:"primary-unavailable",status:"unscored",grader_id:grader.id,grader_version:1}]);
+
+  // A consented sync needs verifiable numbers. Its grade metadata can omit local item text and checkpoint paths.
+  const checkpoint="/Users/dash-synthetic-private/d1-omni-2b",requirement="SYNTHETIC_PRIVATE_ITEM_TEXT";
+  const coverageGrader={...completenessPreset,id:"coverage-test",type:"decision",version:1,threshold:.8,judge:null,presetId:completenessId,
+    decision:{provider:"local",protocol:"mlx-vlm",model:checkpoint,failAt:.2,endpoint:"http://localhost:8181"},decisionView:"task-answer",
+    library:{scope:"general",familyId:"dash/item-coverage-test"}} satisfies GraderSpec;
+  const coverage:TestRun={...saved,manifest:{...saved.manifest,id:"per-item-coverage",datasetScorer:"selected-graders",graders:[coverageGrader],
+    deliverableChecklistHashes:{lot:hash({source:"candidate task",items:[requirement]})}}};
+  coverage.assessments=coverage.results.map(r=>({id:"coverage-"+r.candidateId,created:r.trace.started,graderId:coverageGrader.id,
+    name:coverageGrader.name,category:coverageGrader.category,version:1,threshold:.8,engine:"decision",judge:checkpoint,
+    candidate:r.candidateId,caseId:r.caseId,value:1,pass:true,reason:"Every requested item was supplied.",
+    decisionRequest:{provider:"local",requestedModel:checkpoint,protocol:"mlx-vlm",endpoint:coverageGrader.decision.endpoint,failAt:.2,passAt:.8},
+    completeness:{source:"candidate task",presetId:completenessId,usage:{inputTokens:12,outputTokens:0,totalTokens:12},
+      items:[{requirement,value:1,pass:true,reason:"Local item rationale.",decision:{provider:"local",requestedModel:checkpoint,actualModel:checkpoint,
+        protocol:"mlx-vlm",identityVerification:"exact",probabilityYes:.9,failAt:.2,passAt:.8,usage:{inputTokens:12,outputTokens:0}}}]}}));
+  coverage.report=buildReport({...coverage,partial:null});
+  await new OpikExperiments(bench(db,coverage),{env}).sync(coverage.manifest.id);
+  const [itemGrade]=z.array(z.object({requested_item_coverage:z.object({items:z.array(z.object({
+    item:z.number(),actual_model:z.string(),probability_yes:z.number()})),usage:z.object({totalTokens:z.number()})})})).parse(lastTrace().metadata.dash_grades);
+  assert.match(itemGrade.requested_item_coverage.items[0].actual_model,/^local-file-/);
+  assert.equal(itemGrade.requested_item_coverage.usage.totalTokens,12);
+  assert.equal(itemGrade.requested_item_coverage.items[0].probability_yes,.9);
+  assert.doesNotMatch(JSON.stringify(lastTrace().metadata),/SYNTHETIC_PRIVATE_ITEM_TEXT|dash-synthetic-private|Local item rationale/);
 
   const copied={type:"exact",judge:null,id:"9".repeat(64),name:"PRIVATE_CUSTOMER_CATALOG inspection policy",version:2,threshold:1,
     category:"Quality",industry:"Manufacturing",criteria:"PRIVATE_CUSTOMER_CATALOG rubric",

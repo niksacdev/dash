@@ -19,14 +19,18 @@ function datasetImportHelp(packId:string) {
     '</pre><small>Use development or holdout for split. All cases in a file share the same version and split.</small></div></details>';
 }
 
+function datasetCaseJudge(w:UiWorkflow) {
+  const loaded=models().filter(m=>m.loaded);
+  return w.caseJudgeId || loaded.find(m=>!judgeOverlap("dataset",datasetGradingChoices?.modelCandidateConflicts,m.id))?.id || "";
+}
+function caseJudgeOptions(w:UiWorkflow) {
+  const pool=models().filter(m=>m.loaded),id=datasetCaseJudge(w);
+  return opt("",id && !pool.some(m=>m.id===id)?"Unavailable judge · "+id:"Choose an independent local judge",id)+
+    pool.map(m=>gradingOption(m.id,m.model,id,judgeOverlap("dataset",datasetGradingChoices?.modelCandidateConflicts,m.id))).join("");
+}
 function caseJudgePicker(w:UiWorkflow) {
-  const modelsForJudge=models().filter(m=>m.loaded);
-  const preferred=w.caseJudgeId ? modelsForJudge.find(m=>m.id===w.caseJudgeId) : modelsForJudge.find(m=>/lfm3/i.test(m.model)) || modelsForJudge[0];
-  if(preferred && !w.caseJudgeId)w.caseJudgeId=preferred.id;
   return '<label class="field"><span>Opik G-Eval judge for SME references and case rubrics</span><select name="caseJudgeId" required>'+
-    (!preferred?'<option value="">'+esc(w.caseJudgeId?"Unavailable judge · "+w.caseJudgeId:"Load a local model first")+'</option>':"")+
-    modelsForJudge.map(m=>opt(m.id,m.model,preferred?.id ?? "")).join("")+
-    '</select></label><small>The judge scores the answer against each case and explains its decision. A score of 0.80 passes.</small>';
+    caseJudgeOptions(w)+'</select></label><small>The judge scores the answer against each case and explains its decision. A score of 0.80 passes.</small>';
 }
 
 const datasetScorerChoices=new Map<string,string>();
@@ -40,7 +44,7 @@ function datasetScoringMethod(d:UiDataset) {
   return "selected-graders";
 }
 function datasetGraderEvidenceIssue(grader:UiGrader,options:UiGraderOptions|null,total:number) {
-  const setup=options?.setupIssues?.[grader.id];
+  const setup=options?.setupIssues?.[grader.id] || savedJudgeIssue("dataset",options,grader);
   if(setup)return setup;
   if (grader.type==="trajectory" || grader.requiredEvidence?.includes("trajectory"))
     return "This grader needs recorded agent actions. Use Test one output and supply the agent steps.";
@@ -73,8 +77,12 @@ function referenceScoringIssue() {
   }
   if (pack()?.kind!=="reference" || workflows.dataset.approved)return "";
   const method=datasetScoringMethod(d);
-  if(method==="case-judge" && workflows.dataset.caseJudgeId && !models().some(m=>m.loaded && m.id===workflows.dataset.caseJudgeId))
-    return "The saved case judge is unavailable. Load it or choose another judge.";
+  if(method==="case-judge"){
+    const judge=datasetCaseJudge(workflows.dataset);
+    if(!judge || !models().some(m=>m.loaded && m.id===judge))return "Choose an independent local judge, or use an applicable saved grader.";
+    const issue=judgeOverlap("dataset",datasetGradingChoices.modelCandidateConflicts,judge);
+    if(issue)return issue;
+  }
   const withoutGuidance=datasetGradingChoices?.casesWithoutGuidance ?? d.casesWithoutReference;
   if(method==="exact-reference")return (datasetGradingChoices?.literalAnswerCount ?? d.count-d.casesWithoutReference)<d.count || d.casesWithRubric ?
     "Exact matching needs an expected answer on every case and no case rubrics." : "";
@@ -98,6 +106,8 @@ function datasetScoreReadiness() {
   return renderScoreLanes("dataset",checks);
 }
 function updateDatasetGradingControls() {
+  const picker=dashElement("[name=caseJudgeId]",HTMLSelectElement);
+  if(picker)picker.innerHTML=caseJudgeOptions(workflows.dataset);
   const preview=document.getElementById("dataset-score-readiness");
   if(preview)preview.innerHTML=datasetScoreReadiness();
   const note=document.getElementById("dataset-scoring-issue");

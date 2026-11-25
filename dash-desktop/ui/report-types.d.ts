@@ -18,6 +18,7 @@ interface UiDecisionPolicy {
 }
 
 interface UiReportCaseScore extends UiReportScore {
+  completeness?: UiCompletenessReceipt;
   pass: boolean | null;
   reason: string;
   opikMetric?: {metricKey:string;nativeScore:number;direction:"higher-is-risk"|"higher-is-better"};

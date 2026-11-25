@@ -39,6 +39,23 @@ function graderReplyFormat(reply:unknown,approved:UiApproved):"current"|"legacy"
   });
   return aligned?"current":"invalid";
 }
+function quickDefaults(options:UiQuickOptions,row:UiQuickMeasure,designed:boolean){
+  const usable=options.judges.filter(j=>!judgeOverlap("quick",options.modelCandidateConflicts,j.id));
+  const judge=usable.find(j=>j.id===row.generated?.judgeId) ?? usable.find(j=>j.loaded) ?? usable[0];
+  const saved=options.available.find(g=>g.id===row.defaultGraderId);
+  const proposed=!designed && saved && !options.setupIssues?.[saved.id] && !savedJudgeIssue("quick",options,saved)?saved:null;
+  return {choice:proposed?"saved:"+proposed.id:!designed && row.generated && judge?"rubric":"skip",judgeId:judge?.id ?? ""};
+}
+function refreshQuickDefaults(plan:UiQuickPlan){
+  if(!plan.options)return;
+  for(const row of quickGradingRows(plan.options)){
+    const editor=plan.measures.get(row.metric);
+    if(!editor)continue;
+    const defaults=quickDefaults(plan.options,row,plan.designed);
+    if(!editor.edited && !plan.designed)Object.assign(editor,defaults);
+    else if(editor.choice==="rubric" && !editor.judgeEdited)editor.judgeId=defaults.judgeId;
+  }
+}
 function quickGraderFailure(plan:UiQuickPlan) {
   if (plan.recovery!=="restart") return readFailure("Couldn’t load graders",plan.error,"Retry");
   const quit=state.device.startsWith("darwin")?"Quit DASH with ⌘Q":"Quit DASH completely";
@@ -67,27 +84,21 @@ async function loadQuickGrading(approved:UiApproved|null) {
     if (format==="invalid") throw Error("The grader list was incomplete. Retry to load the saved versions for this prompt.");
     const remembered=readGraderAttachment("prompt:"+approved.id)?.mapped;
     for (const [index,row] of quickGradingRows(options).entries()) {
-      const judge=row.generated?.judgeId || "";
+      const defaults=quickDefaults(options,row,plan.designed);
       const existing=plan.measures.get(row.metric);
-      if (existing) {
-        if (!existing.edited && !plan.designed && existing.choice==="skip" && !existing.judgeId && judge && options.judges.some(j=>j.id===judge)) {
-          existing.choice="rubric";existing.judgeId=judge;
-        }
-        continue;
-      }
+      if(existing)continue;
       const saved=options.measures.length && !row.reason && remembered?.has(index)
         ? remembered.get(index) : undefined;
-      const source=!plan.designed && row.defaultGraderId && options.available.some(g=>g.id===row.defaultGraderId) ? row.defaultGraderId : null;
-      const generated=source ? "saved:"+source : !plan.designed && row.generated && judge && options.judges.some(j=>j.id===judge) ? "rubric":"skip";
+
       const recovered=saved===undefined && row.generated ? restoredRubric(approved.id,index) : undefined;
       plan.measures.set(row.metric,{
-        choice:recovered?"rubric":saved===undefined?generated:saved===null?"skip":"saved:"+saved,
-        judgeId:recovered?.judge ?? judge,threshold:recovered ? String(recovered.cutoff ?? "") : String(row.generated?.threshold ?? 1),
+        choice:recovered?"rubric":saved===undefined?defaults.choice:saved===null?"skip":"saved:"+saved,
+        judgeId:recovered?.judge ?? defaults.judgeId,judgeEdited:!!recovered && recovered.judgeEdited!==false,threshold:recovered ? String(recovered.cutoff ?? "") : String(row.generated?.threshold ?? 1),
         criteria:recovered?.customText ? "" : row.generated?.criteria || "",
         evidence:recovered?.evidence ?? (row.generated?.requiredEvidence?.includes("reference") ? "reference":"task-answer"),edited:!!recovered || saved!==undefined
       });
     }
-    plan.options=options;plan.error="";plan.recovery="retry";
+    plan.options=options;refreshQuickDefaults(plan);plan.error="";plan.recovery="retry";
   } catch (error) {
     if(sequence!==plan.sequence) return;
     const reason=errorText(error);
@@ -131,19 +142,19 @@ function quickScoreChecks(plan:UiQuickPlan):ScoreSetupCheck[] {
     const saved=options.available.find(g=>choice?.choice==="saved:"+g.id);
     if(saved)assigned.add(saved.id);
     const correction=row.reason || (!choice || choice.choice==="skip" ? "Choose a grader" :
-      saved ? (options.setupIssues?.[saved.id] || (options.diagnosticIds?.includes(saved.id)?"Choose a quality grader":"") || (quickNeedsReference(saved,options) && !plan.expectedAnswer.trim()?"Add expected answer":"")) :
+      saved ? (savedJudgeIssue("quick",options,saved) || options.setupIssues?.[saved.id] || (options.diagnosticIds?.includes(saved.id)?"Choose a quality grader":"") || (quickNeedsReference(saved,options) && !plan.expectedAnswer.trim()?"Add expected answer":"")) :
       choice.choice!=="rubric" ? "Choose an available grader" :
-      !options.judges.some(j=>j.id===choice.judgeId) ? "Choose a judge" :
+      judgeOverlap("quick",options.modelCandidateConflicts,choice.judgeId) || (!options.judges.some(j=>j.id===choice.judgeId) ? "Choose an independent judge" :
       !choice.criteria.trim() ? "Enter the rubric" :
       !(Number(choice.threshold)>0 && Number(choice.threshold)<=1) ? "Enter a pass threshold" :
-      choice.evidence==="reference" && !plan.expectedAnswer.trim() ? "Add expected answer" : "");
+      choice.evidence==="reference" && !plan.expectedAnswer.trim() ? "Add expected answer" : ""));
     if (!options.measures.length && choice?.choice==="skip") continue;
     checks.push({label:row.metric,...(correction && {correction})});
   }
   for (const g of [...options.automatic,...options.available.filter(g=>plan.saved.has(g.id))]) {
     if(assigned.has(g.id) || options.diagnosticIds?.includes(g.id))continue;
     assigned.add(g.id);
-    const correction=options.setupIssues?.[g.id] || (quickNeedsReference(g,options) && !plan.expectedAnswer.trim()?"Add expected answer":"");
+    const correction=savedJudgeIssue("quick",options,g) || options.setupIssues?.[g.id] || (quickNeedsReference(g,options) && !plan.expectedAnswer.trim()?"Add expected answer":"");
     checks.push({label:g.name,...(correction && {correction})});
   }
   return checks;
@@ -194,6 +205,10 @@ function quickGradeIssue(plan?:UiQuickPlan) {
   const {graderIds,measureGraders=[],outcomeRubric}=quickGradePayload(plan);
   const unavailable=[...plan.options.automatic.map(g=>g.id),...graderIds].map(id=>plan.options?.setupIssues?.[id]).find(Boolean);
   if(unavailable)return unavailable;
+  for(const g of [...plan.options.automatic,...plan.options.available.filter(grader=>graderIds.includes(grader.id))]){
+    const issue=savedJudgeIssue("quick",plan.options,g);
+    if(issue)return g.name+" · "+issue;
+  }
   if (graderIds.some(id=>!plan.options?.available.some(g=>g.id===id))) return "A selected grader version is unavailable. Refresh grading options or change the selection.";
   if (quickReferenceChecks(plan).length) {
     if (plan.options.expectedAnswerVersion!==1) return "Quit and reopen DASH to supply an expected answer before running this grader.";
@@ -206,6 +221,8 @@ function quickGradeIssue(plan?:UiQuickPlan) {
       if (mapped.has(row.graderId)) return "Assign a different grader to each measure to get independent scores.";
       mapped.add(row.graderId);
     } else if (row.kind==="rubric") {
+      const conflict=judgeOverlap("quick",plan.options.modelCandidateConflicts,row.judgeId);
+      if(conflict)return row.metric+" · "+conflict;
       if (!plan.options.judges.some(j=>j.id===row.judgeId)) return "Choose a connected judge for "+row.metric+".";
       if (!row.criteria) return "Enter the scoring rubric for "+row.metric+".";
       if (!(row.threshold>0 && row.threshold<=1)) return "Set a pass threshold above 0 and at most 1 for "+row.metric+".";
@@ -229,14 +246,10 @@ function quickGradeSummary() {
   const checks=[...uniqueChecks.values()].filter(available);
   const modelGrades=judgeRubrics.length+Number(!!outcomeRubric)+checks.filter(runsModel).length;
   const rules=checks.filter(g=>!runsModel(g)).length;
-  const judges=new Set(judgeRubrics.flatMap(r=>r.kind==="rubric"?[r.judgeId]:[]));
-  if (outcomeRubric) judges.add(outcomeRubric.judgeId);
-  for (const grader of checks) if (grader.judge) judges.add(grader.judge.id);
   const count=measureGraders.filter(runnable).length;
   const workload=(measureGraders.length?count+" of "+measureGraders.length+" measures ready · ":"")+
-    "2 answers × "+modelGrades+" model "+(modelGrades===1?"grader":"graders")+" = "+(modelGrades*2)+" model evaluations"+
-    (rules?" · "+(rules*2)+" deterministic checks":"")+
-    (selectedModels().some(id=>judges.has(id))?" · a selected candidate is also a judge":"");
+    "2 answers × "+modelGrades+" model "+(modelGrades===1?"grader":"graders")+" = "+(modelGrades*2)+" grader assessments"+
+    (rules?" · "+(rules*2)+" deterministic checks":"");
   const coverage=measureGraders.length ? (count===measureGraders.length ? count : count+" / "+measureGraders.length)+" "+(measureGraders.length===1?"measure":"measures")+" covered" : "";
   return {workload,coverage};
 }
@@ -264,7 +277,7 @@ function quickMeasureRow(row:UiQuickMeasure,index:number,plan:UiQuickPlan,option
   const select=formField("Grader",'<select data-qc-field="choice">'+
     (row.generated?opt("rubric",legacy?"Opik G-Eval combined rubric":"Opik G-Eval for this measure",current):"")+
     opt("skip","Leave unscored",current)+
-    (!legacy && options.available.length?'<optgroup label="Saved grader versions">'+options.available.map(g=>opt("saved:"+g.id,g.name+" · v"+g.version,current)).join("")+'</optgroup>':"")+
+    (!legacy && options.available.length?'<optgroup label="Saved grader versions">'+options.available.filter(g=>!g.presetId || row.canMapRequestedItems || current==="saved:"+g.id).map(g=>gradingOption("saved:"+g.id,g.name+" · v"+g.version,current,savedJudgeIssue("quick",options,g) || options.setupIssues?.[g.id] || "")).join("")+'</optgroup>':"")+
     (unavailable?opt(current,"Unavailable grader version",current):"")+'</select>');
   let policy="";
   if (current==="rubric" && row.generated) {
@@ -272,7 +285,7 @@ function quickMeasureRow(row:UiQuickMeasure,index:number,plan:UiQuickPlan,option
     policy='<small data-qc-policy-status>'+esc(judge?judge.model:"Choose a judge")+' · pass threshold '+esc(editor.threshold)+'</small>'+
       '<details class="qc-rubric-options"><summary>Edit rubric and judge</summary>'+
       formField("Scoring rubric",'<textarea data-qc-field="criteria" maxlength="6000">'+esc(editor.criteria)+'</textarea>')+
-      '<div class="qc-judge-fields">'+formField("Judge model",'<select data-qc-field="judgeId">'+opt("","Choose a local judge",editor.judgeId)+options.judges.map(j=>opt(j.id,j.model+" · "+j.provider,editor.judgeId)).join("")+'</select>')+
+      '<div class="qc-judge-fields">'+formField("Judge model",'<select data-qc-field="judgeId">'+opt("","Choose a local judge",editor.judgeId)+options.judges.map(j=>gradingOption(j.id,j.model+" · "+j.provider,editor.judgeId,judgeOverlap("quick",options.modelCandidateConflicts,j.id))).join("")+'</select>')+
       formField("Pass threshold (0–1)",'<input data-qc-field="threshold" type="number" min="0" max="1" step="any" value="'+esc(editor.threshold)+'">')+
       (legacy?"":formField("Evidence",'<select data-qc-field="evidence">'+opt("task-answer","Task and candidate answer",editor.evidence)+opt("reference","Expected answer or verified facts",editor.evidence)+'</select>'))+'</div></details>';
   } else if (selected) {
@@ -394,6 +407,7 @@ function handleQuickGradingField(e:Event) {
     const editor=row && plan.measures.get(row.metric);
     if (!field || !fieldset || !editor) return;
     editor.edited=true;
+    if(field==="judgeId")editor.judgeEdited=true;
     if (field==="judgeId" || field==="criteria" || field==="threshold") editor[field]=target.value;
     else if (field==="evidence" && (target.value==="reference" || target.value==="task-answer")) editor.evidence=target.value;
     else if (field==="choice") changeQuickGrader(plan,editor,target.value);

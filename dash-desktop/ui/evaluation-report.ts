@@ -72,6 +72,22 @@ function reviewFinding(review:UiSavedReview,report:UiReport) {
   if(finding.status==="higher" && candidate)return reportCandidateLabel(candidate,report.candidates)+" scored higher on this check.";
   return finding.status==="equal" ? "Both answers received the same score on this check." : "The grader could not establish comparable scores for this check.";
 }
+function requestedItemEvidence(receipt:UiCompletenessReceipt|undefined):string {
+  if(!receipt?.items.length)return "";
+  const present=receipt.items.filter(item=>item.pass===true).length;
+  const absent=receipt.items.filter(item=>item.pass===false).length;
+  const unresolved=receipt.items.length-present-absent;
+  const counts=[present+" present",absent+" absent",...(unresolved?[unresolved+" unresolved"]:[])];
+  const rows=receipt.items.map(item=>{
+    const observed=item.decision;
+    const status=item.pass===true?"Present":item.pass===false?"Absent":observed?"Uncertain":"Unscored";
+    const provenance=observed?' · '+esc(observed.actualModel)+' · P(present) '+esc(observed.probabilityYes)+
+      ' · fail ≤ '+esc(observed.failAt)+' · pass ≥ '+esc(observed.passAt):'';
+    return '<li><strong>'+esc(item.requirement)+'</strong> · '+status+provenance+
+      (item.reason && !observed?'<p>'+esc(gradingExplanation(item.reason))+'</p>':'')+'</li>';
+  }).join("");
+  return '<details class="er-evidence"><summary>Requested items · '+esc(counts.join(" · "))+'</summary><ul>'+rows+'</ul></details>';
+}
 function responseComparison(run:UiRunDetail) {
   const report=run.report,ids=run.manifest.caseIds;
   const candidates=report?.candidates ?? run.manifest.candidates.map(c=>({id:c.id,label:c.model}));
@@ -115,14 +131,16 @@ function responseComparison(run:UiRunDetail) {
         '<p><b>'+esc(judged?"Judge score":"Rule score")+' · </b>'+esc(grade?.score==null?"Unscored":grade.score+" / 1")+
         (grade?.score!=null?' · '+(grade.pass?"Passed":"Below threshold"):'')+
         (judgeIdentity?' · '+esc(judgeIdentity)+(alsoCandidate?' · also a candidate in this run':''):'')+'</p>'+
-        (grade?.reason?'<p><b>'+esc(judged?"Recorded judge reason":"Recorded rule result")+' · </b>'+esc(gradingExplanation(grade.reason))+'</p>':'')+'</li>';
+        (alsoCandidate ? '<p>A candidate also judged this comparison. Choose an independent grader to review the saved responses.</p>' :
+          judged && pin && run.conflictingReviewGraderIds?.includes(pin.id) ? '<p>The pinned judge configuration includes a candidate. Choose an independent grader to review the saved responses.</p>' : '')+
+        (grade?.reason?'<p><b>'+esc(judged?"Recorded judge reason":"Recorded rule result")+' · </b>'+esc(gradingExplanation(grade.reason))+'</p>':'')+requestedItemEvidence(grade?.completeness)+'</li>';
     }).join("");
     const later=reviews.map(r=>{
       const receipt=r.grades.find(g=>g.candidate===c.id);
       return '<li><strong>'+esc(r.graderName+" v"+r.version)+'</strong> · '+esc(scorePercent(receipt?.value))+
         (receipt?.pass!=null?' · '+(receipt.pass?"Passed":"Below threshold"):'')+
         '<small>'+esc(r.source+' · '+r.status)+'</small>'+
-        (receipt?.reason?'<p>'+esc(gradingExplanation(receipt.reason))+'</p>':'')+'</li>';
+        (receipt?.reason?'<p>'+esc(gradingExplanation(receipt.reason))+'</p>':'')+requestedItemEvidence(receipt?.completeness)+'</li>';
     }).join("");
     return '<article class="er-response-card"><h3>'+esc(reportCandidateLabel(c,candidates))+'</h3>'+
       (partial?'<p><strong>'+esc(observed || "Final response unconfirmed")+'</strong> · Only the observed output is available.</p>':'')+
@@ -234,7 +252,7 @@ function reviewCaseGaps(run:UiRunDetail,caseId:string) {
 }
 function savedAnswerGraderChoices(run:UiRunDetail) {
   const pinned=run.manifest.graders;
-  return [...new Map([...pinned,...state.graders.filter(g=>!pinned.some(p=>p.id===g.id))].filter(g=>!g.library?.automatic &&
+  return [...new Map([...pinned,...state.graders.filter(g=>!pinned.some(p=>p.id===g.id))].filter(g=>!g.library?.automatic && !run.conflictingReviewGraderIds?.includes(g.id) &&
     (!g.library?.scenario || g.library.scenario===run.manifest.pack?.id) && !g.requiredEvidence?.includes("trajectory") && g.type!=="trajectory" &&
     (pinned.some(p=>p.id===g.id) || [run.manifest.industry,"General","Cross-industry","Unclassified"].includes(g.industry))
   ).map(g=>[g.id,g])).values()];
@@ -262,7 +280,8 @@ function reviewFields(run:UiRunDetail,caseId:string,selected?:string) {
   const gaps=reviewCaseGaps(run,caseId);
   const notes=gaps.length?'<ul>'+gaps.map(g=>'<li>'+esc(g)+'</li>').join("")+'</ul>':'';
   if(!reviewableCase(run,caseId))return notes+run.results.flatMap((r,i)=>r.caseId===caseId && (r.error || !r.output?.trim())?[link("Inspect "+esc(r.candidateId),"run/"+encodeURIComponent(run.manifest.id)+"/"+i,"link")]:[]).join(" ");
-  if(!options.length)return notes+link("Create a quality grader","graders","link");
+  if(!options.length)return notes+(run.conflictingReviewGraderIds?.length?
+    '<p>Use a rule or a judge outside the original candidate lineup to review these saved answers.</p>':"")+link("Choose or create a grader","graders","link");
   const select=formField("Grader version",'<select name="reviewGrader" required>'+(challenge?opt("","Choose a supplementary grader",grader?.id ?? ""):"")+options.map(g=>opt(g.id,g.name+" · v"+g.version+(run.manifest.graders.some(pin=>pin.id===g.id)?" · original grader":" · supplementary grader"),grader?.id ?? "")).join("")+'</select>');
   if(!grader)return notes+select;
   return notes+select+
@@ -346,7 +365,7 @@ function evaluationReport(run: UiRunDetail) {
 }
 document.addEventListener("toggle",e=>{
   const details=e.target;
-  if (!(details instanceof HTMLDetailsElement) || !details.matches(".er-evidence") || !details.open || details.dataset.loaded) return;
+  if (!(details instanceof HTMLDetailsElement) || !details.matches(".er-evidence[data-report-run]") || !details.open || details.dataset.loaded) return;
   const run=current;
   if (!run?.report || run.manifest.id!==details.dataset.reportRun) return;
   const report = run.report;
@@ -361,10 +380,10 @@ document.addEventListener("toggle",e=>{
     const receipt=v.decision;
     const transport=receipt?.provider==="local" ? (receipt.protocol==="mlx-vlm"?"Local MLX-VLM":"Local System One") : "OpenRouter";
     const switchDetail=receipt?.fallbackReason ? " · switched to "+esc(receipt.dispatchedModel)+" ("+esc(receipt.fallbackReason.replaceAll("-"," "))+")" : "";
-    const evidence=receipt?.actualModel ? '<small>'+esc(transport)+switchDetail+' · served '+esc(receipt.actualModel)+' · P(yes) '+esc(receipt.probabilityYes)+'</small>' : switchDetail ? '<small>'+esc(transport)+switchDetail+' · no verified response</small>' : '';
+    const evidence=receipt?.actualModel ? '<small>'+esc(transport)+switchDetail+' · served '+esc(receipt.actualModel)+(receipt.probabilityYes===undefined?'':' · P(yes) '+esc(receipt.probabilityYes))+'</small>' : switchDetail ? '<small>'+esc(transport)+switchDetail+' · no verified response</small>' : '';
     return [index==null?esc(c.caseId):link(esc(c.caseId),"run/"+encodeURIComponent(run.manifest.id)+"/"+index,"link"),
       esc(labels.get(v.candidateId) || v.candidateId), esc(scorePercent(v.score)),
-      receipt?.status==="review"?"Review":v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.pass==null?gradingExplanation(v.reason || ""):v.reason || "")+(nativeEvidence?"<br>"+nativeEvidence:"")+(evidence?"<br>"+evidence:"")];
+      receipt?.status==="review"?"Review":v.pass==null?"Unscored":v.pass?"Passed":"Below threshold",esc(v.pass==null?gradingExplanation(v.reason || ""):v.reason || "")+(nativeEvidence?"<br>"+nativeEvidence:"")+(evidence?"<br>"+evidence:"")+requestedItemEvidence(v.completeness)];
   }));
   const target = details.querySelector("div");
   if (!target) return;

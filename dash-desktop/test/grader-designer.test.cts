@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import {measureOptions} from "../lib/measure-graders.cjs";
+import type {MetricAudit} from "../lib/metric-audit.cjs";
 import {validateMetricAudit} from "../lib/metric-audit.cjs";
 import { Bench } from "../lib/bench.cjs";
 import { designGraderPlan, confirmGraderPlan } from "../lib/grader-designer.cjs";
@@ -8,6 +10,26 @@ import {opikJudgeRequest} from "./opik-judge-fixture.cjs";
 import { inventory,reply,present } from "./runtime-fixtures.cjs";
 import type { LocalCandidate,RuntimeAdapters } from "../lib/runtime-types.cjs";
 import {z} from "zod";
+
+
+test("the requested-items preset maps only to an audited explicit deliverable-coverage measure",()=>{
+  const metric="Requested items present",criterion="The answer addresses each required item.";
+  const audit:MetricAudit={metric,criterion,status:"proposed",evidenceBasis:"task-answer",evidence:"The explicit task list and the candidate answer.",
+    method:"Check each listed deliverable for presence.",reason:"Presence can be assessed separately for each item."};
+  function eligible(changes:Partial<MetricAudit>) {
+    const row={...audit,...changes};
+    const options=measureOptions({domain:"Manufacturing",metrics:[row.metric],metricCriteria:[row],metricAudit:[row]},null);
+    return options[0]?.canMapRequestedItems===true;
+  }
+  assert.equal(eligible({}),true);
+  assert.equal(eligible({metric:"Task completeness"}),false);
+  assert.equal(eligible({criterion:"The answer addresses each required item and gives the correct active revision."}),false);
+  assert.equal(eligible({criterion:"The output contains every key required by the JSON schema."}),false);
+  assert.equal(eligible({metric:"Normal generation stop rate"}),false);
+  assert.equal(eligible({status:"external"}),false);
+  assert.equal(eligible({evidenceBasis:"reference"}),false);
+  assert.equal(eligible({evidenceBasis:undefined}),false);
+});
 
 const constraints=z.object({properties:z.record(z.string(),z.object({anyOf:z.array(z.object({
   properties:z.object({choice:z.object({enum:z.array(z.string())})})
@@ -326,7 +348,7 @@ test("the earnings brief keeps aggregate gaps separate from an anchored task rub
   t.after(()=>b.db.close());b.servers=inv;
   const ds=present(b.list().datasets.find(d=>d.pack==="earnings"));
   const plan=await designGraderPlan(b,{datasetId:ds.id,objective,metrics:metric});
-  assert.equal(requests,3);assert.equal(plan.agent.version,7);
+  assert.equal(requests,3);assert.equal(plan.agent.version,8);
   assert.deepEqual(plan.gaps,[{measure:metric,reason:"The denominator across all releases is unavailable."}]);
   const rule=present(plan.checks[0]);
   assert.equal(rule.type,"opik");assert.equal(rule.evidenceView,"case");

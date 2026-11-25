@@ -1,3 +1,4 @@
+import {judgeRegistrationIssue} from "./judge-independence.cjs";
 import type {ApprovedPrompt} from "./outcome-workflow.cjs";
 import type {GraderSpec} from "./grader-types.cjs";
 import type {ModelCandidate} from "./runtime-types.cjs";
@@ -11,9 +12,9 @@ export function scoringOptions(graders:GraderSpec[],models:ModelCandidate[]) {
   const setupIssues:Record<string,string>={};
   for (const g of graders) {
     const problem=graderEngineIssue(g);
+    const registration=judgeRegistrationIssue(g,models);
     if (problem) setupIssues[g.id]=g.name+" · "+problem;
-    else if (g.judge && !models.some(model=>model.id===g.judge?.id && (!g.judge.revision || model.revision===g.judge.revision)))
-      setupIssues[g.id]=g.name+" needs its saved judge "+g.judge.model+". Reconnect its runtime and refresh models, or select a grader with an available judge.";
+    else if(registration)setupIssues[g.id]=registration;
     else if (g.type==="decision" && g.decision.provider==="openrouter" && !process.env.OPENROUTER_API_KEY?.trim())
       setupIssues[g.id]=g.name+" needs an OpenRouter decision key. Configure OPENROUTER_API_KEY or choose a local grader.";
   }
