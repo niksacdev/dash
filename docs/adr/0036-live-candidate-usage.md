@@ -1,6 +1,6 @@
 # 0036. Show provider observations during an active candidate request
 
-**Status** Proposed
+**Status** Accepted
 
 ## Context
 
