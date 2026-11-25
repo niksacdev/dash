@@ -1,6 +1,6 @@
 # 0035. Show sampled host energy for each observed request
 
-**Status** Proposed
+**Status** Accepted
 
 ## Context
 
