@@ -5,6 +5,7 @@ import { Bench } from "../lib/bench.cjs";
 import { PlannerSettings } from "../lib/planner-settings.cjs";
 import { referencePack, exactReference, graderEvidence } from "../lib/evaluation-cases.cjs";
 import { parseDataset } from "../lib/packs.cjs";
+import { requireAssessmentEvidence } from "../lib/grader-types.cjs";
 import { opikJudgeRequest } from "./opik-judge-fixture.cjs";
 import { inventory,reply,withoutPower,present } from "./runtime-fixtures.cjs";
 import type { ChatTurn,LocalCandidate } from "../lib/runtime-types.cjs";
@@ -115,24 +116,16 @@ test("grading prefers recorded dispatch, identifies older inputs, and excludes h
   assert.equal(graderEvidence({...manifest,fixture:true},row,legacy).inputSource,"fixture-case");
 });
 
-test("action graders leave missing traces unscored and score only supplied agent actions", async t => {
+test("model datasets exclude action graders and standalone grading uses supplied agent actions", async t => {
   const candidate:LocalCandidate={kind:"model",id:"ollama/qa",provider:"ollama",model:"qa",loaded:true};
   const bench=new Bench(":memory:",{discover:async()=>[inventory([candidate])],invoke:async()=>reply("hold")},withoutPower);
   t.after(()=>bench.db.close());
   await bench.refresh();
   const datasetId=bench.import("reference","Tool evidence",JSON.stringify({case_id:"1",dataset_version:"1",split:"development",prompt:"Inspect lot K7."}),{industry:"Manufacturing",family:"Tool evidence",category:"Inspection",source:"Test"});
   const graderId=bench.graders.save({name:"Observed lookup and hold",category:"Operations",industry:"Manufacturing",type:"trajectory",criteria:"lookup\nhold",threshold:1},[]);
-  assert.throws(()=>bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId]}),/available evidence/);
+  assert.throws(()=>bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId]}),/needs recorded agent actions/);
   const disposition=bench.graders.save({name:"Disposition",category:"Routing",industry:"Manufacturing",type:"exact",criteria:"hold",threshold:1},[]);
-  const runId=bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId,disposition]});
-  await present(bench.active).done;
-  const result=bench.detail(runId);
-  assert.ok(result.results[0].trace.steps.some(step=>step.action==="Invoke ollama"));
-  const assessment=result.assessments[0];
-  assert.equal(assessment.pass,null);
-  assert.equal(assessment.value,null);
-  assert.equal(assessment.inputSource,"recorded-dispatch");
-  assert.match(assessment.reason,/No candidate tool trajectory/);
+  assert.throws(()=>bench.start({mode:"dataset",datasetId,candidateIds:[candidate.id],graderIds:[graderId,disposition]}),/needs recorded agent actions/);
   const evidence={input:"Inspect lot K7.",reference:null,output:"hold"};
   const grade=(trajectory?:unknown[])=>bench.graders.record(bench.graders.get(graderId),{...evidence,...(trajectory===undefined?{}:{trajectory})},{},bench.adapters,new AbortController().signal);
   assert.equal((await grade(undefined)).value,null);
@@ -142,7 +135,7 @@ test("action graders leave missing traces unscored and score only supplied agent
   assert.equal((await grade([{tool:"lookup"},{action:"hold"}])).value,1);
 });
 
-test("a reference-bound Opik rubric can grade a partially labeled snapshot and rejects a wholly incapable run before dispatch",async t=>{
+test("an explicit grader requires expected answers for each selected case before candidate dispatch",async t=>{
   const model:LocalCandidate={kind:"model",id:"ollama/qa",model:"qa",provider:"ollama",loaded:true};
   let candidateCalls=0,scoreCalls=0;
   const bench=new Bench(":memory:",{discover:async()=>[inventory([model])],invoke:async(_c,messages)=>{
@@ -161,10 +154,65 @@ test("a reference-bound Opik rubric can grade a partially labeled snapshot and r
   const reference=bench.graders.save({...common,name:"Reference disposition",requiredEvidence:["reference"]},[model]);
   const trajectory=bench.graders.save({...common,name:"Disposition steps",requiredEvidence:["trajectory"]},[model]);
   const start=(datasetId:string,id:string)=>bench.start({mode:"dataset",datasetId,candidateIds:[model.id],graderIds:[id]});
-  assert.throws(()=>start(plain,reference),/available evidence/);assert.throws(()=>start(mixed,trajectory),/available evidence/);
-  assert.equal(candidateCalls,0);
-  const run=start(mixed,reference);await present(bench.active).done;
+  assert.equal(bench.datasetGraderOptions(mixed).expectedAnswerCount,1);
+  assert.throws(()=>start(plain,reference),/0 of 1 have one/);
+  assert.throws(()=>start(mixed,reference),/1 of 2 have one/);
+  assert.throws(()=>start(mixed,trajectory),/recorded agent actions/);
+  const saved=bench.graders.get(reference),sample={input:"Disposition",output:"HOLD"};
+  for (const missing of [null, {}, [], {label:" "}])
+    assert.throws(()=>requireAssessmentEvidence(saved,{...sample,reference:missing}),/Enter an expected answer/);
+  for (const available of [false,0,"HOLD",{label:"HOLD"}])
+    assert.doesNotThrow(()=>requireAssessmentEvidence(saved,{...sample,reference:available}));
+  assert.equal(candidateCalls,0);assert.equal(scoreCalls,0);
+  assert.equal(bench.list().runs.length,0);
+  const run=bench.start({mode:"dataset",datasetId:mixed,caseId:"labeled",candidateIds:[model.id],graderIds:[reference]});await present(bench.active).done;
   const grades=bench.detail(run).assessments.filter(result=>result.graderId===reference);
   assert.equal(grades.find(g=>g.caseId==="labeled")?.value,1);
-  assert.equal(grades.find(g=>g.caseId==="missing")?.value,null);assert.equal(candidateCalls,2);assert.equal(scoreCalls,1);
+  assert.equal(grades.some(g=>g.caseId==="missing"),false);assert.equal(candidateCalls,1);assert.equal(scoreCalls,1);
+});
+
+
+test("exact dataset scoring and historical case reruns accept literal empty JSON",async t=>{
+  const candidate:LocalCandidate={kind:"model",id:"ollama/blank",model:"blank",provider:"ollama",loaded:true};
+  let calls=0;
+  const bench=new Bench(":memory:",{discover:async()=>[inventory([candidate])],invoke:async(_model,messages)=>{
+    calls++;return reply(messages.at(-1)?.content ?? "");
+  }},withoutPower);
+  t.after(()=>bench.db.close());await bench.refresh();
+  const cases=[{},[]].map((reference,index)=>({case_id:"empty-"+index,reference,prompt:JSON.stringify(reference),dataset_version:"1",split:"development"}));
+  const datasetId=bench.import("reference","Empty results are valid",cases.map(r=>JSON.stringify(r)).join("\n"));
+  const options=bench.datasetGraderOptions(datasetId);
+  assert.equal(options.literalAnswerCount,2);assert.equal(options.expectedAnswerCount,0);assert.equal(options.casesWithoutGuidance,2);
+  const params={mode:"dataset" as const,datasetScorer:"exact-reference" as const,datasetId,candidateIds:[candidate.id]};
+  const first=bench.start(params);await present(bench.active).done;
+  assert.deepEqual(bench.detail(first).results.map(row=>row.score?.pass),[true,true]);
+  const rerun=bench.start({...params,parentId:first,caseId:"empty-1"});await present(bench.active).done;
+  assert.equal(bench.detail(rerun).results[0].score?.pass,true);assert.equal(calls,3);
+});
+
+test("a JSON field grader requires its named path and accepts present literal values",async t=>{
+  const candidate:LocalCandidate={kind:"model",id:"ollama/field",model:"field",provider:"ollama",loaded:true};
+  let calls=0;
+  const bench=new Bench(":memory:",{discover:async()=>[inventory([candidate])],invoke:async(_model,messages)=>{
+    calls++;return reply(messages.at(-1)?.content ?? "");
+  }},withoutPower);
+  t.after(()=>bench.db.close());await bench.refresh();
+  const graderId=bench.graders.save({name:"EPS",type:"field",criteria:JSON.stringify({referenceField:"reported.eps",outputField:"eps"}),
+    category:"Accuracy",industry:"Cross-industry",threshold:1},[]);
+  const grader=bench.graders.get(graderId);
+  const makeCase=(case_id:string,reference:unknown,answer:unknown)=>({case_id,dataset_version:"1",split:"development",
+    reference,prompt:JSON.stringify({eps:answer})});
+  const valid=[0,false,null].map((value,i)=>makeCase("valid-"+i,{reported:{eps:value}},value));
+  const invalid=[makeCase("wrong-key",{adjusted:0.85},0.85),makeCase("text","reported.eps is 0.74",0.74)];
+  for(const row of invalid) assert.throws(()=>requireAssessmentEvidence(grader,{input:row.prompt,output:row.prompt,reference:row.reference}),/reported\.eps/);
+  for(const row of valid) assert.doesNotThrow(()=>requireAssessmentEvidence(grader,{input:row.prompt,output:row.prompt,reference:row.reference}));
+  const datasetId=bench.import("reference","Field values",[...valid,...invalid].map(r=>JSON.stringify(r)).join("\n"));
+  const params={mode:"dataset" as const,datasetId,candidateIds:[candidate.id],graderIds:[graderId]};
+  assert.equal(bench.datasetGraderOptions(datasetId).fieldCoverage["reported.eps"],3);
+  assert.throws(()=>bench.start(params),/reported\.eps.*3 of 5/);
+  assert.equal(calls,0);assert.equal(bench.list().runs.length,0);
+  for(const row of valid) {
+    const run=bench.start({...params,caseId:row.case_id});await present(bench.active).done;
+    assert.equal(bench.detail(run).assessments.find(a=>a.graderId===grader.id)?.value,1);
+  }
 });

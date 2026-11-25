@@ -19,7 +19,7 @@ import { performance } from "./lib/performance.cjs";
 import { createDeviceSampler } from "./lib/device-stats.cjs";
 import { readPower } from "./lib/power.cjs";
 import { isRecord, type DatasetCase, type StartRun } from "./lib/run-types.cjs";
-import type { GraderEvidence } from "./lib/grader-types.cjs";
+import { graderRequiredEvidence, requireAssessmentEvidence, type GraderEvidence } from "./lib/grader-types.cjs";
 
 const page = path.join(__dirname, "ui", "index.html");
 const pageUrl = pathToFileURL(page).href;
@@ -48,6 +48,7 @@ const startRequest=z.object({
   approvedPromptId:idSchema.nullish(),caseJudgeId:modelId.optional(),graderIds:z.array(idSchema).max(8).optional(),
   allowHostedDecision:z.boolean().optional(),animation:z.boolean().optional(),inputCap:tokenCap,outputCap:tokenCap,
   datasetScorer:z.enum(["scenario","selected-graders","exact-reference"]).nullish(),
+  expectedAnswer:z.string().trim().min(1).max(12000).optional(),
   measureGraders:measureGraderRequest.optional(),
   outcomeRubric:z.object({type:z.enum(["opik","judge"]).optional(),judgeId:modelId,
     criteria:z.string().min(1).max(6000).optional(),threshold:z.number().positive().max(1).optional()}).nullish(),
@@ -122,7 +123,10 @@ function initialize():void {
       const {manifest,results}=bench.detail(run), result=results[index];
       if (!result || result.error) throw Error("Choose a completed response.");
       const row=manifest.datasetId ? bench.dataset(manifest.datasetId).rows.find(x=>x.case_id===result.caseId) : undefined;
-      evidence=graderEvidence(manifest,row ?? {case_id:result.caseId},result,bench.graders.get(grader).type==="catalog",grader);
+      const selected=bench.graders.get(grader);
+      evidence=graderEvidence(manifest,row ?? {case_id:result.caseId},result,selected.type==="catalog",grader);
+      if (manifest.mode==="quick" && graderRequiredEvidence(selected).includes("reference"))
+        evidence.reference=bench.quickExpectedAnswer(run);
       graderId=grader;where={run,candidate:result.candidateId,caseId:result.caseId};
     } else {
       const sample=sampleAssessment.safeParse(value);
@@ -134,6 +138,7 @@ function initialize():void {
       evidence={...data,input:data.input??null,reference:data.reference??null};
     }
     const grader=bench.graders.get(graderId);
+    requireAssessmentEvidence(grader,evidence);
     const record=()=>bench.graders.record(grader,evidence,where,bench.adapters,AbortSignal.timeout(190000),allowHostedDecision);
     return grader.judge || (grader.type==="decision" && grader.decision.provider==="local") ? bench.withRuntimeUse(record) : record();
   });
@@ -162,6 +167,7 @@ function initialize():void {
         datasetId:"Select the dataset snapshot again.",
         approvedPromptId:"Choose an approved prompt version.",
         graderIds:"Choose up to eight saved grader versions.",
+        expectedAnswer:"Enter the expected answer or verified facts in 1 to 12,000 characters.",
         measureGraders:"Review each measure, its selected grader and pass threshold.",
         inputCap:"Use a positive whole number for the input token limit.",
         outputCap:"Use a positive whole number for the output token limit.",

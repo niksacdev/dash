@@ -3,7 +3,7 @@
 const quickGradingPlans = new Map<string,UiQuickPlan>();
 function newQuickGradingPlan(id:string):UiQuickPlan {
   const attachment=readGraderAttachment("prompt:"+id);
-  return {options:null,saved:new Set(attachment?.ids),designed:!!attachment && !attachment.generic,measures:new Map(),error:"",recovery:"retry",sequence:0};
+  return {expectedAnswer:"",options:null,saved:new Set(attachment?.ids),designed:!!attachment && !attachment.generic,measures:new Map(),error:"",recovery:"retry",sequence:0};
 }
 function rememberQuickGraders(plan:UiQuickPlan,id=workflows.quick.approved?.id) {
   if (!id) return;
@@ -50,6 +50,7 @@ async function loadQuickGrading(approved:UiApproved|null) {
   if (!approved) return;
   const plan=quickGradingPlans.get(approved.id) || newQuickGradingPlan(approved.id);
   quickGradingPlans.set(approved.id,plan);
+  for (const other of quickGradingPlans.values()) if (other!==plan) other.expectedAnswer="";
   const sequence=++plan.sequence;
   try {
     if (typeof api.quickGraderOptions!=="function") {
@@ -96,12 +97,28 @@ async function loadQuickGrading(approved:UiApproved|null) {
 }
 function quickGradePlan() {return quickGradingPlans.get(workflows.quick.approved?.id || "");}
 
-function quickGradePayload(plan?:UiQuickPlan):Pick<UiStartRun,"graderIds"|"measureGraders"|"outcomeRubric"> {
+function quickReferenceChecks(plan:UiQuickPlan):string[] {
+  const options=plan.options;
+  if (!options) return [];
+  const saved=new Set(plan.saved), names=new Set<string>();
+  for (const row of options.measures) {
+    const editor=plan.measures.get(row.metric);
+    if (editor?.choice==="rubric" && editor.evidence==="reference") names.add(row.metric);
+    if (editor?.choice.startsWith("saved:")) saved.add(editor.choice.slice(6));
+  }
+  for (const grader of [...options.automatic,...options.available.filter(g=>saved.has(g.id))]) {
+    if (needsGraderReference(grader)) names.add(grader.name);
+  }
+  return [...names];
+}
+function quickGradePayload(plan?:UiQuickPlan):Pick<UiStartRun,"graderIds"|"measureGraders"|"outcomeRubric"|"expectedAnswer"> {
   if (!plan?.options) return {graderIds:[]};
   const ids=new Set(plan.saved);
+  const expectedAnswer=plan.expectedAnswer.trim();
+  const evidence=expectedAnswer && quickReferenceChecks(plan).length ? {expectedAnswer} : {};
   if (!plan.options.measures.length) {
     const legacy=plan.measures.get("Combined outcome rubric");
-    return {graderIds:[...ids],...(legacy?.choice==="rubric" && {outcomeRubric:{type:"opik",
+    return {graderIds:[...ids],...evidence,...(legacy?.choice==="rubric" && {outcomeRubric:{type:"opik",
       judgeId:legacy.judgeId,criteria:legacy.criteria.trim(),threshold:Number(legacy.threshold)}})};
   }
   const measureGraders=plan.options.measures.map(({metric}):UiMeasureAssignment=>{
@@ -115,7 +132,7 @@ function quickGradePayload(plan?:UiQuickPlan):Pick<UiStartRun,"graderIds"|"measu
     }
     return {metric,kind:"skip"};
   });
-  return {graderIds:[...ids],measureGraders};
+  return {graderIds:[...ids],measureGraders,...evidence};
 }
 function quickGraderCount(payload:ReturnType<typeof quickGradePayload>) {
   return payload.graderIds.length+(payload.measureGraders?.filter(r=>r.kind==="rubric").length ?? 0)+Number(!!payload.outcomeRubric);
@@ -124,6 +141,10 @@ function quickGradeIssue(plan?:UiQuickPlan) {
   if (!plan?.options || plan.error) return plan?.error || "Loading grader options.";
   const {graderIds,measureGraders=[],outcomeRubric}=quickGradePayload(plan);
   if (graderIds.some(id=>!plan.options?.available.some(g=>g.id===id))) return "A selected grader version is unavailable. Refresh grading options or change the selection.";
+  if (quickReferenceChecks(plan).length) {
+    if (plan.options.expectedAnswerVersion!==1) return "Quit and reopen DASH to supply an expected answer before running this grader.";
+    if (!plan.expectedAnswer.trim()) return "Add the expected answer or verified facts below, or choose a check that uses the task and answer alone.";
+  }
   const mapped=new Set<string>();
   const assignments = outcomeRubric ? [{...outcomeRubric,metric:"Combined outcome rubric",kind:"rubric" as const}] : measureGraders;
   for (const row of assignments) {
@@ -143,9 +164,9 @@ function quickGradeSummary() {
   if (!plan?.options || issue) return {workload:issue,coverage:""};
   const {measureGraders=[],graderIds,outcomeRubric}=quickGradePayload(plan);
   const selected=plan.options.available.filter(g=>graderIds.includes(g.id));
-  const available=(g:UiGrader)=>!needsGraderReference(g) && !g.requiredEvidence?.includes("trajectory");
+  const available=(g:UiGrader)=>(!needsGraderReference(g) || !!plan.expectedAnswer.trim()) && !g.requiredEvidence?.includes("trajectory");
   const runsModel=(g:UiGrader)=>["judge","opik","decision","opik-metric"].includes(g.type);
-  const runnable=(r:UiMeasureAssignment)=>r.kind==="rubric" ? r.evidence==="task-answer" :
+  const runnable=(r:UiMeasureAssignment)=>r.kind==="rubric" ? (r.evidence==="task-answer" || !!plan.expectedAnswer.trim()) :
     r.kind==="saved" && selected.some(g=>g.id===r.graderId && available(g));
   const judgeRubrics=measureGraders.filter(r=>r.kind==="rubric" && runnable(r));
   const uniqueChecks=new Map([...selected,...plan.options.automatic].map(g=>[g.id,g]));
@@ -175,7 +196,7 @@ function quickMeasureRow(row:UiQuickMeasure,index:number,plan:UiQuickPlan,option
   const selected=options.available.find(g=>editor.choice==="saved:"+g.id);
   const blocked=(!row.criterion && !legacy) || !!row.reason;
   const policyLabel=blocked || editor.choice==="skip" ? "Unscored" : selected ? selected.name+" · v"+selected.version :
-    editor.choice==="rubric" ? "Opik G-Eval · "+(editor.evidence==="reference" ? "Needs reference" : "Run rubric") : "Grader unavailable";
+    editor.choice==="rubric" ? "Opik G-Eval · "+(editor.evidence==="reference" ? "Uses expected answer" : "Run rubric") : "Grader unavailable";
   const head='<div class="qc-measure" data-qc-measure="'+index+'"><details class="qc-assignment"><summary><span><strong>'+esc(row.metric)+
     '</strong><small>'+esc(policyLabel)+'</small>'+criterion+'</span></summary><div class="qc-assignment-body">';
   const end='</div></details></div>';
@@ -195,13 +216,11 @@ function quickMeasureRow(row:UiQuickMeasure,index:number,plan:UiQuickPlan,option
       formField("Scoring rubric",'<textarea data-qc-field="criteria" maxlength="6000">'+esc(editor.criteria)+'</textarea>')+
       '<div class="qc-judge-fields">'+formField("Judge model",'<select data-qc-field="judgeId">'+opt("","Choose a local judge",editor.judgeId)+options.judges.map(j=>opt(j.id,j.model+" · "+j.provider,editor.judgeId)).join("")+'</select>')+
       formField("Pass threshold (0–1)",'<input data-qc-field="threshold" type="number" min="0" max="1" step="any" value="'+esc(editor.threshold)+'">')+
-      (legacy?"":formField("Evidence",'<select data-qc-field="evidence">'+opt("task-answer","Task and candidate answer",editor.evidence)+opt("reference","Require a separate reference",editor.evidence)+'</select>'))+'</div></details>';
-    if (editor.evidence==="reference") policy+='<small>Unscored in Quick compare. Use a labeled Dataset run for an independent reference, or choose task and answer if they contain all the evidence.</small>';
+      (legacy?"":formField("Evidence",'<select data-qc-field="evidence">'+opt("task-answer","Task and candidate answer",editor.evidence)+opt("reference","Expected answer or verified facts",editor.evidence)+'</select>'))+'</div></details>';
   } else if (selected) {
     policy='<small>'+esc(selected.name)+' v'+esc(selected.version)+' · pass threshold '+esc(selected.threshold)+'</small>'+
       '<details class="qc-rubric-options"><summary>View grader rule</summary><p class="qc-rubric-preview">'+esc(selected.criteria)+'</p></details>';
-    if (needsGraderReference(selected) || selected.requiredEvidence?.includes("trajectory"))
-      policy+='<small>Unscored in Quick compare. This grader needs a separate reference or an agent trace.</small>';
+    if (needsGraderReference(selected)) policy+='<small>Uses the expected answer supplied for this comparison.</small>';
   }
   if (current==="rubric" && !editor.criteria && row.generated) policy+=
     '<p>Custom rubric text stays in the editing session. Re-enter the rubric or restore the proposed wording before running.</p>'+
@@ -221,12 +240,19 @@ function quickGradePicker() {
   const heading='<div class="qc-section-title"><h2>Graders</h2>'+chooseQuickGradersLink()+'</div>';
   if (!plan || !options || plan.error) return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+heading+
     (plan?.error?quickGraderFailure(plan):'<p role="status">Loading grading options…</p>')+'</section>';
+  const checks=quickReferenceChecks(plan);
+  const example=workflows.quick.approved?.domain==="Manufacturing" ? "Drawing B allows up to 10.03 mm. Sample S1 measured 10.04 mm and needs a signed recheck." :
+    "The Q2 release reports diluted GAAP EPS of $0.74 and adjusted diluted EPS of $0.85.";
+  const expected='<section class="qc-expected" data-qc-expected '+(checks.length?'':'hidden')+'><label for="qc-expected-answer">Expected answer or verified facts</label>'+
+    '<p id="qc-expected-help">Give the correct result a reviewer would accept. Both candidates receive the approved task. The checks listed here receive these facts when grading their answers.</p>'+
+    '<small id="qc-expected-checks">'+esc(checks.join(" · "))+'</small><textarea id="qc-expected-answer" rows="3" maxlength="12000" aria-describedby="qc-expected-help qc-expected-checks" placeholder="'+esc("Example: "+example)+'" '+
+    (checks.length?'required':'disabled')+'>'+esc(plan.expectedAnswer)+'</textarea></section>';
   const missing=[...plan.saved].some(id=>!options.available.some(g=>g.id===id));
   return '<section id="qc-grading" class="qc-grading" tabindex="-1" aria-label="Grading plan">'+heading+
     '<h3 class="qc-line-label">Approved measures</h3>'+
     quickGradingRows(options).map((m,i)=>quickMeasureRow(m,i,plan,options)).join("")+
     (!options.measures.length?'<p>This prompt version has no individually paired measures and pass conditions. Any combined rubric produces one score per answer.</p>':"")+
-    '<div class="qc-attached">'+quickAdditionalVersions(plan,options)+'</div>'+
+    expected+'<div class="qc-attached">'+quickAdditionalVersions(plan,options)+'</div>'+
     (missing?'<button type="button" data-qc-unavailable>Remove unavailable additional graders</button>':"")+(options.automatic.length?'<details class="qc-auto-options"><summary>Automatic checks · '+options.automatic.length+'</summary>'+automaticChecks(options.automatic)+'</details>':'')+'<p id="qc-grade-status">'+esc(quickGradeSummary().workload)+'</p></section>';
 }
 function updateQuickGradingControls() {
@@ -239,7 +265,19 @@ function updateQuickGradingControls() {
   if (status) status.textContent=quickLaunchIssue() || "Ready to evaluate both answers.";
   if (go) go.disabled=!canStartQuick();
   const plan=quickGradePlan(),attached=document.querySelector(".qc-attached");
-  if (attached && plan?.options) attached.innerHTML=quickAdditionalVersions(plan,plan.options);
+  if (attached && plan?.options) {
+    attached.innerHTML=quickAdditionalVersions(plan,plan.options);
+    const checks=quickReferenceChecks(plan);
+    const section=document.querySelector<HTMLElement>("[data-qc-expected]");
+    const input=document.querySelector<HTMLTextAreaElement>("#qc-expected-answer");
+    if (section && input) {
+      section.hidden=!checks.length;
+      input.disabled=!checks.length;
+      input.required=!!checks.length;
+      const names=document.getElementById("qc-expected-checks");
+      if (names) names.textContent=checks.join(" · ");
+    }
+  }
 }
 document.addEventListener("click",async e=>{
   if (!(e.target instanceof Element)) return;
@@ -268,6 +306,10 @@ document.addEventListener("click",async e=>{
 function handleQuickGradingField(e:Event) {
   const target=e.target,plan=quickGradePlan();
   if (!textInput(target) || !plan?.options || !target.closest("#qc-grading")) return;
+  if (target.id==="qc-expected-answer") {
+    plan.expectedAnswer=target.value;
+    updateQuickGradingControls();return;
+  }
   {
     const field=target.dataset.qcField,fieldset=target.closest<HTMLElement>("[data-qc-measure]");
     const index=Number(fieldset?.dataset.qcMeasure),row=quickGradingRows(plan.options)[index];

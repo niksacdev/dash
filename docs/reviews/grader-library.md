@@ -54,3 +54,11 @@ A Manufacturing operator approves a handoff task requiring the lot ID and next a
 Acceptance requires the selected evaluator to receive both candidates' eligible evidence. A task-and-answer decision must exclude any held-out reference, and an answer-only rule must also exclude the task. A grader requiring an unavailable reference stays unscored without an inference request. Save/reopen, approval retries and deriving a new version must preserve the earlier policy and scores. Optional editable completeness and missing-evidence questions need domain-specific calibration. The latter applies only when the task explicitly identifies the gap and requests disclosure and withholding.
 
 See the [scoring backend decision](../adr/0034-review-grader-backend.md) and [operator workflow](../reader/src/graders.md#choose-the-scoring-model).
+
+## Review a scoring rule and supply its expected answer
+
+An operator opens a General, Industry or My Graders card and inspects its saved rule or judge rubric before selecting it. The summary describes what it checks. Details reveals the complete rule for that version, the evidence it needs and how to interpret the decision. Each collection uses the available width and keeps the same actions on a narrow screen.
+
+A receiving inspector approves a Quick comparison and selects a grader that checks the sample disposition against verified inspection facts. Setup asks once for the expected answer before GO. Both candidates see the approved task. Only selected graders requiring the expected answer receive it. A task-and-answer check can run without it. Changing the grader or intentionally leaving the measure unscored updates readiness. A direct or older client cannot start a reference-dependent run without the evidence. An older runner must not silently discard the answer.
+
+A standalone grader test asks for missing evidence before scoring an existing response. A dataset uses each row’s own expected answer and reports missing coverage before inference. A record from an earlier run keeps its original score; an operator can test its saved answer with evidence. Product review identified collapsed warnings and mixed datasets as sources of late surprises. Technical review required enforcing the rule at the main-process boundary and keeping assessor-only text outside candidate dispatch and ordinary diagnostic exports.

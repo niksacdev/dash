@@ -62,6 +62,7 @@ function restoredRubric(id:string,index:number) {
   return quickSession.lineups.find(l=>l.promptId===id)?.rubrics.find(r=>r.index===index);
 }
 function leaveQuickSetup() {
+  for (const plan of quickGradingPlans.values()) plan.expectedAnswer="";
   resumedQuickId=null;pendingQuickLineup=null;
   quickSession.active=null;persistQuickSession();
 }
@@ -117,7 +118,6 @@ function quickLibraryBanner() {
     (plan?.error?quickGraderFailure(plan):plan?.options?'<small role="status">'+attached.size+' saved grader '+(attached.size===1?'version':'versions')+' attached</small>' :'')+'</div></nav>';
 }
 function quickLibraryUnavailable(g:UiGrader,options:UiQuickOptions) {
-  if (needsGraderReference(g)) return "Requires a labeled dataset with a reference answer.";
   if (g.type==="trajectory" || g.requiredEvidence?.includes("trajectory")) return "Requires an agent trace.";
   let ids=availableQuickVersions.get(options);
   if (!ids) {ids=new Set(options.available.map(option=>option.id));availableQuickVersions.set(options,ids);}
@@ -125,6 +125,7 @@ function quickLibraryUnavailable(g:UiGrader,options:UiQuickOptions) {
   if (g.library?.automatic) return "Runs automatically when applicable.";
   if (g.library?.scenario || !["Cross-industry","General","Unclassified",quickLibraryPrompt()?.domain].includes(g.industry))
     return "Applies to a different scenario or industry.";
+  if (g.type==="field") return "Use a dataset with the expected JSON fields for this check.";
   return "This version needs an available judge or a supported Quick scoring method.";
 }
 function quickChooserPage() {

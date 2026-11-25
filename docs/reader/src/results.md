@@ -19,7 +19,7 @@ A measure left unscored has no numeric value. The report retains historical over
 ## Explain a failed case
 
 1. Open the metric in **Evaluation report** and expand **Case scores and rationale**. Check the grader revision, judged case, candidate and explanation.
-2. Open the case. Compare the actual dispatched input, returned answer and held-out reference. A missing reference or interrupted request can leave a case **Unscored**. A score of zero records an evaluated failure.
+2. Open the case. Compare the actual dispatched input, returned answer and held-out reference. If an earlier run reports a missing case reference, the grader lacked the correct answer for that case. You can test the saved response with its expected answer using **Test one output**. An interrupted request can also leave a case **Unscored**. A score of zero records an evaluated failure.
 3. For Opik risk metrics such as Hallucination, higher native values mean higher risk. DASH also shows a quality score, calculated as one minus risk, so higher quality reads consistently across the comparison.
 
 A winner requires complete scores on the same cases, a lead on at least one rubric and no losses on the others. Read the coverage and missing evidence when the report shows a tie, mixed results or an inconclusive comparison.

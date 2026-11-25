@@ -1,3 +1,4 @@
+import {missingExpectedAnswer} from "./grading-errors.cjs";
 import type {RecordedAssessment} from "./grader-types.cjs";
 import type {RunDetail} from "./run-types.cjs";
 import {httpGuidance,templateAdvice} from "./provider-errors.cjs";
@@ -64,6 +65,7 @@ function exportManifest(manifest:RunDetail["manifest"]) {
 }
 
 const knownGradingFailures=new Set([
+  missingExpectedAnswer,
   "Grading canceled.","Grading timed out. Inspect the judge connection and response budget.",
   "The judge stopped before completing its verdict. Inspect the judge output budget and case size.",
   "The judge returned invalid JSON. Check its prompt template and structured-output support.",

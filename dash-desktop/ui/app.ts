@@ -698,7 +698,7 @@ async function runPage(id:string, record:string|undefined, seq:number) {
       '</div></div><details class="card spacer"><summary>Case trace and telemetry</summary>' +
       box("Trace", r.trace) +
       box("Collected telemetry", r.telemetry) +
-      "</details>" + guardrailDetails(r.guardrail) + workflowCaseSummary(m,r) + caseGrading(run,r,Number(record))
+      "</details>" + guardrailDetails(r.guardrail) + workflowCaseSummary(m,r) + caseGrading(run,r,Number(record),row)
     );
   }
   const live = ["queued", "running"].includes(run.status);

@@ -19,8 +19,8 @@ function graderScenario(g:UiGrader) {
 }
 function graderApplicability(g:UiGrader) {
   return [g.industry,graderScenario(g),graderTypes[g.type],decisionTarget(g) || g.judge?.model,g.evidenceView==="answer-only"?"Answer only":"",
-    g.metricKey && state.opikLibraryTemplates.find(t=>t.key===g.metricKey)?.requiresReference?"Requires a case reference":"",
-    g.requiredEvidence?.length?"Requires "+g.requiredEvidence.map(e=>e==="reference"?"a reference answer":"observed agent actions").join(" and "):""
+    g.metricKey && state.opikLibraryTemplates.find(t=>t.key===g.metricKey)?.requiresReference?"Needs an expected answer":"",
+    g.requiredEvidence?.length?"Requires "+g.requiredEvidence.map(e=>e==="reference"?"an expected answer":"observed agent actions").join(" and "):""
   ].filter(Boolean).join(" · ");
 }
 function automaticChecks(list:UiGrader[]) {
@@ -38,9 +38,10 @@ function revisionFamilies(items:UiGrader[]) {
 function catalogChoices(list:UiGrader[],chosen:Set<string>,inputName:string,reasons?:Map<string,string|undefined>) {
   const choice=(g:UiGrader)=>{
     const rec=reasons?.get(g.id);
-    return '<label class="qc-grade-choice choice"><input type="checkbox" name="'+inputName+'" value="'+esc(g.id)+'" '+(chosen.has(g.id)?"checked":"")+
+    const unavailable=inputName==="custom-grader" ? datasetGraderEvidenceIssue(g,datasetGradingChoices,dataset()?.count ?? 0) : "";
+    return '<label class="qc-grade-choice choice"><input type="checkbox" name="'+inputName+'" value="'+esc(g.id)+'" '+(chosen.has(g.id)?"checked":unavailable?"disabled":"")+
       '><span><strong>'+esc(g.name)+' <small>v'+esc(g.version)+'</small></strong><small>'+esc(graderApplicability(g))+'</small><small>'+esc(g.criteria)+'</small>'+
-      (rec?'<small>'+esc(rec)+'</small>':'')+'</span></label>';
+      (unavailable || rec?'<small>'+esc(unavailable || rec)+'</small>':'')+'</span></label>';
   };
   return catalogSections.map(({scope,title})=>{
     const families=revisionFamilies(list.filter(g=>graderScope(g)===scope));
@@ -67,12 +68,14 @@ function selectedJudgeNotice(chosen:Set<string>) {
 }
 function graderPicker(){
   const scope=activeDatasetGraderScope(),chosen=datasetGradeSelection(scope);
+  const issue=referenceScoringIssue();
   const available=datasetGradingChoices?.available || [];
   const missing=[...chosen].filter(id=>!available.some(g=>g.id===id));
   return automaticChecks(datasetGradingChoices?.automatic || [])+gradeDesignerView(scope)+'<details class="card grader-picker" data-grade-scope="'+esc(scope)+'"><summary>'+esc(selectedGradersLabel(chosen))+'</summary>'+
     catalogChoices(available,chosen,"custom-grader")+(available.length?"":"<p>No optional graders are available for this snapshot.</p>")+
     missing.map(id=>'<label class="choice"><input type="checkbox" name="custom-grader" value="'+esc(id)+'" checked>Unavailable · '+esc(state.graders.find(g=>g.id===id)?.name || id)+'</label>').join("")+
-    link("Open grader library →","graders","link")+'</details><div id="dataset-judge-note" role="status" class="wf-hint">'+selectedJudgeNotice(chosen)+'</div>';
+    link("Open grader library →","graders","link")+'</details><div id="dataset-judge-note" role="status" class="wf-hint">'+selectedJudgeNotice(chosen)+'</div>'+
+    '<p id="dataset-scoring-issue" role="status" class="wf-hint" '+(issue?'':'hidden')+'>'+esc(issue)+'</p>';
 }
 function decisionSource(provider:UiDecisionConfig["provider"]) {
   return provider==="local" ? "Local decision server" : "OpenRouter";
@@ -97,6 +100,17 @@ function graderConsentById(ids:readonly string[],scope:string) {
     return saved;
   }),scope);
 }
+const missingAnswerMessages=new Set([
+  "This rubric requires a case reference. The case is unscored.",
+  "This decision criterion requires a reference answer. The case has none.",
+  "Hallucination requires a nonempty case reference for grounding.",
+  "No expected answer was supplied. This grader needs the correct answer or verified facts to compare with the model’s response.",
+]);
+function gradingExplanation(reason:string) {
+  if (missingAnswerMessages.has(reason))
+    return "No expected answer was supplied for this assessment. The grader needed the correct answer or verified facts to compare with the model’s response. Use Test one output with that evidence to score the saved response.";
+  return reason;
+}
 function scoreRows(rows:UiAssessment[]){
   return rows.length?table(["Grader","Candidate / case","Score","Decision","Evidence"],rows.map(r=>{
     const d=r.decision;
@@ -110,7 +124,7 @@ function scoreRows(rows:UiAssessment[]){
     const native=r.opikMetric?'<small class="block">Opik '+(r.opikMetric.direction==="higher-is-risk"?"raw risk":"native score")+' · '+esc(r.opikMetric.nativeScore)+'</small>':"";
     const outcome=r.pass==null ? d ? "Abstained · unscored" : "Unscored" : r.pass ? "Passed" : (d || r.engine==="decision") ? "Failed" : "Review";
     return [esc(r.name+" v"+r.version)+model+requested+usedFallback,esc(r.datasetCase ? [r.datasetCase.datasetName,r.datasetCase.datasetVersion,r.datasetCase.caseId].join(" · ") : [r.candidate,r.caseId].filter(Boolean).join(" / ") || "Provided output"),
-      r.value==null?"—":esc(metricNumber(r.value)),esc(outcome),esc(r.reason)+probability+native];
+      r.value==null?"—":esc(metricNumber(r.value)),esc(outcome),esc(r.pass==null?gradingExplanation(r.reason):r.reason)+probability+native];
   })):"";
 }
 let gradeFilter="",graderDraft:UiGrader|null=null,graderTemplate:UiOpikLibraryTemplate|null=null;
@@ -286,15 +300,50 @@ function recordWorkspaceSave(items:SavedGraderChoice[],scope?:string) {
   showGraderAuthoring=false;samplePanelOpen=false;
 }
 function needsGraderReference(g:UiGrader) {
-  return g.type==="field" || g.metricKey==="hallucination" || !!g.requiredEvidence?.includes("reference");
+  return g.type==="field" || (g.type==="catalog" && !!g.library?.scenario) || g.metricKey==="hallucination" || !!g.requiredEvidence?.includes("reference");
 }
-function showSampleEvidence(g:UiGrader) {
-  const reference=needsGraderReference(g);
-  const steps=g.type==="trajectory" || !!g.requiredEvidence?.includes("trajectory");
+function evidencePresent(value:unknown):boolean {
+  if (typeof value==="string") return !!value.trim();
+  if (typeof value==="number") return Number.isFinite(value);
+  if (typeof value==="boolean") return true;
+  return !!value && typeof value==="object" && Object.values(value).some(evidencePresent);
+}
+function referenceFieldFor(grader:UiGrader|undefined):string|null {
+  if (grader?.type!=="field") return null;
+  try {
+    const rule:unknown=JSON.parse(grader.criteria);
+    return isRecord(rule) && typeof rule.referenceField==="string" ? rule.referenceField : null;
+  } catch {return null;}
+}
+function includesJsonField(reference:unknown,field:string) {
+  for (const key of field.split(".")) {
+    if (!isRecord(reference) || !Object.hasOwn(reference,key)) return false;
+    reference=reference[key];
+  }
+  return reference!==undefined;
+}
+function expectedAnswerHelp(grader:UiGrader|undefined) {
+  const field=referenceFieldFor(grader);
+  return field ? "Supply the expected answer as a JSON object containing the field "+field+"." :
+    "Supply the facts a correct response should match. For example, “Q2 diluted GAAP EPS was $0.74.” The grader uses this after the candidate has answered. Text and JSON are supported.";
+}
+function sampleExpectedAnswer(raw:string):unknown {
+  if (!raw.trim()) return null;
+  try {return JSON.parse(raw);} catch {return raw.trim();}
+}
+function sampleEvidenceLabel(reference:boolean,steps:boolean) {
+  const needed=[...(reference?["an expected answer"]:[]),...(steps?["recorded agent steps"]:[])];
+  return needed.length ? "This grader needs "+needed.join(" and ") : "Additional evidence (optional)";
+}
+function showSampleEvidence(g:UiGrader|undefined) {
+  const reference=!!g && needsGraderReference(g);
+  const steps=g?.type==="trajectory" || !!g?.requiredEvidence?.includes("trajectory");
   const detail=requireElement("#grade-sample [data-sample-evidence]",HTMLDetailsElement);
   if(reference || steps)detail.open=true;
-  const needed=[...(reference?["a reference answer"]:[]),...(steps?["observed agent steps"]:[])];
-  $("summary",detail).textContent=needed.length ? "This grader needs "+needed.join(" and ") : "Reference and agent trajectory";
+  requireElement("[name=reference]",HTMLTextAreaElement,detail).required=reference;
+  $("#expected-answer-help",detail).textContent=expectedAnswerHelp(g);
+  requireElement("[name=trajectory]",HTMLTextAreaElement,detail).required=steps;
+  $("summary",detail).textContent=sampleEvidenceLabel(reference,steps);
 }
 function graderUseActions(g:UiGrader,source?:string,versionAction?:"revise"|"customize") {
   const sampleOnly=g.type==="trajectory" || g.requiredEvidence?.includes("trajectory");
@@ -325,7 +374,8 @@ async function openGraderRun(g:UiGrader,d:UiDataset,isCurrent:()=>boolean) {
   const w=workflows.dataset;
   if(state.active || w.busy)throw Error("Another run or preparation is active. Finish it before setting up a dataset run.");
   if(!options.available.some(row=>row.id===g.id))throw Error("This version applies to a different industry or scenario.");
-  if(needsGraderReference(g) && !options.hasReferences)throw Error("This grader needs a held-out reference. Choose a snapshot with reference answers or import one.");
+  const issue=datasetGraderEvidenceIssue(g,options,d.count);
+  if(issue)throw Error(issue);
   const keepVariant=!!w.approved && w.approved.datasetId===d.id;
   const scope=keepVariant && w.approved?"prompt:"+w.approved.id:"dataset:"+d.id;
   const chosen=datasetGradeSelection(scope);
@@ -387,53 +437,91 @@ function workspaceGraderReceipt() {
         (g?graderUseActions(g,savedDesignDataset):'')+'</div>';
     }).join("")+'</section>';
 }
-function gradeSelect(selected=""){return '<select name="grader" required>'+opt("","Choose a grader",selected)+catalogSections.map(({scope,title})=>{
-  const list=(state.graders||[]).filter(g=>graderScope(g)===scope);
+function gradeSelect(selected="",standalone=false){return '<select name="grader" required>'+opt("","Choose a grader",selected)+catalogSections.map(({scope,title})=>{
+  const list=(state.graders||[]).filter(g=>graderScope(g)===scope && !(standalone && g.type==="catalog" && g.library?.scenario));
   return list.length?'<optgroup label="'+title+'">'+list.map(g=>opt(g.id,[g.name+" v"+g.version,g.category,decisionTarget(g)].filter(Boolean).join(" · "),selected)).join("")+'</optgroup>':"";
 }).join("")+'</select>';}
+const scoringRuleLabels:Record<UiGradeType,string>={
+  "opik-metric":"Opik metric",catalog:"Scoring rule",contains:"Required text",exact:"Expected text",field:"Fields to compare",
+  trajectory:"Required actions in order",judge:"Judge rubric",opik:"Judge rubric",decision:"Decision question",
+};
+
+function graderInputs(g:UiGrader):string {
+  if(g.type==="catalog"){
+    if(g.library?.scenario)return "Model answer and the labeled "+(graderScenario(g) || "scenario")+" case.";
+    if(g.ruleKey==="completion")return "The runtime’s recorded stop reason.";
+    if(g.ruleKey==="json-valid")return "Model answer and the run’s JSON output contract.";
+    return "Model answer.";
+  }
+  if(g.type==="opik-metric")return metricInputs(g.metricKey);
+  if(g.type==="exact" || g.type==="contains")return "Model answer.";
+  if(g.type==="field")return "JSON model answer and the expected value from this case.";
+  if(g.type==="trajectory")return "Recorded tool or action names in execution order.";
+  const view=g.decisionView ?? g.evidenceView;
+  if(view==="answer-only")return "Model answer only.";
+  if(view==="task-answer")return "Task and model answer.";
+  const required=(g.requiredEvidence ?? []).map(e=>e==="reference" ? "expected answer or verified facts" : "recorded agent steps");
+  return required.length ? "Task and model answer. This grader also requires "+required.join(" and ")+"." :
+    "Task, model answer and any available case evidence.";
+}
+function metricInputs(key:UiOpikMetricKey|undefined):string {
+  if(key==="moderation")return "Model answer.";
+  return key==="hallucination" ? "Task, model answer and supporting facts from the case." : "Task and model answer.";
+}
+function gradingOutcome(g:UiGrader):string {
+  if(g.type==="decision" && g.decision)
+    return "Pass when P(yes) ≥ "+g.threshold+". Fail when P(yes) ≤ "+g.decision.failAt+". Between the cutoffs the answer stays unscored.";
+  if(g.type==="exact")return "1 for an exact match after trimming outer whitespace, 0 otherwise.";
+  if(g.type==="contains")return "1 when the answer contains the case-sensitive text, 0 otherwise.";
+  if(g.type==="field")return "1 when the output field equals the expected field’s JSON value, 0 for a mismatch. Missing expected fields leave the case unscored.";
+  if(g.type==="trajectory")return "1 when the recorded actions include the required sequence, 0 when one is missing or out of order.";
+  if(g.type==="catalog")return "1 when the check passes, 0 when it fails. A required observation that is unavailable stays unscored.";
+  return "Pass at a DASH score of "+g.threshold+" or higher on a 0–1 scale.";
+}
+function scoringInspection(id:string,title:string,criterion:string,inputs:string,outcome:string,judge?:string) {
+  const label=esc(title);
+  return '<div class="gc-rule-head"><span>'+label+'</span><button type="button" class="gc-info" data-grader-details aria-expanded="false" aria-controls="'+esc(id)+'">Inspect scoring</button></div>'+
+    '<p class="gc-rule-text">'+esc(criterion)+'</p>'+
+    '<dl class="gc-detail-body" id="'+esc(id)+'" hidden><dt>Evidence</dt><dd>'+esc(inputs)+'</dd>'+
+    (judge?'<dt>Judge</dt><dd>'+esc(judge)+'</dd>':'')+'<dt>Scoring</dt><dd>'+esc(outcome)+'</dd></dl>';
+}
 function catalogRevision(g:UiGrader,latest:boolean) {
-  const scope=graderScope(g);
-  const parent=quickLibraryRoute()?undefined:state.graders.find(p=>p.id===g.library?.parentRevisionId);
+  const scoped=!!quickLibraryRoute();
+  const parent=scoped?undefined:state.graders.find(p=>p.id===g.library?.parentRevisionId);
   const enabled=state.generalGraderDefaults.includes(g.id);
-  const use=g.library?.automatic || enabled ? "Automatic on eligible new runs":"Optional";
+  const automatic=g.library?.automatic || enabled;
   const canSetDefault=!!g.generalDefaultKey;
   const replaced=canSetDefault && !enabled && state.graders.find(other=>other.generalDefaultKey===g.generalDefaultKey && state.generalGraderDefaults.includes(other.id));
   const defaultToggle=canSetDefault?'<button type="button" data-grade-default="'+esc(g.id)+'" aria-pressed="'+enabled+'">'+
     (enabled?'Disable automatic grading':'Use on new runs')+'</button>':"";
   const ancestry=parent ? (parent.library?.familyId && parent.library.familyId===g.library?.familyId?"Previous revision":"Based on")+" · "+parent.name+" v"+parent.version : "";
   const text=[g.name,g.category,g.industry,g.criteria,graderScenario(g),graderTypes[g.type]];
-  const edit=scope==="customer" && latest ? "revise":"customize";
-  const industry=scope==="industry";
-  const summary=g.criteria.split(/(?<=[.!?])\s|\n/)[0] || g.category;
-  const description=summary.length>155 ? summary.slice(0,152).replace(/\s+\S*$/,"")+"…" : summary;
-  const detailsId="grader-info-"+g.id;
-  const more='<p>'+esc(g.criteria)+'</p><small>'+esc(graderApplicability(g))+'</small><small>'+esc("Pass threshold · "+g.threshold+" / 1")+'</small>';
-  const title='<strong>'+esc(g.name)+'</strong> <small class="gc-version">v'+esc(g.version)+'</small>';
-  const open='<article class="grader-row'+(industry && !quickLibraryRoute()?' gc-card':'')+'" data-grade-version="'+esc(g.id)+'" data-filter="'+esc(text.join(" ").toLowerCase())+'">';
-  if (quickLibraryRoute()) return open+'<div class="gc-revision-head"><div>'+title+'</div><small>'+esc(graderTypes[g.type])+'</small></div>'+
-    '<p class="gc-description">'+esc(description)+'</p><div class="gc-use" data-use-version="'+esc(g.id)+'">'+quickLibraryActions(g)+
-    '<div class="gc-target" role="status" hidden></div></div><details class="gc-manage"><summary>Grader details</summary>'+more+'</details></article>';
-  return open+'<div class="gc-revision-head"><div>'+title+'</div>'+(industry?'<button type="button" class="gc-info" data-grader-details aria-expanded="false" aria-controls="'+esc(detailsId)+'">Details</button>':'<small>'+esc(use)+'</small>')+'</div>'+
-    '<p class="gc-description">'+esc(industry?description:g.criteria)+'</p>'+
-    (ancestry?'<small class="block">'+esc(ancestry)+'</small>':'')+
-    graderUseActions(g,undefined,edit)+
-    (industry?'<div class="gc-detail-body" id="'+esc(detailsId)+'" hidden>'+more+'</div>':'')+
-    '<details class="gc-manage"><summary>'+(industry?'Run history':'Manage version')+'</summary><div class="gc-actions">'+
+  const edit=graderScope(g)==="customer" && latest ? "revise":"customize";
+  const title='<strong>'+esc(g.name)+'</strong><small class="gc-version">v'+esc(g.version)+'</small>';
+  const context=[g.category,graderScope(g)==="customer" && g.industry,automatic && "Automatic on eligible runs"].filter(Boolean).join(" · ");
+  const inspection=scoringInspection("grader-info-"+g.id,scoringRuleLabels[g.type],g.criteria,graderInputs(g),gradingOutcome(g),decisionTarget(g) || g.judge?.model);
+  const common='<article class="grader-row gc-card" data-grade-version="'+esc(g.id)+'" data-filter="'+esc(text.join(" ").toLowerCase())+'">'+
+    '<div class="gc-revision-head">'+title+'</div><small class="gc-context">'+esc(context)+'</small>'+inspection;
+  if(scoped)return common+'<div class="gc-use" data-use-version="'+esc(g.id)+'">'+quickLibraryActions(g)+
+    '<div class="gc-target" role="status" hidden></div></div></article>';
+  return common+(ancestry?'<small class="block">'+esc(ancestry)+'</small>':'')+graderUseActions(g,undefined,edit)+
+    '<details class="gc-manage"><summary>'+(graderScope(g)==="industry"?'Run history':'Manage version')+'</summary><div class="gc-actions">'+
     '<button type="button" data-grade-history="'+esc(g.id)+'" aria-expanded="false">Runs using v'+esc(g.version)+'</button>'+defaultToggle+'</div>'+
     (canSetDefault && g.type==="decision"?'<small>Automatic grading sends the candidate’s task and answer to this local judge. Explicitly selecting the grader can include case evidence.</small>':'')+
     (replaced?'<small>Using this version on new runs replaces '+esc(replaced.name+' v'+replaced.version)+' as the automatic grader.</small>':'')+
     '<div class="gc-uses" data-grade-uses hidden role="status"></div></details></article>';
 }
 function nativeMetricTemplates() {
-  return state.opikLibraryTemplates.length?'<div class="gc-templates"><h4>Opik metric templates</h4>'+
-    state.opikLibraryTemplates.map(t=>'<article class="grader-row gc-template" data-filter="'+esc([t.name,t.category,t.criteria].join(" ").toLowerCase())+'"><div class="gc-revision-head"><strong>'+
-      esc(t.name)+'</strong><small>Choose a local judge</small></div><p>'+esc(t.criteria)+'</p>'+
-      (t.requiresReference?'<small class="block">Requires a recorded reference or supporting context.</small>':'')+
-      '<div class="gc-actions"><button type="button" data-grade-template="'+esc(t.key)+'">Configure metric</button></div></article>').join("")+'</div>':"";
+  if(!state.opikLibraryTemplates.length)return "";
+  return '<div class="gc-templates"><h4>Opik metric templates</h4><div class="gc-grid">'+state.opikLibraryTemplates.map(t=>
+    '<article class="grader-row gc-card gc-template" data-filter="'+esc([t.name,t.category,t.criteria].join(" ").toLowerCase())+'">'+
+    '<div class="gc-revision-head"><strong>'+esc(t.name)+'</strong></div><small class="gc-context">'+esc(t.category)+'</small>'+
+    scoringInspection("grader-template-"+t.key,"Opik metric",t.criteria,metricInputs(t.key),"Choose the judge and pass threshold when configuring a version.")+
+    '<div class="gc-use"><button type="button" data-grade-template="'+esc(t.key)+'">Configure metric</button></div></article>').join("")+'</div></div>';
 }
 function familyRevisionList(items:UiGrader[]) {
-  return revisionFamilies(items).map(([head,...earlier])=>'<div class="gc-family">'+catalogRevision(head,true)+
-    (earlier.length?'<details class="gc-previous"><summary>Earlier versions of '+esc(head.name)+' · '+earlier.length+'</summary>'+earlier.map(g=>catalogRevision(g,false)).join("")+'</details>':'')+'</div>').join("");
+  return '<div class="gc-grid">'+revisionFamilies(items).map(([head,...earlier])=>'<div class="gc-family">'+catalogRevision(head,true)+
+    (earlier.length?'<details class="gc-previous"><summary>Earlier versions of '+esc(head.name)+' · '+earlier.length+'</summary>'+earlier.map(g=>catalogRevision(g,false)).join("")+'</details>':'')+'</div>').join("")+'</div>';
 }
 function catalogSection(scope:UiGraderScope,title:string) {
   const items=state.graders.filter(g=>graderScope(g)===scope);
@@ -526,10 +614,15 @@ async function gradersPage(){
   if(quickLibraryRoute())return quickChooserPage();
   const history=await sampleHistory(),draft=pendingSample ?? retrySample?.draft;
   const group=pendingSample ? ' disabled' : '';
-  const outputTest='<details id="grade-sample-panel" data-own-open class="panel" '+(samplePanelOpen || retrySample?.error?'open':'')+'><summary>Test one output</summary><p>Paste the task and an existing answer to see the score and rationale from one grader.</p><form id="grade-sample" aria-busy="'+!!pendingSample+'"><fieldset class="gc-sample-fields"'+group+'><legend class="visually-hidden">Output test</legend>'+formField("Grader",gradeSelect(draft?.grader))+
+  const selected=state.graders.find(g=>g.id===draft?.grader);
+  const wantsAnswer=!!selected && needsGraderReference(selected);
+  const wantsSteps=selected?.type==="trajectory" || !!selected?.requiredEvidence?.includes("trajectory");
+  const outputTest='<details id="grade-sample-panel" data-own-open class="panel" '+(samplePanelOpen || retrySample?.error?'open':'')+'><summary>Test one output</summary><p>Paste the task and an existing answer to see the score and rationale from one grader.</p><form id="grade-sample" aria-busy="'+!!pendingSample+'"><fieldset class="gc-sample-fields"'+group+'><legend class="visually-hidden">Output test</legend>'+formField("Grader",gradeSelect(draft?.grader,true))+
     '<div class="cols">'+formField("Task or input",'<textarea name="input" required>'+esc(draft?.input)+'</textarea>')+formField("Model or agent output",'<textarea name="output" required>'+esc(draft?.output)+'</textarea>')+'</div>'+
-    '<details data-sample-evidence '+(draft?.reference || draft?.trajectory?'open':'')+'><summary>Reference and agent trajectory</summary>'+formField("Reference (JSON or text)",'<textarea name="reference">'+esc(draft?.reference)+'</textarea>')+
-    formField("Agent steps in order (JSON array)",'<textarea name="trajectory" placeholder=\'[{"tool":"search"},{"tool":"summarize"}]\'>'+esc(draft?.trajectory)+'</textarea>')+'</details>'+
+    '<details data-sample-evidence '+(wantsAnswer || wantsSteps || draft?.reference || draft?.trajectory?'open':'')+'><summary>'+esc(sampleEvidenceLabel(wantsAnswer,wantsSteps))+'</summary>'+
+    formField("Expected answer or verified facts",'<textarea name="reference" rows="3" aria-describedby="expected-answer-help" '+(wantsAnswer?'required':'')+'>'+esc(draft?.reference)+'</textarea>')+
+    '<p id="expected-answer-help" class="wf-hint">'+esc(expectedAnswerHelp(selected))+'</p>'+
+    formField("Agent steps in order (JSON array)",'<textarea name="trajectory" '+(wantsSteps?'required':'')+' placeholder=\'[{"tool":"search"},{"tool":"summarize"}]\'>'+esc(draft?.trajectory)+'</textarea>')+'</details>'+
     '<button class="yellow spacer" type="submit" '+(pendingSample || !state.graders.length?'disabled':'')+'>'+(pendingSample?'Scoring…':'Score this output')+'</button></fieldset><div data-sample-recovery>'+sampleRecovery()+'</div></form>'+
     '<div id="grade-sample-scores" tabindex="-1">'+history+'</div></details>';
   return heading("Workspace","Graders","A grader scores a model or agent answer against your success criteria. Create one or use a saved version below.")+
@@ -538,10 +631,21 @@ async function gradersPage(){
     catalogSection("industry","Industry catalogue")+catalogSection("customer","My Graders")+catalogSection("general","General")+
     '<p id="gc-no-matches" hidden role="status">No matching graders.</p>'+outputTest;
 }
-function caseGrading(run:UiRunDetail,r:UiResult,index:number){
+function savedCaseNeedsAnswer(form:HTMLFormElement,grader:UiGrader) {
+  if (grader.type!=="field") return needsGraderReference(grader) && form.dataset.expected!=="true";
+  const available:unknown=JSON.parse(form.dataset.fieldGraders || "[]");
+  return !Array.isArray(available) || !available.includes(grader.id);
+}
+function caseGrading(run:UiRunDetail,r:UiResult,index:number,row?:UiCase|null){
+  const expected=row?.reference ?? row?.gold;
+  const hasExpected=run.hasQuickExpectedAnswer===true || evidencePresent(expected);
+  const fieldGraders=state.graders.filter(g=>{
+    const path=referenceFieldFor(g);
+    return path && includesJsonField(expected,path);
+  }).map(g=>g.id);
   const rows=(run.assessments||[]).filter(a=>a.caseId===r.caseId && a.candidate===r.candidateId);
-  return bar("Grader evaluations")+'<div class="panel">'+scoreRows(rows)+(!r.error?'<form id="grade-case" data-id="'+esc(run.manifest.id)+'" data-index="'+index+'">'+
-    formField("Apply a saved grader",gradeSelect())+'<button '+(state.graders?.length?"":"disabled")+'>Grade this output</button></form>':'')+'</div>';
+  return bar("Grader evaluations")+'<div class="panel">'+scoreRows(rows)+(!r.error?'<form id="grade-case" data-id="'+esc(run.manifest.id)+'" data-index="'+index+'" data-expected="'+hasExpected+'" data-field-graders="'+esc(JSON.stringify(fieldGraders))+'">'+
+    formField("Apply a saved grader",gradeSelect())+'<p data-grade-case-help role="status"></p>'+'<button '+(state.graders?.length?"":"disabled")+'>Grade this output</button></form>':'')+'</div>';
 }
 document.addEventListener("change",e=>{
   if (!textInput(e.target)) return;
@@ -557,12 +661,24 @@ document.addEventListener("change",e=>{
     if(notice)notice.innerHTML=selectedJudgeNotice(chosen);
     updateDatasetGradingControls();
   }
+  if(e.target.matches("#grade-case [name=grader]") && e.target.form) {
+    const form=e.target.form,id=e.target.value,g=state.graders.find(row=>row.id===id);
+    const missing=!!g && savedCaseNeedsAnswer(form,g);
+    const trace=!!g && (g.type==="trajectory" || g.requiredEvidence?.includes("trajectory"));
+    const scenario=g?.library?.scenario && g.library.scenario!==current?.manifest.pack?.id;
+    $("[data-grade-case-help]",form).textContent=scenario ? "Use this grader with a case from its own industry scenario." :
+      missing && g?.type==="field" ? expectedAnswerHelp(g)+" Test a copy of this response with that evidence." :
+      missing ? "This saved case has no expected answer. Test a copy of this response with the correct answer or verified facts." :
+      trace ? "This model run has no recorded agent actions. Test a copy with the observed agent steps." : "";
+    const button=requireElement("button",HTMLButtonElement,form);
+    button.disabled=!!scenario;
+    button.textContent=missing ? "Add expected answer and test" : trace ? "Add agent steps and test" : "Grade this output";
+  }
   if(e.target.matches("#grade-sample [name=grader]")){
     if(e.target.form)editSampleRetry(e.target.form);
     const id=e.target.value;
     const g=state.graders.find(row=>row.id===id);
-    if(g)showSampleEvidence(g);
-    else $("#grade-sample [data-sample-evidence] summary").textContent="Reference and agent trajectory";
+    showSampleEvidence(g);
   }
   if(e.target.id==="grade-type"){
     const f=e.target.form;
@@ -659,7 +775,7 @@ document.addEventListener("click",async e=>{
     for(const option of grader.options)option.defaultSelected=option.value==="";
     grader.value="";
     const details=requireElement("[data-sample-evidence]",HTMLDetailsElement,clear.form);
-    details.open=false;$("summary",details).textContent="Reference and agent trajectory";
+    details.open=false;showSampleEvidence(undefined);
     $("select",clear.form).focus();$("[data-sample-recovery]",clear.form).replaceChildren();return;
   }
   const retry=e.target.closest<HTMLButtonElement>("[data-grade-retry]");
@@ -743,8 +859,21 @@ async function scoreSample(form:HTMLFormElement) {
   const sameVisit=currentVisit();
   const draft=readSample(form);
   try{
-    let reference:unknown=draft.reference.trim() || null,trajectory:unknown;
-    try{reference=JSON.parse(draft.reference);}catch{ /* A plain-text reference is also valid. */ }
+    const selected=state.graders.find(g=>g.id===draft.grader);
+    if (!selected) throw Error("Choose a saved grader.");
+    const reference=sampleExpectedAnswer(draft.reference) ?? null;
+    const field=referenceFieldFor(selected);
+    if (field && !includesJsonField(reference,field)) {
+      requireElement("[name=reference]",HTMLTextAreaElement,form).focus();
+      throw Error(expectedAnswerHelp(selected));
+    }
+    if (!field && needsGraderReference(selected) && !evidencePresent(reference)) {
+      requireElement("[name=reference]",HTMLTextAreaElement,form).focus();
+      throw Error("Enter an expected answer or verified facts before scoring.");
+    }
+    if ((selected.type==="trajectory" || selected.requiredEvidence?.includes("trajectory")) && !draft.trajectory.trim())
+      throw Error("Supply the recorded agent steps before scoring.");
+    let trajectory:unknown;
     if(draft.trajectory.trim()){
       try{trajectory=JSON.parse(draft.trajectory);}catch{throw Error("Enter observed agent steps as a valid JSON array.");}
       if(!Array.isArray(trajectory))throw Error("Agent steps must be a JSON array.");
@@ -827,6 +956,21 @@ document.addEventListener("submit",async e=>{
       b.textContent="Grading…";
       if(!f.dataset.id)throw Error("Reopen the saved case before grading it.");
       const grader=field("grader");
+      const selected=state.graders.find(g=>g.id===grader);
+      if (!selected) throw Error("Choose a saved grader.");
+      if (savedCaseNeedsAnswer(f,selected) || selected.type==="trajectory" || selected.requiredEvidence?.includes("trajectory")) {
+        if (pendingSample) throw Error("An output test is in progress. Wait for it to finish.");
+        const run=current,result=run?.results[Number(f.dataset.index)];
+        if (!run || run.manifest.id!==f.dataset.id || !result?.output) throw Error("Open the saved response before testing its output.");
+        if (retrySample && !await allowPageReplacement("Replace output test","the current output test",f)) return;
+        const row=!result.dispatchedMessages && run.manifest.datasetId ?
+          (await api.dataset(run.manifest.datasetId)).rows.find(r=>r.case_id===result.caseId) : undefined;
+        if (!stillHere()) return;
+        const input=result.dispatchedMessages ?? row?.messages ?? (row ? {prompt:row.prompt || run.manifest.pack?.system,input:row.input} : run.manifest.prompt);
+        retrySample={error:"",draft:{grader,input:typeof input==="string"?input:JSON.stringify(input ?? "",null,2),output:result.output,reference:"",trajectory:""}};
+        samplePanelOpen=true;
+        navigateAfterDecision("graders");return;
+      }
       const request:UiGradeRequest={grader,run:f.dataset.id,index:Number(f.dataset.index)};
       const consent=graderConsentById([grader],"this saved case");
       if(!consent)return;

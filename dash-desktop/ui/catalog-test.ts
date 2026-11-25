@@ -42,8 +42,13 @@ async function openIndustryTest(button:HTMLButtonElement,host:HTMLElement,grader
   const source=$("[data-case-source]",form),result=$("[data-case-result]",form);
   let detail:UiDatasetDetail|null=null,readSequence=0,alreadyScored=false;
   const currentRow=()=>detail?.rows.find(row=>row.case_id===cases.value);
-  const ready=()=>{score.disabled=fields.disabled || alreadyScored || !currentRow() || !output.value.trim();};
-  const resetResult=()=>{alreadyScored=false;result.replaceChildren();ready();};
+  const ready=()=>{score.disabled=fields.disabled || alreadyScored || !evidencePresent(currentRow()?.gold) || !output.value.trim();};
+  const resetResult=()=>{
+    alreadyScored=false;
+    const row=currentRow();
+    result.textContent=row && !evidencePresent(row.gold) ? "This case has no expected answer. Choose a labeled case or import a dataset version with its verified facts." : "";
+    ready();
+  };
   function chooseCase(){
     const row=currentRow(),pack=state.packs.find(p=>p.id===detail?.pack);
     source.innerHTML=row && pack ? industryCaseEvidence(row,pack) : "";

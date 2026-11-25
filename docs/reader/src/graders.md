@@ -4,7 +4,7 @@ The **AI Industry Graders** step in the Overview uses versions from **Workspace 
 
 ## Find an industry grader
 
-Open **Workspace → Graders**. **Create a grader** stays at the top. The **Industry catalogue** groups the shipped checks under Financial Services and Manufacturing. Each card shows a short description and the saved version. Hover over a card, focus **Details** with the keyboard, or tap **Details** to read its criterion and pass threshold.
+Open **Workspace → Graders**. **Create a grader** stays at the top. The **Industry catalogue** groups the shipped checks under Financial Services and Manufacturing. General, Industry and My Graders use the same card layout. Each saved version previews its scoring rule. Open **Inspect scoring** to expand the complete rubric, see the evidence it uses and read the pass condition. Decision cards show the yes/no question and cutoffs. Opik metric cards explain how DASH interprets the native score.
 
 When you enter from **Choose graders** in Quick compare, **Back to evaluation setup** returns to the approved prompt with its selected lanes and attached grader versions. A measure selection takes effect when you attach it. If you leave with an unapplied assignment, **Stay here** lets you finish it.
 
@@ -21,7 +21,7 @@ When you edit a manual grader or type a new answer for an industry case or a sin
 
 1. Open **Create a grader**. Describe what a good response must do. Choose **Suggest Metrics** to have the domain expert propose measures and the auditor review their evidence. Edit the measures, draft the evaluation prompt, then choose **Approve prompt & propose graders**. If you choose an existing approved prompt, go straight to **Propose graders**. **Write manually** is available when you already have a rule.
 2. Open **Reasoning summary** to see which measures an automatic grader covers, its version and why it applies. If all measures are covered, choose **Done**. Select **Save** on the new or reused checks you want. **Ready to evaluate** shows each saved name and version. You can also pick an existing version directly from the library.
-3. Choose **Test one output** to paste a task and an existing answer. Select **Score this output** to see the grade and rationale. You can browse elsewhere in DASH while scoring is in progress and return to **Test one output** for the result. If the assessment fails, the draft stays in the current DASH session for editing, retry or discard. When the grader needs a reference answer or the agent’s observed tool calls, DASH opens the fields for that evidence.
+3. Choose **Test one output** to paste a task and an existing answer. Select **Score this output** to see the grade and rationale. You can browse elsewhere in DASH while scoring is in progress and return to **Test one output** for the result. If the assessment fails, the draft stays in the current DASH session for editing, retry or discard. When a grader requires an expected answer or recorded agent steps, supply them before scoring. You can make this test using an answer you already have.
 4. To evaluate model responses across cases, choose **Use in a dataset run** on the save receipt, or **Use in Run** on its card. DASH opens its source snapshot when applicable. If several snapshots match, choose the family, version, split and industry. Review the selected grader versions, select the candidate models, and press **GO**. You can add or remove graders before starting. Each run records the versions used.
 5. Open the completed run’s **Case scores and rationale** to see which answer passed, failed or lacked enough evidence to score.
 
@@ -33,11 +33,17 @@ For an earnings task, a grader can check whether the answer identifies diluted G
 
 **Runtime and format checks** are diagnostics. **Generation completed** means the runtime reported a normal stop. **Response present** means the model returned text. Inspect the domain rubric and case result to assess the quality of that text.
 
+## What counts as an expected answer?
+
+An expected answer, also called a *case reference*, is what a reviewer considers correct for this particular task. It can be a short fact or an accepted decision. For example, “The active drawing caps the diameter at 10.03 mm. The 10.04 mm sample goes to Quality for a signed recheck.” The **rubric** says which parts of a response earn credit. The **expected answer** supplies the facts needed to apply that rule.
+
+Quick compare shows the names of the checks that need your expected answer. You can also choose a grader that works from the task and response, or leave that measure unscored. Before GO, an unsent expected answer stays in the current editing session. Enter it again after reloading. Once you start, DASH saves it with the local run. A selected hosted decision grader can receive it after you confirm its destination.
+
 ## Map a Quick compare measure
 
 From an approved Quick comparison, choose **Choose graders** to open the catalogue for that specific draft. Attach a compatible version, then return to the comparison to see it beside the two chosen models. When you open the catalogue independently, **Use in Run** still offers the dataset workflow.
 
-After approving the task prompt, inspect each measure and its pass condition before selecting **Run evaluation**. A saved deterministic check can answer a literal question. Choose a dedicated Opik rubric and judge when several phrasings can satisfy the condition. Read its full-credit and failure conditions. A check requiring a separate reference answer can be evaluated on a labeled dataset. A business outcome that needs later operational data stays unscored until you have that evidence.
+After approving the task prompt, inspect each measure and its pass condition before selecting **Run evaluation**. A saved deterministic check can answer a literal question. Choose a dedicated Opik rubric and judge when several phrasings can satisfy the condition. Read its full-credit and failure conditions. For a check that needs a known correct answer, enter **Expected answer or verified facts** once. Both candidates receive the same approved task. DASH supplies what you entered to the graders that require it after the candidates respond. For a dataset, supply the answer on each row. A business outcome that needs later operational data stays unscored until you have that evidence.
 
 Both candidates receive the same task and each returned answer goes to the same pinned grader versions. A prompt with two independent model-judged measures and two candidates can require four assessments. Additional automatic diagnostics appear separately in the results. Earlier prompt versions can still use their original combined rubric.
 
@@ -81,7 +87,7 @@ The cross-industry decision questions are editable experimental starters. They h
 
 Open **Workspace → Graders → Create a grader → Write manually → Decision examples · grade an answer**. Select **GAAP diluted EPS support** to judge whether an answer uses the correct period and accounting basis from the release. Select **Inspection disposition evidence** to judge whether the answer supports its sample disposition with the active drawing, reading and receiving rule. Inspect the editable yes/no question and select a native decision model such as local D1. Save the grader version, then use **Test one output** with a candidate answer and a reference.
 
-Both industry examples require a reference. Dataset rows can supply one. Quick compare has no held-out reference field and offers graders compatible with its task and answer. These reference-based versions appear in the Dataset run picker for their industry. A missing reference at assessment time produces **Unscored**. To test a Quick answer, copy its task and answer into **Test one output** and supply the reference separately. The two cross-industry examples can instead use just the task and answer. The deterministic dataset checks remain useful for exact figures, unit conversion and drawing limits. [Synthetic handoffs and checks](https://github.com/niksacdev/dash/blob/main/docs/reviews/outcome-workflow.md#evaluate-a-language-model-handoff-and-its-decision)
+Both industry decision examples need a known correct answer. In Quick compare, attach the version and enter **Expected answer or verified facts** before GO. In a Dataset run, use cases that each have their own expected answer. To grade an answer you already have, use **Test one output** and provide the expected facts separately. The two cross-industry examples can instead use just the task and answer. The deterministic dataset checks remain useful for exact figures, unit conversion and drawing limits. [Synthetic handoffs and checks](https://github.com/niksacdev/dash/blob/main/docs/reviews/outcome-workflow.md#evaluate-a-language-model-handoff-and-its-decision)
 
 ## Run a local decision check on both candidates
 

@@ -160,7 +160,8 @@ test("a pasted industry answer scores the exact grader and case and keeps its so
   // An existing snapshot with a missing reference can never establish a score.
   const rows=bench.dataset(finance.id).rows.map(r=>r.case_id===request.caseId?{...r,gold:undefined}:r);
   bench.db.prepare("UPDATE datasets SET rows=? WHERE id=?").run(JSON.stringify(rows),finance.id);
-  const missing=await bench.testGraderOnDatasetCase(request);
-  assert.equal(missing.value,null);assert.equal(missing.pass,null);assert.match(missing.reason,/missing its reference labels/);
+  const priorTests=bench.graders.recent().length;
+  await assert.rejects(bench.testGraderOnDatasetCase(request),/expected answer/);
+  assert.equal(bench.graders.recent().length,priorTests);
   assert.equal(bench.list().runs.length,0);assert.equal(calls,0);
 });
