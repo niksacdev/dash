@@ -323,7 +323,18 @@ async function smoke() {
     if(await exists("[data-wf-reset]"))await click("[data-wf-reset]");
     await wait(()=>exists("#wf-structured"),"Structured output option");
     assert.equal(await js("document.querySelector('#wf-structured').checked"),false);
+    assert.equal(await text("document.querySelector('.wf-examples small').textContent"),"Language model examples");
+    await click('[data-wf-example="earnings"]');
+    const financeExample=await text("document.querySelector('#wf-objective').value");
+    assert.match(financeExample,/two-sentence handoff/);
+    assert.match(financeExample,/Synthetic earnings call/);
+    assert.match(financeExample,/no reconciliation/);
+    await fill("#wf-objective","");
     await click('[data-wf-example="manufacturing"]');
+    const shiftExample=await text("document.querySelector('#wf-objective').value");
+    assert.match(shiftExample,/sample S1/);
+    assert.match(shiftExample,/Superseded drawing A/);
+    assert.match(shiftExample,/no signed recheck/);
     await click("#wf-structured");
     await fill("#wf-objective","Return exactly these fields: decision. "+await text("document.querySelector('#wf-objective').value"));
     await fill("#wf-output-cap","150");
@@ -946,8 +957,9 @@ async function smoke() {
   await click("#wf-variant");
   await click(earningsSample);
   const datasetObjective=await objectiveValue();
+  assert.equal(await text("document.querySelector('.wf-examples small').textContent"),"Dataset objective");
   assert.match(datasetObjective,/analyst review/);
-  assert.doesNotMatch(datasetObjective,/Synthetic release excerpt/);
+  assert.doesNotMatch(datasetObjective,/Synthetic release excerpt|CFO|two-sentence|0\.74/);
   await click(earningsSample);
   assert.equal(await objectiveValue(),datasetObjective);
   await fill("#wf-objective", "Identify which reported financial facts need analyst verification.");
@@ -1014,6 +1026,8 @@ async function smoke() {
   // credential are synthetic; the IPC, validation, version store and UI are real.
   process.env.OPENROUTER_API_KEY="synthetic-workflow-smoke-key";
   const localAlias="qa/decision", localQuestions:string[]=[];
+  const wrongRevision="Accept S1 at 10.04 mm under drawing A’s 10.05 mm limit.";
+  let lastLocalCriterion="";
   const checkpoint=mkdtempSync(path.join(profile,"synthetic-checkpoint-"));
   let mlxGrades=0,sampleGate:Promise<void>|undefined;
   const server=createServer(async(req,res)=>{
@@ -1041,8 +1055,12 @@ async function smoke() {
         const question=decisionQuestion.parse(JSON.parse(body));
         assert.equal(question.model,localAlias);
         localQuestions.push(question.state);
+        lastLocalCriterion=question.questions.criterion.instructions;
         if(sampleGate)await sampleGate;
-        res.end(JSON.stringify(decisionAnswer(localAlias,question.state.includes("UNCERTAIN")?.5:.92)));
+        let probability=.92;
+        if(question.state.includes("UNCERTAIN"))probability=.5;
+        if(question.state.includes(wrongRevision))probability=.08;
+        res.end(JSON.stringify(decisionAnswer(localAlias,probability)));
       } catch {res.statusCode=400;res.end("{}");}
       return;
     }
@@ -1281,6 +1299,9 @@ async function smoke() {
     await click("[data-decision-starter=disclosure]");
     assert.match(await text("document.querySelector('#grade-create [name=criteria]').value"),/withhold/);
     await click("[data-decision-starter=earnings]");
+    assert.equal(await text("document.querySelector('[data-decision-starter=earnings]').closest('details').querySelector('summary').textContent"),"Decision examples · grade an answer");
+    assert.equal(await js("document.querySelector('#grade-create [value=reference]').checked"),true);
+    assert.match(await text("document.querySelector('#grade-create [name=criteria]').value"),/GAAP.*adjusted EPS/);
     assert.equal(await text("document.querySelector('#grade-create [name=industry]').value"),"Financial Services");
     await click("[data-decision-starter=inspection]");
     const criterion=await text("document.querySelector('#grade-create [name=criteria]').value");
@@ -1296,10 +1317,10 @@ async function smoke() {
     const versionId=(n:number)=>db.prepare("SELECT id FROM graders WHERE json_extract(spec,'$.name')=? AND version=?").get("Inspection disposition evidence",n)?.id;
     await wait(()=>versionId(1),"Saved local decision grader");
     const localId=z.string().parse(versionId(1));
-    async function provideSample(id:string,output:string,reference:string) {
+    async function provideSample(id:string,output:string,reference:string,input="Synthetic lot B at 10.04 mm; current upper limit 10.03 mm.") {
       await wait(()=>exists('#grade-sample [value="'+id+'"]'),"Grader available to assess");
       await fill("#grade-sample [name=grader]",id);
-      await fill("#grade-sample [name=input]","Synthetic lot B at 10.04 mm; current upper limit 10.03 mm.");
+      await fill("#grade-sample [name=input]",input);
       await fill("#grade-sample [name=output]",output);
       await reveal("#grade-sample [name=reference]");await fill("#grade-sample [name=reference]",reference);
       await click("#grade-sample button");
@@ -1393,6 +1414,33 @@ async function smoke() {
     await click("#grade-sample button");
     await wait(()=>js("document.querySelector('#screen table')?.innerText.includes('P(yes) 0.91')"),"Consented hosted sample");
     assert.equal(hostedGrades,1);
+
+    // Exercise the shipped sample criterion using fixed native probabilities, not model predictions.
+    const sampleTask="Give the incoming-quality lead a disposition for sample S1.";
+    const reference="S1 measured 10.04 mm. Active B allows 9.97–10.03 mm inclusive; superseded A allowed 9.95–10.05 mm. Send out-of-limit samples to Quality for a signed recheck.";
+    const correct="Send S1 to Quality for recheck. Its 10.04 mm measurement exceeds drawing B’s 10.03 mm limit.";
+    for(const example of [
+      {output:correct,reference,score:1,probability:.92},
+      {output:wrongRevision,reference,score:0,probability:.08},
+      {output:correct,reference:"",score:null,probability:null},
+    ]){
+      const beforeWrites=manualCount();
+      const beforeRequests:number=localQuestions.length;
+      await provideSample(localId,example.output,example.reference,sampleTask);
+      await wait(()=>manualCount()===beforeWrites+1,"Inspection sample assessment saved");
+      await wait(()=>exists('#grade-sample[aria-busy=false]'),"Inspection sample ready");
+      const record=db.prepare(`SELECT json_extract(record,'$.value') score,json_extract(record,'$.pass') verdict,
+        json_extract(record,'$.decision.probabilityYes') probability FROM assessments WHERE run IS NULL ORDER BY rowid DESC LIMIT 1`).get();
+      assert.ok(record);
+      assert.equal(record.score,example.score);
+      assert.equal(record.verdict,example.score);
+      assert.equal(record.probability,example.probability);
+      assert.equal(localQuestions.length,beforeRequests+(example.reference?1:0));
+      if(example.reference){
+        assert.ok(lastLocalCriterion.endsWith(criterion));
+        assert.ok(localQuestions.at(-1)?.includes(reference));
+      }
+    }
     await route("prompts");
     await click('[data-wf-use="'+first.id+'"]');
     await wait(()=>exists(controls(rowB,"choice")),"Reopened approved prompt");

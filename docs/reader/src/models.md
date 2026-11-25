@@ -48,11 +48,24 @@ AI planning query details also show **Device energy (est.)** and the sampled dur
 
 ## Check the planning domain
 
-Under **Try an outcome**, select an industry example to fill **Task objective**. Selecting it again keeps one copy. Selecting another replaces the previous example. If you have written or edited the objective, choose **Stay here** to keep your text or **Replace objective** to use the example. Quick compare includes the sample case, while a Dataset run variant uses the task with the selected dataset.
+Under **Language model examples** in Quick compare or **Dataset objective** in a Dataset run variant, select an industry example to fill **Task objective**. Selecting it again keeps one copy. Selecting another replaces the previous example. If you have written or edited the objective, choose **Stay here** to keep your text or **Replace objective** to use the example. Quick compare includes the sample case, while a Dataset run variant uses the task with the selected dataset.
 
-**Suggest Metrics** and prompt review show which domain supplied the expert and why. An unedited **Inspect a supplier lot** example uses Manufacturing. **Review earnings disclosures** uses Financial Services. For a task you write or combine with an example, the router looks at what a reviewer must verify. A manufacturer's earnings release can be a Financial Services task.
+**Suggest Metrics** and prompt review show which domain supplied the expert and why. An unedited **Prepare a quality handoff** example uses Manufacturing. **Brief an earnings analyst** uses Financial Services. For a task you write or combine with an example, the router looks at what a reviewer must verify. A manufacturer's earnings release can be a Financial Services task.
 
 If the label is wrong, choose **Change planning domain**, select the intended domain, and choose **Suggest Metrics** again. From prompt review, use **Edit outcome or domain**. To correct an approved prompt, open it in the catalogue and choose **Revise**. A new version and its runs carry the corrected domain. Earlier versions and results keep the domain recorded when they ran. A change of domain starts fresh suggestions and response fields. If you edited the measures, DASH keeps newly authored pairs and removes untouched pairs from the previous domain. The source run stays linked for comparison.
+
+## Try an industry language model workflow
+
+In **Quick compare → Language model examples**, choose the work product you want two chat models to produce. Each objective includes a synthetic source record.
+
+| Example | What a reviewer can check |
+| --- | --- |
+| **Prepare a quality handoff** | Can the next shift act on the note? The answer should cite the measured shaft, select the active drawing, route the sample and distinguish a requested recheck from a signed result. |
+| **Brief an earnings analyst** | Can an analyst use the two-sentence briefing? Check that it labels reported and adjusted diluted EPS for Q2, attributes the freight comment to management and identifies the missing reconciliation. |
+
+You can bring other work in this form. A maintenance handoff might summarize the symptoms in a technician’s notes and identify an open repair ticket. A supplier-quality review could draft a question about a material certificate’s missing lot number. In Financial Services, compare how two candidates attribute a change in guidance to the correct speaker, or turn an unresolved earnings-call question into a research follow-up. Supply the source text and decide what a reviewer could actually verify.
+
+A **Dataset run** uses each row’s input and the scenario’s output contract. Its optional **Dataset objective** describes the repeated task. A native decision grader such as D1 can score a candidate’s answer with a yes/no question and the required evidence. [Choose a decision example](graders.md#try-an-industry-decision-example)
 
 ## Inspect a proposed measure
 

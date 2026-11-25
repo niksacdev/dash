@@ -142,7 +142,7 @@ const decisionStarters = {
   earnings:{name:"GAAP diluted EPS support",industry:"Financial Services",category:"Financial fact accuracy",
     criteria:"Does the answer report the requested diluted EPS using the reference’s GAAP figure for that period, keeping it distinct from adjusted EPS?"},
   inspection:{name:"Inspection disposition evidence",industry:"Manufacturing",category:"Inspection disposition",
-    criteria:"Does the proposed lot disposition follow the acceptance limits for the current drawing revision in the inspection reference?"},
+    criteria:"Does the answer support its disposition of the inspected sample using the current drawing revision, measured value and receiving rule in the inspection reference?"},
 };
 function decisionFields(g:UiGraderDefinition) {
   const d=g.decision,local=d?.provider!=="openrouter",enabled=g.type==="decision",mlx=d?.protocol==="mlx-vlm";
@@ -217,7 +217,7 @@ function gradeCreate(){
   const editing=!!(graderDraft || graderTemplate);
   const manual='<form id="grade-create" data-method="'+esc(g.type)+'" class="spacer">'+(graderDraft?'<p class="muted">'+esc((graderEditIntent==="derive"?"Based on ":"Previous revision · ")+graderDraft.name+" v"+graderDraft.version+
       (inherited?" · "+graderScenario(graderDraft):""))+'</p>':'')+
-    (!editing?'<details class="wf-options"><summary>Start with a yes/no grader</summary><p>The two cross-industry questions are experimental. Edit one and test it with labeled examples before using it in a run.</p>'+
+    (!editing?'<details class="wf-options"><summary>Decision examples · grade an answer</summary><p>Choose a yes/no question for a decision judge such as local D1. The earnings question checks the answer against a reference with reported and adjusted EPS. The inspection question checks the answer against a reference with the active drawing, reading and receiving rule. Both require a reference.</p><p>The two cross-industry questions use the task and answer. Test these experimental questions with labeled examples before saving a grader for your runs.</p>'+
       (Object.keys(decisionStarters) as (keyof typeof decisionStarters)[]).map(key=>'<button type="button" data-decision-starter="'+key+'">'+esc(decisionStarters[key].name)+'</button>').join(" ")+'</details>':'')+'<div class="cols">'+
     formField("Grader name",'<input name="name" required maxlength="100" value="'+esc(g.name)+'">')+
     formField("Category",'<input name="category" required maxlength="100" value="'+esc(g.category)+'" placeholder="e.g. Factual accuracy">')+'</div><div class="cols">'+
