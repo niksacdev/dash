@@ -9,10 +9,10 @@ type ModelHandle = Pick<LLM, "identifier" | "applyPromptTemplate" | "countTokens
 const loadedModels = async (): Promise<ModelHandle[]> => (await lmClient()).llm.listLoaded();
 
 interface CheckedInput { model: ModelHandle; fingerprint: string; disableThinking: boolean }
-type CallOptions = Pick<InvokeOptions, "structured" | "onText" | "signal" | "onPlanningProgress"> & { maxTokens: number };
+type CallOptions = Pick<InvokeOptions, "structured" | "onText" | "signal" | "onPlanningProgress" | "onCandidateUsage"> & { maxTokens: number };
 interface PredictionOptions {
   limit: AbortSignal; maxTokens: number; structured?: OutputSchema | null; onText?: (text: string) => void;
-  disableThinking?: boolean; expectedTokens?: number; progress?: () => void; onPlanningProgress?: InvokeOptions["onPlanningProgress"];
+  disableThinking?: boolean; expectedTokens?: number; progress?: () => void; onPlanningProgress?: InvokeOptions["onPlanningProgress"]; onCandidateUsage?: InvokeOptions["onCandidateUsage"];
 }
 class InputCapError extends ProviderPreflightError {
   constructor(message: string, readonly inputTokens: number, readonly contextTokens?: number) { super(message); }
@@ -113,7 +113,7 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     return receipt;
   }
 
-  async function invokeBudgeted(candidate: Candidate, messages: ChatTurn[], { inputBudget, maxTokens, signal, structured, onText }: CallOptions & { inputBudget: TokenReceipt }): Promise<InferenceResult> {
+  async function invokeBudgeted(candidate: Candidate, messages: ChatTurn[], { inputBudget, maxTokens, signal, structured, onText, onCandidateUsage }: CallOptions & { inputBudget: TokenReceipt }): Promise<InferenceResult> {
     const checked = receipts.get(inputBudget);
     if (!checked || candidate.provider !== "lmstudio" || checked.model.identifier !== candidate.model)
       throw new ProviderPreflightError("The token check does not match this model. Run the input check again.");
@@ -133,7 +133,7 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     const stall = setTimeout(() => idle.abort(Error("LM Studio stopped reporting prediction progress for three minutes.")), 180000);
     try {
       return await predict(model, candidate, messages, {
-        limit, maxTokens, structured, onText, disableThinking: checked.disableThinking, expectedTokens: inputBudget.tokens, progress: () => stall.refresh(),
+        limit, maxTokens, structured, onText, onCandidateUsage, disableThinking: checked.disableThinking, expectedTokens: inputBudget.tokens, progress: () => stall.refresh(),
       });
     } finally {
       clearTimeout(stall);
@@ -149,15 +149,19 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
     return predict(model, candidate, messages, { limit: signal, maxTokens, structured, disableThinking:candidate.reasoningOff === true, onPlanningProgress });
   }
 
-  async function predict(model: ModelHandle, candidate: Candidate, messages: ChatTurn[], { limit, maxTokens, structured, onText, disableThinking = false, expectedTokens, progress, onPlanningProgress }: PredictionOptions): Promise<InferenceResult> {
+  async function predict(model: ModelHandle, candidate: Candidate, messages: ChatTurn[], { limit, maxTokens, structured, onText, disableThinking = false, expectedTokens, progress, onPlanningProgress, onCandidateUsage }: PredictionOptions): Promise<InferenceResult> {
     checkPreparationSignal(limit);
     const start = performance.now();
     let output = "", firstTokenMs: number | null = null;
     let approximateOutputTokens:number|null = null;
+    let fragmentTokens = 0, completeFragmentCounts = true;
     const options: LLMRespondOpts = {
       signal: limit, temperature: 0, maxTokens, contextOverflowPolicy: "stopAtLimit",
       onPromptProcessingProgress(value, details) {
         progress?.();
+        const promptTokens=details?.totalPromptTokenCount;
+        if (onCandidateUsage && typeof promptTokens==="number" && Number.isSafeInteger(promptTokens) && promptTokens>0)
+          onCandidateUsage({inputTokens:promptTokens});
         if (onPlanningProgress && Number.isFinite(value) && value >= 0 && value <= 1) {
           // SDK 2.1 supplies all-zero details on older servers that send only a percentage.
           const total=details?.totalPromptTokenCount;
@@ -167,9 +171,23 @@ export function createTokenBudget(listLoaded: () => Promise<ModelHandle[]>) {
       },
       onPredictionFragment(fragment) {
         progress?.();
+        // Count SDK token metadata for the candidate, including reasoning fragments.
+        // Only visible content passes through onText below.
+        if (onCandidateUsage && completeFragmentCounts) {
+          if (Number.isSafeInteger(fragment.tokensCount) && fragment.tokensCount>=0 && fragment.tokensCount<=Number.MAX_SAFE_INTEGER-fragmentTokens) {
+            fragmentTokens+=fragment.tokensCount;
+            if (fragmentTokens>0) onCandidateUsage({approximateOutputTokens:fragmentTokens});
+          } else {
+            completeFragmentCounts=false;
+            if (fragmentTokens>0) onCandidateUsage({approximateOutputTokens:null});
+          }
+        }
         if (fragment.reasoningType && fragment.reasoningType !== "none") return;
         if (!fragment.content) return;
-        firstTokenMs ??= Math.round(performance.now() - start);
+        if (firstTokenMs===null) {
+          firstTokenMs=Math.round(performance.now()-start);
+          onCandidateUsage?.({firstTokenMs});
+        }
         if (onPlanningProgress) {
           if (Number.isSafeInteger(fragment.tokensCount) && fragment.tokensCount >= 0) approximateOutputTokens = (approximateOutputTokens ?? 0) + fragment.tokensCount;
           onPlanningProgress({phase:"generating",approximateOutputTokens});

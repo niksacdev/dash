@@ -73,7 +73,7 @@ const bridge:DashBridge = {
   loadLocalModel: key => invoke("loadLocalModel",key),
   dataset: (id) => invoke("dataset", id),
   detail: (id) => invoke("detail", id),
-  runProgress: (id,revision,offset) => invoke("runProgress",id,revision,offset),
+  runProgress: (id,revision,offset,usageRevision) => usageRevision===undefined ? invoke("runProgress",id,revision,offset) : invoke("runProgress",id,revision,offset,usageRevision),
   designPrompt: (request) => invoke("designPrompt", request),
   suggestMetrics: (request) => invoke("suggestMetrics", request),
   previewStructuredPrompt: request => invoke("previewStructuredPrompt",request),

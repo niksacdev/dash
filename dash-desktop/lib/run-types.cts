@@ -41,7 +41,7 @@ export interface RunResult {
   dispatchState?:"pending"|"canceled"|"interrupted";
   guardrail?:StoredGuardrail; dispatchedMessages?:ChatTurn[]; inputBudget?:{cap:number|null;tokens:number;source:string};
 }
-export type RunPartial = {candidateId:string;caseId:string;text:string;checkedInputTokens?:number;grading?:{name:string;version:number}}|{stage:string;text:string};
+export type RunPartial = {candidateId:string;caseId:string;text:string;checkedInputTokens?:number;usage?:CandidateUsageSample;grading?:{name:string;version:number}}|{stage:string;text:string};
 export interface RunManifest {
   format:number; id:string; created:string; mode:RunMode; fixture:boolean; title:string; hostedDecisionApproved?:boolean;
   candidates:Candidate[]; caseIds:string[]; pack:ScenarioPack|null; graders:GraderSpec[];
@@ -61,7 +61,7 @@ export interface RunManifest {
 }
 export type CurrentManifest = RunManifest & {tokenBudget:{inputCap:number|null;outputCap:number|null}};
 export interface RunData {status:RunStatus;manifest:RunManifest;results:RunResult[];assessments:RecordedAssessment[];partial:RunPartial|null}
-export interface RunDetail extends RunData {report:RunReport|null;liveRevision:number|null}
+export interface RunDetail extends RunData {liveUsageVersion?:1;report:RunReport|null;liveRevision:number|null}
 export interface StartRun {
   mode:RunMode; candidateIds:string[]; datasetId?:string; caseId?:string; parentId?:string;
   approvedPromptId?:string|null; datasetScorer?:DatasetScorer|null; caseJudgeId?:string; graderIds?:string[]; allowHostedDecision?:boolean;

@@ -61,6 +61,7 @@ Start here to learn why DASH works the way it does. Each numbered record explain
 | 2026-11-24 | [0033 · Domain routing provenance](0033-domain-routing-provenance.md) | Proposed | Bind known starter domains, classify free-text verification tasks and preserve operator and dataset provenance. | [Acceptance scenario](../reviews/outcome-workflow.md#route-an-industry-decision-to-the-right-expert) |
 | 2026-11-24 | [0034 · Review the scoring backend](0034-review-grader-backend.md) | Proposed | Let an operator select an Opik judge or explicitly author a native binary decision while reviewing a grader. | [Verification scenario](../reviews/grader-library.md#review-the-scoring-backend) |
 | 2026-11-24 | [0035 · Sampled request energy](0035-request-energy.md) | Proposed | Report observed whole-device joules and duration alongside token receipts. | [Verification scenario](../reviews/outcome-workflow.md#read-energy-for-an-observed-request) |
+| 2026-11-24 | [0036 · Observe live candidate usage](0036-live-candidate-usage.md) | Proposed | Deliver provider observations during the same evaluation attempt through the existing progress cursor. | [Acceptance scenario](../reviews/outcome-workflow.md#observe-candidate-usage-during-dispatch) |
 
 ## Maintaining the history
 

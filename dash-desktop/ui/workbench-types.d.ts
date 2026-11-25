@@ -89,8 +89,15 @@ interface UiManifest {
   policyHash?:string|null;caseSetHash?:string;caseIds:string[];pack:UiPack|null;candidates:UiModel[];error?:string;
   tokenBudget?:UiTokenCaps;guardrailFailure?:UiGuardrail|null;invocations?:{candidateId:string;adapter:string;template?:string|null}[];
 }
-type UiRunProgress = {kind:"unchanged"}|{kind:"refresh"}|{kind:"append";candidateId:string;text:string};
-interface UiRunDetail {liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;caseId?:string;text?:string;checkedInputTokens?:number;grading?:{name:string;version:number}}|null}
+interface CandidateUsage {
+  inputTokens?:number;
+  outputTokens?:number;
+  approximateOutputTokens?:number|null;
+  firstTokenMs?:number;
+}
+interface CandidateUsageSample extends CandidateUsage { revision:number }
+type UiRunProgress = {kind:"unchanged";usage?:CandidateUsageSample}|{kind:"refresh"}|{kind:"append";candidateId:string;text:string;usage?:CandidateUsageSample};
+interface UiRunDetail {liveUsageVersion?:1;liveRevision:number|null;manifest:UiManifest;status:string;results:UiResult[];assessments:UiAssessment[];report:UiReport|null;partial?:{stage?:string;candidateId?:string;caseId?:string;text?:string;checkedInputTokens?:number;usage?:CandidateUsageSample;grading?:{name:string;version:number}}|null}
 interface UiDiagnostic {status:string;fixture:boolean;candidates:Pick<UiModel,"model"|"id">[];traces:{
   candidateId:string;caseId:string;index:number;telemetry?:UiTelemetry|null;stage:string;note:string;traceId:string;started:string;finished?:string;finishReason?:string|null;adapter?:string|null}[]}
 interface UiPower {at:string;watts:number|null;source:string|null;
@@ -124,7 +131,7 @@ interface UiPlanningEvent extends UiPlanningAttempt {
 interface DashBridge {
  loadLocalModel(key:string):Promise<{status:"already-loaded"|"loaded";instanceId:string}|{status:"unconfirmed"}>;
  list():Promise<UiState>;refresh():Promise<UiServer[]>;dataset(id:string):Promise<UiDatasetDetail>;detail(id:string):Promise<UiRunDetail>;
- runProgress(id:string,revision:number,offset:number):Promise<UiRunProgress>;
+ runProgress(id:string,revision:number,offset:number,usageRevision?:number):Promise<UiRunProgress>;
  designPrompt(request:UiDesignInput):Promise<UiDraft>;suggestMetrics(request:UiDesignInput):Promise<UiSuggestion>;
  previewStructuredPrompt(request:{input:Record<string,unknown>;outputSchema:Record<string,unknown>}):Promise<{role:string;content:string}[]>;
  approvePrompt(request:UiApproval):Promise<UiApproved>;cancelDesign():Promise<void>;onPlanningStage(callback:(event:UiPlanningEvent)=>void):void;
